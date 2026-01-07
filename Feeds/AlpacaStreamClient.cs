@@ -40,6 +40,9 @@ public class AlpacaStreamClient : BackgroundService
 
     // Per-symbol market state
     private readonly ConcurrentDictionary<string, SymbolState> _symbolStates = new();
+    
+    // Latency monitoring
+    private readonly List<TimeSpan> _latencyMeasurements = new();
 
     public AlpacaStreamClient(
         IConfiguration configuration,
@@ -284,6 +287,8 @@ public class AlpacaStreamClient : BackgroundService
 
     private async Task ProcessTradeAsync(JsonElement msg, CancellationToken ct)
     {
+        var receiveTime = DateTime.UtcNow;
+        
         var symbol = msg.GetProperty("S").GetString();
         if (string.IsNullOrEmpty(symbol)) return;
 
@@ -336,6 +341,29 @@ public class AlpacaStreamClient : BackgroundService
             using var scope = _serviceProvider.CreateScope();
             var signalService = scope.ServiceProvider.GetRequiredService<SignalService>();
             await signalService.SaveSignalAsync(signal);
+            
+            var alertTime = DateTime.UtcNow;
+            var latency = alertTime - receiveTime;
+            
+            lock (_latencyMeasurements)
+            {
+                _latencyMeasurements.Add(latency);
+                if (_latencyMeasurements.Count > 1000)
+                    _latencyMeasurements.RemoveAt(0);
+            }
+            
+            if (latency.TotalMilliseconds > 500)
+            {
+                _logger.LogWarning(
+                    "High latency detected for {Symbol}: {Latency}ms (target <500ms)",
+                    symbol, latency.TotalMilliseconds);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Signal latency for {Symbol}: {Latency}ms",
+                    symbol, latency.TotalMilliseconds);
+            }
         }
         catch (InvalidOperationException ex)
         {
@@ -413,6 +441,45 @@ public class AlpacaStreamClient : BackgroundService
         await base.StopAsync(cancellationToken);
         _logger.LogInformation("AlpacaStreamClient stopped");
     }
+
+    /// <summary>
+    /// Get a read-only view of all symbol states for real-time data access.
+    /// </summary>
+    public IReadOnlyDictionary<string, SymbolState> GetSymbolStates()
+    {
+        return new Dictionary<string, SymbolState>(_symbolStates);
+    }
+
+    /// <summary>
+    /// Get the state for a specific symbol.
+    /// </summary>
+    /// <param name="ticker">The ticker symbol</param>
+    /// <returns>SymbolState if found, null otherwise</returns>
+    public SymbolState? GetSymbolState(string ticker)
+    {
+        return _symbolStates.TryGetValue(ticker, out var state) ? state : null;
+    }
+
+    /// <summary>
+    /// Get latency statistics for signal processing.
+    /// </summary>
+    /// <returns>Tuple of (AvgMs, P50Ms, P95Ms, P99Ms)</returns>
+    public (double AvgMs, double P50Ms, double P95Ms, double P99Ms) GetLatencyStats()
+    {
+        lock (_latencyMeasurements)
+        {
+            if (_latencyMeasurements.Count == 0)
+                return (0, 0, 0, 0);
+            
+            var sorted = _latencyMeasurements.OrderBy(l => l.TotalMilliseconds).ToList();
+            var avg = sorted.Average(l => l.TotalMilliseconds);
+            var p50 = sorted[(int)(sorted.Count * 0.50)].TotalMilliseconds;
+            var p95 = sorted[(int)(sorted.Count * 0.95)].TotalMilliseconds;
+            var p99 = sorted[(int)(sorted.Count * 0.99)].TotalMilliseconds;
+            
+            return (avg, p50, p95, p99);
+        }
+    }
 }
 
 /// <summary>
@@ -423,6 +490,8 @@ public class SymbolState
     private readonly object _lock = new();
     private readonly List<(decimal Price, decimal Size, DateTime Time)> _recentTrades = new();
     private readonly List<decimal> _historicalPrintsPerSecond = new();
+    private readonly List<decimal> _spreadHistory = new();
+    private const int MaxSpreadHistorySize = 200;
 
     // Quote state
     public decimal BidPrice { get; private set; }
@@ -437,6 +506,10 @@ public class SymbolState
     private DateTime? _vwapReclaimStart;
     private int _vwapReclaimPrints;
 
+    // Relative volume tracking
+    private decimal _cumulativeDailyVolume = 0;
+    public decimal TwentyDayAvgVolume { get; set; }
+
     public void UpdateQuote(decimal bidPrice, decimal askPrice, decimal bidSize, decimal askSize)
     {
         lock (_lock)
@@ -445,6 +518,17 @@ public class SymbolState
             AskPrice = askPrice;
             BidSize = bidSize;
             AskSize = askSize;
+            
+            // Track spread history for percentile calculation
+            if (askPrice > 0 && bidPrice > 0 && bidPrice < askPrice)
+            {
+                var spread = (askPrice - bidPrice) / askPrice;
+                _spreadHistory.Add(spread);
+                if (_spreadHistory.Count > MaxSpreadHistorySize)
+                {
+                    _spreadHistory.RemoveAt(0);
+                }
+            }
         }
     }
 
@@ -457,6 +541,9 @@ public class SymbolState
             // Update VWAP
             _cumulativeVwapNumerator += price * size;
             _cumulativeVolume += size;
+            
+            // Update daily volume
+            _cumulativeDailyVolume += size;
 
             // Prune old trades outside window
             var cutoff = timestamp.AddSeconds(-windowSeconds);
@@ -563,6 +650,70 @@ public class SymbolState
             };
 
             return (orderBook, tapeData, vwapData, spread);
+        }
+    }
+
+    /// <summary>
+    /// Get the 95th percentile spread from rolling history.
+    /// </summary>
+    public decimal? GetSpread95thPercentile()
+    {
+        lock (_lock)
+        {
+            if (_spreadHistory.Count < 30) return null;
+            
+            var sorted = _spreadHistory.OrderBy(s => s).ToList();
+            var index = (int)(sorted.Count * 0.95);
+            return sorted[index];
+        }
+    }
+
+    /// <summary>
+    /// Get the current bid-ask spread as a percentage.
+    /// </summary>
+    public decimal? GetCurrentSpread()
+    {
+        lock (_lock)
+        {
+            if (BidPrice <= 0 || AskPrice <= 0 || BidPrice >= AskPrice)
+                return null;
+                
+            return (AskPrice - BidPrice) / AskPrice;
+        }
+    }
+
+    /// <summary>
+    /// Get the most recent trade price.
+    /// </summary>
+    public decimal? GetCurrentPrice()
+    {
+        lock (_lock)
+        {
+            if (_recentTrades.Count == 0) return null;
+            return _recentTrades[^1].Price;
+        }
+    }
+
+    /// <summary>
+    /// Get relative volume (current day vs 20-day average).
+    /// </summary>
+    public decimal? GetRelativeVolume()
+    {
+        lock (_lock)
+        {
+            if (TwentyDayAvgVolume <= 0) return null;
+            return _cumulativeDailyVolume / TwentyDayAvgVolume;
+        }
+    }
+
+    /// <summary>
+    /// Reset daily volume counter (call at market open).
+    /// </summary>
+    public void ResetDailyVolume()
+    {
+        lock (_lock)
+        {
+            _cumulativeDailyVolume = 0;
         }
     }
 

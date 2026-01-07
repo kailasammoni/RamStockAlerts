@@ -12,6 +12,7 @@ public class UniverseBuilder
     private readonly IConfiguration _configuration;
     private readonly IMemoryCache _cache;
     private readonly ILogger<UniverseBuilder> _logger;
+    private readonly AlpacaStreamClient _alpacaClient;
 
     private const string UniverseCacheKey = "universe.active";
     private static readonly TimeSpan UniverseTtl = TimeSpan.FromMinutes(5);
@@ -22,12 +23,14 @@ public class UniverseBuilder
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         IMemoryCache cache,
-        ILogger<UniverseBuilder> logger)
+        ILogger<UniverseBuilder> logger,
+        AlpacaStreamClient alpacaClient)
     {
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _cache = cache;
         _logger = logger;
+        _alpacaClient = alpacaClient;
     }
 
     public async Task<IReadOnlyCollection<string>> GetActiveUniverseAsync(CancellationToken cancellationToken)
@@ -113,18 +116,54 @@ public class UniverseBuilder
                     !t.Ticker.Contains('.') &&
                     
                     // Exclude preferred shares (have dash like "STOCK-A")
-                    !t.Ticker.Contains('-') &&
-                    
-                    // TODO: Filter by price range (10-80) - requires real-time price data
-                    // TODO: Filter by relative volume > 2 - requires volume comparison
-                    // TODO: Filter by spread < 0.05 - requires bid/ask data
-                    // TODO: Filter by float < 150M - requires shares outstanding data
-                    // TODO: Exclude halted symbols - requires trading status check
-                    
-                    true // Placeholder until data sources available
-                )
+                    !t.Ticker.Contains('-'))
                 .Select(t => t.Ticker!.ToUpperInvariant())
                 .Distinct()
+                .Where(ticker =>
+                {
+                    // Get real-time state for this ticker
+                    var state = _alpacaClient.GetSymbolState(ticker);
+                    if (state == null)
+                    {
+                        _logger.LogDebug("{Ticker} filtered: No real-time data available", ticker);
+                        return false; // No real-time data yet
+                    }
+                    
+                    // Filter by price (10-80)
+                    var price = state.GetCurrentPrice();
+                    if (!price.HasValue || price.Value < minPrice || price.Value > maxPrice)
+                    {
+                        if (price.HasValue)
+                            _logger.LogDebug("{Ticker} filtered: Price ${Price} outside range ${Min}-${Max}", ticker, price.Value, minPrice, maxPrice);
+                        return false;
+                    }
+                    
+                    // Filter by spread (< 0.05)
+                    var spread = state.GetCurrentSpread();
+                    if (!spread.HasValue || spread.Value > maxSpread)
+                    {
+                        if (spread.HasValue)
+                            _logger.LogDebug("{Ticker} filtered: Spread {Spread:P2} exceeds max {MaxSpread:P2}", ticker, spread.Value, maxSpread);
+                        return false;
+                    }
+                    
+                    // Filter by relative volume (> 2)
+                    var relVol = state.GetRelativeVolume();
+                    if (!relVol.HasValue || relVol.Value < minRelVol)
+                    {
+                        if (relVol.HasValue)
+                            _logger.LogDebug("{Ticker} filtered: RelVol {RelVol:F2} below min {MinRelVol}", ticker, relVol.Value, minRelVol);
+                        return false;
+                    }
+                    
+                    // TODO: Filter by float < 150M - requires shares outstanding data from Polygon reference API
+                    // This needs a separate API call to /v3/reference/tickers/{ticker} which is not real-time
+                    
+                    // TODO: Exclude halted symbols - requires trading status check
+                    // Alpaca IEX feed doesn't provide halt status directly
+                    
+                    return true;
+                })
                 .Take(maxTickers)
                 .ToList();
 

@@ -10,8 +10,14 @@ using RamStockAlerts.Services;
 namespace RamStockAlerts.Feeds;
 
 /// <summary>
-/// Background service that polls Polygon.io REST API for market data
-/// and generates trade signals when liquidity conditions are met.
+/// Background service that polls Polygon.io REST API for market data.
+/// 
+/// ⚠️ DEVELOPMENT/TESTING ONLY ⚠️
+/// This client uses daily aggregate data and estimated spreads, which cannot
+/// detect the millisecond-level liquidity imbalances required for production signals.
+/// 
+/// Production deployments MUST use AlpacaStreamClient for real-time order book data.
+/// Signals generated from this client should be marked as low-confidence.
 /// </summary>
 public class PolygonRestClient : BackgroundService
 {
@@ -60,6 +66,10 @@ public class PolygonRestClient : BackgroundService
         // Log the API key status for debugging
         _logger.LogInformation("Polygon API Key configured: {HasKey}, Length: {Length}", 
             !string.IsNullOrEmpty(_apiKey), _apiKey?.Length ?? 0);
+
+        _logger.LogWarning(
+            "PolygonRestClient is active. This is a FALLBACK CLIENT for development/testing. " +
+            "Production signals require real-time data from AlpacaStreamClient.");
 
         // Retry policy with exponential backoff
         _retryPolicy = Policy
