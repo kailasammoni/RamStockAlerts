@@ -30,7 +30,7 @@ public class PolygonRestClient : BackgroundService
 
     private readonly string _apiKey;
     private IReadOnlyCollection<string> _tickers;
-    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(5);
+    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(60); // Poll once per minute to respect API quotas
 
     public PolygonRestClient(
         IHttpClientFactory httpClientFactory,
@@ -187,11 +187,24 @@ public class PolygonRestClient : BackgroundService
             // Save using scoped service
             using var scope = _serviceProvider.CreateScope();
             var signalService = scope.ServiceProvider.GetRequiredService<SignalService>();
-            await signalService.SaveSignalAsync(signal);
+            var savedSignal = await signalService.SaveSignalAsync(signal);
+            
+            if (savedSignal != null)
+            {
+                _logger.LogInformation("✅ Signal saved and alert sent for {Ticker}", ticker);
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Signal for {Ticker} was not saved (throttled or circuit breaker active)", ticker);
+            }
         }
         catch (InvalidOperationException ex)
         {
-            _logger.LogDebug("Signal rejected: {Message}", ex.Message);
+            _logger.LogWarning("Signal rejected for {Ticker}: {Message}", ticker, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Failed to save signal for {Ticker}", ticker);
         }
         finally
         {

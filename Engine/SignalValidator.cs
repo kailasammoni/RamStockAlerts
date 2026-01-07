@@ -92,8 +92,8 @@ public class SignalValidator
     /// Determines if a score represents a valid liquidity setup.
     /// </summary>
     /// <param name="score">The liquidity score</param>
-    /// <returns>True if score >= 7.5</returns>
-    public bool IsValidSetup(decimal score) => score >= 7.5m;
+    /// <returns>True if score >= threshold (lowered to 5.0 for testing)</returns>
+    public bool IsValidSetup(decimal score) => score >= 5.0m;
 
     /// <summary>
     /// Time-aware validation with optional anti-spoofing heuristics.
@@ -132,20 +132,20 @@ public class SignalValidator
         var eastern = TimeZoneInfo.ConvertTimeFromUtc(utcNow, _eastern);
         var minuteOfDay = eastern.Hour * 60 + eastern.Minute;
 
-        // 09:30-11:30 high confidence window
+        // 09:30-11:30 high confidence window (lowered for testing)
         if (minuteOfDay is >= 570 and <= 690)
         {
-            return 7.0m;
+            return 5.0m;
         }
 
         // 12:00-14:00 low-confidence window (require higher score)
         if (minuteOfDay is >= 720 and <= 840)
         {
-            return 8.0m;
+            return 6.0m;
         }
 
-        // Other allowed times
-        return 7.5m;
+        // Other allowed times (lowered for testing)
+        return 5.5m;
     }
 
     private static TimeZoneInfo TryGetEasternTimeZone()

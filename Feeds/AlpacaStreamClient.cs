@@ -30,17 +30,13 @@ public class AlpacaStreamClient : BackgroundService
     private readonly decimal _zScoreThreshold;
     private readonly int _vwapHoldSeconds;
     private readonly int _vwapHoldPrints;
-    private readonly int _pingIntervalSeconds;
-    private readonly int _pongTimeoutSeconds;
 
     private ClientWebSocket? _webSocket;
     private IReadOnlyCollection<string> _subscribedSymbols = Array.Empty<string>();
     private DateTime _lastMessageTime = DateTime.UtcNow;
-    private DateTime _lastPongTime = DateTime.UtcNow;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 10;
     private const int FeedLagThresholdSeconds = 5;
-    private CancellationTokenSource? _pingCts;
 
     // Per-symbol market state
     private readonly ConcurrentDictionary<string, SymbolState> _symbolStates = new();
@@ -69,8 +65,6 @@ public class AlpacaStreamClient : BackgroundService
         _zScoreThreshold = configuration.GetValue("Alpaca:ZScoreThreshold", 2.0m);
         _vwapHoldSeconds = configuration.GetValue("Alpaca:VwapHoldSeconds", 5);
         _vwapHoldPrints = configuration.GetValue("Alpaca:VwapHoldPrints", 10);
-        _pingIntervalSeconds = configuration.GetValue("Alpaca:PingIntervalSeconds", 30);
-        _pongTimeoutSeconds = configuration.GetValue("Alpaca:PongTimeoutSeconds", 10);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -144,12 +138,10 @@ public class AlpacaStreamClient : BackgroundService
 
         _reconnectAttempts = 0;
         _lastMessageTime = DateTime.UtcNow;
-        _lastPongTime = DateTime.UtcNow;
 
-        // Start ping/pong heartbeat
-        _pingCts = new CancellationTokenSource();
-        var pingToken = CancellationTokenSource.CreateLinkedTokenSource(_pingCts.Token, stoppingToken).Token;
-        _ = Task.Run(() => SendPingHeartbeatAsync(pingToken), pingToken);
+        // Alpaca doesn't use standard WebSocket ping/pong frames
+        // Instead, we rely on the feed lag monitor to detect dead connections
+        // The server sends regular messages, so _lastMessageTime tracks connection health
 
         // Start feed lag monitor
         _ = Task.Run(() => MonitorFeedLagAsync(stoppingToken), stoppingToken);
@@ -173,14 +165,6 @@ public class AlpacaStreamClient : BackgroundService
             {
                 _logger.LogWarning("WebSocket closed by server");
                 break;
-            }
-
-            if (result.MessageType == WebSocketMessageType.Binary)
-            {
-                // Handle pong response
-                _lastPongTime = DateTime.UtcNow;
-                _logger.LogDebug("Received pong from server");
-                continue;
             }
 
             _lastMessageTime = DateTime.UtcNow;
@@ -375,52 +359,16 @@ public class AlpacaStreamClient : BackgroundService
                 _logger.LogWarning("Feed lag detected: {Seconds}s since last message", lag.TotalSeconds);
                 _circuitBreaker.Suspend(TimeSpan.FromMinutes(1), $"Feed lag {lag.TotalSeconds:F1}s");
             }
-
-            // Check for pong timeout (dead connection detection)
-            var pongLag = DateTime.UtcNow - _lastPongTime;
-            if (pongLag.TotalSeconds > _pongTimeoutSeconds + _pingIntervalSeconds)
-            {
-                _logger.LogError("Pong timeout detected: {Seconds}s since last pong. Connection may be dead.", pongLag.TotalSeconds);
-                _webSocket?.Abort();
-                break;
-            }
         }
     }
 
-    private async Task SendPingHeartbeatAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested && _webSocket?.State == WebSocketState.Open)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(_pingIntervalSeconds), ct);
-
-                if (_webSocket?.State == WebSocketState.Open)
-                {
-                    // Send WebSocket ping frame
-                    await _webSocket.SendAsync(
-                        new ArraySegment<byte>(new byte[0]),
-                        WebSocketMessageType.Binary,
-                        true,
-                        ct);
-                    
-                    _logger.LogDebug("Sent ping to server");
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Error sending ping");
-                break;
-            }
-        }
-    }
+    // Removed SendPingHeartbeatAsync - Alpaca doesn't support standard WebSocket ping/pong frames
+    // The "400 invalid syntax" error was caused by sending binary ping frames that Alpaca tried to parse as JSON
+    // Connection health is monitored via MonitorFeedLagAsync checking _lastMessageTime instead
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("AlpacaStreamClient stopping...");
-
-        // Cancel ping heartbeat
-        _pingCts?.Cancel();
 
         // Send unsubscribe message if connected
         if (_webSocket?.State == WebSocketState.Open && _subscribedSymbols.Any())
@@ -461,7 +409,6 @@ public class AlpacaStreamClient : BackgroundService
         }
 
         _webSocket?.Dispose();
-        _pingCts?.Dispose();
 
         await base.StopAsync(cancellationToken);
         _logger.LogInformation("AlpacaStreamClient stopped");

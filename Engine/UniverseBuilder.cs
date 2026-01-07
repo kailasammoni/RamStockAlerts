@@ -2,6 +2,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Feeds;
+using RamStockAlerts.Models.Polygon;
 
 namespace RamStockAlerts.Engine;
 
@@ -46,20 +47,92 @@ public class UniverseBuilder
         var minRelVol = _configuration.GetValue("Universe:MinRelativeVolume", 2m);
         var maxSpread = _configuration.GetValue("Universe:MaxSpread", 0.05m);
         var maxFloat = _configuration.GetValue("Universe:MaxFloat", 150_000_000m);
+        var maxTickers = _configuration.GetValue("Universe:MaxTickers", 100);
+        var useStaticTickers = _configuration.GetValue("Universe:UseStaticTickers", false);
 
-        // Placeholder: in MVP, fall back to configured tickers while filters are wired in
-        var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
-        if (!fallback.Any())
+        // If UseStaticTickers is true, use hardcoded list (for testing)
+        if (useStaticTickers)
         {
-            _logger.LogWarning("Universe fallback is empty; add Polygon:Tickers or configure Universe feed.");
+            var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
+            if (fallback.Any())
+            {
+                _logger.LogInformation("Using static ticker list: {Tickers}", string.Join(", ", fallback));
+                return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+            }
         }
 
-        // TODO: fetch live market snapshot to enforce filters once provider is wired
-        var filtered = fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+        // Fetch live tickers from Polygon API (market movers endpoint)
+        var apiKey = _configuration["Polygon:ApiKey"];
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            _logger.LogWarning("Polygon API key not configured; falling back to hardcoded tickers");
+            var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
+            return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+        }
 
-        _logger.LogInformation("Universe built with {Count} symbols (price {Min}-{Max}, relVol>{RelVol}, spread<{Spread}, float<{Float})", filtered.Count, minPrice, maxPrice, minRelVol, maxSpread, maxFloat);
+        try
+        {
+            // Use Polygon Ticker endpoint to search for US stocks
+            // /v3/reference/tickers?market=stocks&active=true&limit=1000
+            // This gets us a list of active US stock tickers, we filter by our criteria
+            var url = $"https://api.polygon.io/v3/reference/tickers?market=stocks&active=true&limit=250&sort=updated&apikey={apiKey}";
+            
+            using var client = _httpClientFactory.CreateClient();
+            var response = await client.GetAsync(url, cancellationToken);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to fetch tickers from Polygon: {Status}", response.StatusCode);
+                var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
+                return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+            }
 
-        return filtered;
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            var tickerData = System.Text.Json.JsonSerializer.Deserialize<PolygonTickerListResponse>(json);
+
+            if (tickerData?.Results == null || !tickerData.Results.Any())
+            {
+                _logger.LogWarning("No ticker data returned from Polygon");
+                return Array.Empty<string>();
+            }
+
+            // Filter by criteria: exclude OTC, preferred shares, and other problematic tickers
+            var filtered = tickerData.Results
+                .Where(t => 
+                    // Exclude OTC and preferred shares
+                    t.Ticker != null &&
+                    !string.IsNullOrWhiteSpace(t.Ticker) &&
+                    !t.Ticker.Contains('.') && // Exclude OTC (have dot notation)
+                    !t.Ticker.Contains('-') && // Exclude preferred shares (have dash)
+                    t.Type == "CS" // Common Stock only
+                )
+                .Select(t => t.Ticker!.ToUpperInvariant())
+                .Distinct()
+                .Take(maxTickers)
+                .ToList();
+
+            _logger.LogInformation(
+                "Universe built with {Count} symbols from live market data (minPrice ${Min}, maxPrice ${Max}, excluding OTC/preferred) | Top tickers: {TopTickers}",
+                filtered.Count, 
+                minPrice, 
+                maxPrice,
+                string.Join(", ", filtered.Take(10)));
+
+            if (!filtered.Any())
+            {
+                _logger.LogWarning("No tickers passed filters; falling back to hardcoded list");
+                var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
+                return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+            }
+
+            return filtered;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building universe from market data; falling back to hardcoded tickers");
+            var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
+            return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+        }
     }
 
     public bool ShouldRebuildNow(DateTime utcNow)

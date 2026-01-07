@@ -81,9 +81,141 @@ public class PolygonQuote
 }
 
 /// <summary>
-/// Response from Polygon.io /v3/snapshot endpoint
+/// Response from Polygon.io /v3/reference/tickers endpoint
+/// </summary>
+public class PolygonTickerListResponse
+{
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("results")]
+    public List<PolygonTickerInfo>? Results { get; set; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+
+    [JsonPropertyName("next_url")]
+    public string? NextUrl { get; set; }
+}
+
+public class PolygonTickerInfo
+{
+    [JsonPropertyName("ticker")]
+    public string? Ticker { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("market")]
+    public string? Market { get; set; }
+
+    [JsonPropertyName("locale")]
+    public string? Locale { get; set; }
+
+    [JsonPropertyName("primary_exchange")]
+    public string? PrimaryExchange { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; set; }
+
+    [JsonPropertyName("currency_name")]
+    public string? CurrencyName { get; set; }
+
+    [JsonPropertyName("updated")]
+    public string? Updated { get; set; }
+}
+
+/// <summary>
+/// Response from Polygon.io /v3/snapshot/stocks endpoint (live market data)
 /// </summary>
 public class PolygonSnapshotResponse
+{
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("results")]
+    public List<PolygonStockSnapshot>? Results { get; set; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+
+    [JsonPropertyName("next_url")]
+    public string? NextUrl { get; set; }
+}
+
+/// <summary>
+/// Individual stock snapshot from /v3/snapshot/stocks
+/// </summary>
+public class PolygonStockSnapshot
+{
+    [JsonPropertyName("ticker")]
+    public string? Ticker { get; set; }
+
+    [JsonPropertyName("lastTrade")]
+    public PolygonSnapshotTrade? LastTrade { get; set; }
+
+    [JsonPropertyName("lastQuote")]
+    public PolygonSnapshotQuote? LastQuote { get; set; }
+
+    [JsonPropertyName("bid")]
+    public PolygonBidAsk? Bid { get; set; }
+
+    [JsonPropertyName("ask")]
+    public PolygonBidAsk? Ask { get; set; }
+
+    [JsonPropertyName("preMarket")]
+    public PolygonMarketSession? PreMarket { get; set; }
+
+    [JsonPropertyName("postMarket")]
+    public PolygonMarketSession? PostMarket { get; set; }
+
+    [JsonPropertyName("regularMarket")]
+    public PolygonMarketSession? RegularMarket { get; set; }
+
+    [JsonPropertyName("updated")]
+    public long Updated { get; set; }
+}
+
+public class PolygonBidAsk
+{
+    [JsonPropertyName("price")]
+    public decimal Price { get; set; }
+
+    [JsonPropertyName("size")]
+    public double Size { get; set; }
+
+    [JsonPropertyName("exchange")]
+    public int Exchange { get; set; }
+
+    [JsonPropertyName("timeframe")]
+    public string? Timeframe { get; set; }
+}
+
+public class PolygonMarketSession
+{
+    [JsonPropertyName("change")]
+    public decimal Change { get; set; }
+
+    [JsonPropertyName("changePercent")]
+    public decimal ChangePercent { get; set; }
+
+    [JsonPropertyName("volume")]
+    public double? Volume { get; set; }
+
+    [JsonPropertyName("vwap")]
+    public decimal? Vwap { get; set; }
+
+    [JsonPropertyName("updated")]
+    public long Updated { get; set; }
+}
+
+/// <summary>
+/// Legacy snapshot response (kept for backward compatibility)
+/// </summary>
+public class PolygonSnapshotResponseLegacy
 {
     [JsonPropertyName("status")]
     public string? Status { get; set; }
