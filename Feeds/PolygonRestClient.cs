@@ -23,13 +23,14 @@ public class PolygonRestClient : BackgroundService
     private readonly ILogger<PolygonRestClient> _logger;
     private readonly UniverseBuilder _universeBuilder;
     private readonly CircuitBreakerService _circuitBreaker;
+    private readonly ApiQuotaTracker _quotaTracker;
     private readonly AsyncRetryPolicy<HttpResponseMessage> _retryPolicy;
 
     private readonly Dictionary<string, decimal> _lastSpreads = new();
 
     private readonly string _apiKey;
     private IReadOnlyCollection<string> _tickers;
-    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(5); // target sub-second polling where possible
+    private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(5);
 
     public PolygonRestClient(
         IHttpClientFactory httpClientFactory,
@@ -39,7 +40,8 @@ public class PolygonRestClient : BackgroundService
         IConfiguration configuration,
         ILogger<PolygonRestClient> logger,
         UniverseBuilder universeBuilder,
-        CircuitBreakerService circuitBreaker)
+        CircuitBreakerService circuitBreaker,
+        ApiQuotaTracker quotaTracker)
     {
         _httpClientFactory = httpClientFactory;
         _validator = validator;
@@ -49,6 +51,7 @@ public class PolygonRestClient : BackgroundService
         _logger = logger;
         _universeBuilder = universeBuilder;
         _circuitBreaker = circuitBreaker;
+        _quotaTracker = quotaTracker;
 
         _apiKey = configuration["Polygon:ApiKey"] ?? "";
         _tickers = configuration.GetSection("Polygon:Tickers").Get<List<string>>() 
@@ -198,11 +201,30 @@ public class PolygonRestClient : BackgroundService
 
     private async Task<PolygonAggregate?> FetchPreviousDayAggregateAsync(string ticker, CancellationToken stoppingToken)
     {
+        // Check quota before making request
+        if (!_quotaTracker.CanMakeRequest())
+        {
+            var delay = _quotaTracker.GetRequiredDelay();
+            if (delay > TimeSpan.Zero)
+            {
+                _logger.LogWarning("Rate limit approaching, delaying request by {Delay}ms", delay.TotalMilliseconds);
+                await Task.Delay(delay, stoppingToken);
+            }
+            else
+            {
+                _logger.LogWarning("Daily quota exceeded, skipping request for {Ticker}", ticker);
+                return null;
+            }
+        }
+
         var url = $"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={_apiKey}";
 
         using var httpClient = _httpClientFactory.CreateClient("Polygon");
         var response = await _retryPolicy.ExecuteAsync(async () =>
             await httpClient.GetAsync(url, stoppingToken));
+
+        // Record the request for quota tracking
+        _quotaTracker.RecordRequest();
 
         if (!response.IsSuccessStatusCode)
         {

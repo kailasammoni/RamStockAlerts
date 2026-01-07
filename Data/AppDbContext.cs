@@ -11,6 +11,7 @@ public class AppDbContext : DbContext
 
     public DbSet<TradeSignal> TradeSignals => Set<TradeSignal>();
     public DbSet<SignalLifecycle> SignalLifecycles => Set<SignalLifecycle>();
+    public DbSet<EventStoreEntry> EventStoreEntries => Set<EventStoreEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -36,6 +37,19 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Reason).HasMaxLength(512);
             entity.HasIndex(e => e.SignalId);
             entity.HasIndex(e => e.OccurredAt);
+        });
+
+        modelBuilder.Entity<EventStoreEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.AggregateId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.EventType).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Payload).IsRequired();
+            entity.Property(e => e.CorrelationId).HasMaxLength(100);
+            entity.HasIndex(e => e.AggregateId);
+            entity.HasIndex(e => e.EventType);
+            entity.HasIndex(e => e.Timestamp);
+            entity.HasIndex(e => e.CorrelationId);
         });
     }
 }
