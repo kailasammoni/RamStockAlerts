@@ -182,7 +182,8 @@ public class PolygonRestClient : BackgroundService
         // Generate trade signal
         try
         {
-            var signal = _blueprint.Generate(ticker, aggregate.Close, aggregate.Vwap, spread, score);
+            // Use Close as both lastPrice and lastAsk (Polygon aggregate doesn't have bid/ask)
+            var signal = _blueprint.Generate(ticker, aggregate.Close, aggregate.Close, aggregate.Vwap, spread, score);
 
             // Save using scoped service
             using var scope = _serviceProvider.CreateScope();

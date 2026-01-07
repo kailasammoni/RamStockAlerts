@@ -331,7 +331,7 @@ public class AlpacaStreamClient : BackgroundService
         try
         {
             var score = _validator.CalculateLiquidityScore(orderBook, tapeData, vwapData, spread);
-            var signal = _blueprint.Generate(symbol, price, vwapData.VwapPrice, spread, score);
+            var signal = _blueprint.Generate(symbol, price, state.AskPrice, vwapData.VwapPrice, spread, score);
 
             using var scope = _serviceProvider.CreateScope();
             var signalService = scope.ServiceProvider.GetRequiredService<SignalService>();
