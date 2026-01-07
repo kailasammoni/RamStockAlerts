@@ -1,0 +1,46 @@
+@RamStockAlerts_HostAddress = http://localhost:5043
+
+### Get all recent signals
+GET {{RamStockAlerts_HostAddress}}/api/signals
+Accept: application/json
+
+### Get signals for specific ticker
+GET {{RamStockAlerts_HostAddress}}/api/signals/AAPL
+Accept: application/json
+
+### Create a perfect setup signal (green in Discord)
+POST {{RamStockAlerts_HostAddress}}/api/signals
+Content-Type: application/json
+
+{
+  "ticker": "AAPL",
+  "entry": 185.50,
+  "stop": 184.30,
+  "target": 188.00,
+  "score": 9.2
+}
+
+### Create a marginal setup signal (yellow in Discord)
+POST {{RamStockAlerts_HostAddress}}/api/signals
+Content-Type: application/json
+
+{
+  "ticker": "TSLA",
+  "entry": 245.00,
+  "stop": 243.50,
+  "target": 248.50,
+  "score": 7.8
+}
+
+### Create a test signal with timestamp
+POST {{RamStockAlerts_HostAddress}}/api/signals
+Content-Type: application/json
+
+{
+  "ticker": "NVDA",
+  "entry": 480.00,
+  "stop": 475.00,
+  "target": 490.00,
+  "score": 8.5,
+  "timestamp": "2026-01-06T14:30:00Z"
+}
