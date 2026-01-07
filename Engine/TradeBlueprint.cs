@@ -8,11 +8,11 @@ namespace RamStockAlerts.Engine;
 /// </summary>
 public class TradeBlueprint
 {
-    private readonly AlpacaStreamClient _alpacaClient;
+    private readonly IServiceProvider _serviceProvider;
 
-    public TradeBlueprint(AlpacaStreamClient alpacaClient)
+    public TradeBlueprint(IServiceProvider serviceProvider)
     {
-        _alpacaClient = alpacaClient;
+        _serviceProvider = serviceProvider;
     }
 
     /// <summary>
@@ -53,7 +53,8 @@ public class TradeBlueprint
         }
 
         // Validate spread against rolling 95th percentile
-        var symbolState = _alpacaClient.GetSymbolState(ticker);
+        var alpacaClient = _serviceProvider.GetRequiredService<AlpacaStreamClient>();
+        var symbolState = alpacaClient.GetSymbolState(ticker);
         if (symbolState != null)
         {
             var percentile95 = symbolState.GetSpread95thPercentile();

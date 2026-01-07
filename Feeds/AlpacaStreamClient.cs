@@ -18,9 +18,7 @@ public class AlpacaStreamClient : BackgroundService
     private readonly IConfiguration _configuration;
     private readonly ILogger<AlpacaStreamClient> _logger;
     private readonly IServiceProvider _serviceProvider;
-    private readonly UniverseBuilder _universeBuilder;
     private readonly SignalValidator _validator;
-    private readonly TradeBlueprint _blueprint;
     private readonly CircuitBreakerService _circuitBreaker;
 
     private readonly string _apiKey;
@@ -48,17 +46,13 @@ public class AlpacaStreamClient : BackgroundService
         IConfiguration configuration,
         ILogger<AlpacaStreamClient> logger,
         IServiceProvider serviceProvider,
-        UniverseBuilder universeBuilder,
         SignalValidator validator,
-        TradeBlueprint blueprint,
         CircuitBreakerService circuitBreaker)
     {
         _configuration = configuration;
         _logger = logger;
         _serviceProvider = serviceProvider;
-        _universeBuilder = universeBuilder;
         _validator = validator;
-        _blueprint = blueprint;
         _circuitBreaker = circuitBreaker;
 
         _apiKey = configuration["Alpaca:Key"] ?? "";
@@ -79,7 +73,8 @@ public class AlpacaStreamClient : BackgroundService
         }
 
         // Initial universe load
-        _subscribedSymbols = await _universeBuilder.GetActiveUniverseAsync(stoppingToken);
+        var universeBuilder = _serviceProvider.GetRequiredService<UniverseBuilder>();
+        _subscribedSymbols = await universeBuilder.GetActiveUniverseAsync(stoppingToken);
 
         _logger.LogInformation("AlpacaStreamClient starting with {Count} symbols", _subscribedSymbols.Count);
 
@@ -153,9 +148,10 @@ public class AlpacaStreamClient : BackgroundService
         while (_webSocket.State == WebSocketState.Open && !stoppingToken.IsCancellationRequested)
         {
             // Check for universe rebuild
-            if (_universeBuilder.ShouldRebuildNow(DateTime.UtcNow))
+            var universeBuilder = _serviceProvider.GetRequiredService<UniverseBuilder>();
+            if (universeBuilder.ShouldRebuildNow(DateTime.UtcNow))
             {
-                var newUniverse = await _universeBuilder.BuildUniverseAsync(stoppingToken);
+                var newUniverse = await universeBuilder.BuildUniverseAsync(stoppingToken);
                 if (!newUniverse.SequenceEqual(_subscribedSymbols))
                 {
                     await ResubscribeAsync(newUniverse, stoppingToken);
@@ -336,7 +332,8 @@ public class AlpacaStreamClient : BackgroundService
         try
         {
             var score = _validator.CalculateLiquidityScore(orderBook, tapeData, vwapData, spread);
-            var signal = _blueprint.Generate(symbol, price, state.AskPrice, vwapData.VwapPrice, spread, score);
+            var blueprint = _serviceProvider.GetRequiredService<TradeBlueprint>();
+            var signal = blueprint.Generate(symbol, price, state.AskPrice, vwapData.VwapPrice, spread, score);
 
             using var scope = _serviceProvider.CreateScope();
             var signalService = scope.ServiceProvider.GetRequiredService<SignalService>();

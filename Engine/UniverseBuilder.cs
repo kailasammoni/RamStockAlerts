@@ -13,6 +13,7 @@ public class UniverseBuilder
     private readonly IMemoryCache _cache;
     private readonly ILogger<UniverseBuilder> _logger;
     private readonly AlpacaStreamClient _alpacaClient;
+    private readonly SemaphoreSlim _universeBuildLock = new(1, 1);
 
     private const string UniverseCacheKey = "universe.active";
     private const string FloatCacheKeyPrefix = "float.";
@@ -41,9 +42,23 @@ public class UniverseBuilder
             return cached;
         }
 
-        var universe = await BuildUniverseAsync(cancellationToken);
-        _cache.Set(UniverseCacheKey, universe, UniverseTtl);
-        return universe;
+        await _universeBuildLock.WaitAsync(cancellationToken);
+        try
+        {
+            // Double-check cache after acquiring the lock to avoid duplicate builds
+            if (_cache.TryGetValue(UniverseCacheKey, out cached) && cached is not null)
+            {
+                return cached;
+            }
+
+            var universe = await BuildUniverseAsync(cancellationToken);
+            _cache.Set(UniverseCacheKey, universe, UniverseTtl);
+            return universe;
+        }
+        finally
+        {
+            _universeBuildLock.Release();
+        }
     }
 
     public async Task<IReadOnlyCollection<string>> BuildUniverseAsync(CancellationToken cancellationToken)
@@ -79,16 +94,17 @@ public class UniverseBuilder
         try
         {
             // Use Polygon Ticker endpoint to search for US stocks
-            // /v3/reference/tickers?market=stocks&active=true&limit=1000
-            // This gets us a list of active US stock tickers, we filter by our criteria
-            var url = $"https://api.polygon.io/v3/reference/tickers?market=stocks&active=true&limit=250&sort=updated&apikey={apiKey}";
+            // /v3/reference/tickers?market=stocks&type=CS filters for Common Stocks only (excludes ETFs, ADRs, warrants)
+            // Note: exchange parameter only accepts single value (XNAS or XNYS), not comma-separated
+            var url = $"https://api.polygon.io/v3/reference/tickers?market=stocks&type=CS&active=true&exchange=XNAS&limit=1000&apikey={apiKey}";
             
             using var client = _httpClientFactory.CreateClient();
             var response = await client.GetAsync(url, cancellationToken);
             
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Failed to fetch tickers from Polygon: {Status}", response.StatusCode);
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning("Failed to fetch tickers from Polygon: {Status} - {Error}", response.StatusCode, errorBody);
                 var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
                 return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
             }
@@ -103,15 +119,12 @@ public class UniverseBuilder
             }
 
             // Filter by criteria: price 10-80, relative volume > 2, spread < 0.05, float < 150M
-            // Exclude ETFs, ADRs, OTC, preferred shares, and halted symbols
+            // Exclude OTC and preferred shares (API already filtered for type=CS)
             var filtered = tickerData.Results
                 .Where(t => 
                     // Basic validation
                     t.Ticker != null &&
                     !string.IsNullOrWhiteSpace(t.Ticker) &&
-                    
-                    // Type filters: Common Stock only (CS), exclude ETFs, ADRs
-                    t.Type == "CS" &&
                     
                     // Exclude OTC (have dot notation like "STOCK.OTC")
                     !t.Ticker.Contains('.') &&
@@ -255,6 +268,14 @@ public class UniverseBuilder
             
             var sharesOutstanding = data?.Results?.SharesOutstanding 
                                  ?? data?.Results?.WeightedSharesOutstanding;
+
+            // Log resolved shares outstanding for visibility
+            _logger.LogInformation(
+                "Polygon float for {Ticker}: SharesOutstanding={SharesOutstanding} (~{FloatMillions}M); WeightedSharesOutstanding={WeightedSharesOutstanding}",
+                ticker,
+                sharesOutstanding,
+                sharesOutstanding.HasValue ? sharesOutstanding.Value / 1_000_000m : null,
+                data?.Results?.WeightedSharesOutstanding);
             
             // Cache for 24 hours
             if (sharesOutstanding.HasValue)
@@ -286,6 +307,9 @@ public class UniverseBuilder
             return false;
         }
         
+        // Line 265: log decision context before returning
+        _logger.LogInformation("Universe rebuild check at {Time} ET -> {RebuildNow}", eastern, eastern.Minute % 5 == 0);
+
         // Rebuild every 5 minutes (00, 05, 10, 15, etc.)
         return eastern.Minute % 5 == 0;
     }
