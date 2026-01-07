@@ -140,17 +140,20 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Ensure database is created
-using (var scope = app.Services.CreateScope())
+// Ensure database is created (skip in test environment)
+if (!app.Environment.IsEnvironment("Testing"))
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    if (usePostgreSQL)
+    using (var scope = app.Services.CreateScope())
     {
-        await db.Database.MigrateAsync();
-    }
-    else
-    {
-        db.Database.EnsureCreated();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        if (usePostgreSQL)
+        {
+            await db.Database.MigrateAsync();
+        }
+        else
+        {
+            db.Database.EnsureCreated();
+        }
     }
 }
 
@@ -214,3 +217,6 @@ finally
 {
     Log.CloseAndFlush();
 }
+
+// Make the implicit Program class public for testing
+public partial class Program { }
