@@ -12,6 +12,7 @@ public class ApiQuotaTracker
     private readonly int _quotaPerDay;
     
     private readonly ConcurrentQueue<DateTime> _requestTimestamps = new();
+    private int _recentRequestCount;
     private int _dailyRequestCount;
     private DateTime _dailyResetTime;
     private readonly object _lock = new();
@@ -53,13 +54,14 @@ public class ApiQuotaTracker
             while (_requestTimestamps.TryPeek(out var timestamp) && timestamp < oneMinuteAgo)
             {
                 _requestTimestamps.TryDequeue(out _);
+                _recentRequestCount--;
             }
 
             // Check per-minute quota
-            if (_requestTimestamps.Count >= _quotaPerMinute)
+            if (_recentRequestCount >= _quotaPerMinute)
             {
                 _logger.LogWarning("Per-minute quota exceeded: {Count}/{Limit}", 
-                    _requestTimestamps.Count, _quotaPerMinute);
+                    _recentRequestCount, _quotaPerMinute);
                 return false;
             }
 
@@ -75,6 +77,7 @@ public class ApiQuotaTracker
         lock (_lock)
         {
             _requestTimestamps.Enqueue(DateTime.UtcNow);
+            _recentRequestCount++;
             _dailyRequestCount++;
         }
     }
@@ -86,13 +89,7 @@ public class ApiQuotaTracker
     {
         lock (_lock)
         {
-            var now = DateTime.UtcNow;
-            var oneMinuteAgo = now.AddMinutes(-1);
-            
-            // Count requests in last minute
-            var recentCount = _requestTimestamps.Count(t => t >= oneMinuteAgo);
-            
-            var minuteUtilization = (double)recentCount / _quotaPerMinute * 100;
+            var minuteUtilization = (double)_recentRequestCount / _quotaPerMinute * 100;
             var dayUtilization = (double)_dailyRequestCount / _quotaPerDay * 100;
             
             return (minuteUtilization, dayUtilization);

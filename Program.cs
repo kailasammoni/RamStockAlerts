@@ -69,11 +69,11 @@ builder.Services.AddMemoryCache();
 
 // Add HttpClient for alert channels and Polygon
 builder.Services.AddHttpClient<DiscordAlertChannel>();
-builder.Services.AddHttpClient<DiscordNotificationService>();
 builder.Services.AddHttpClient("Polygon");
 builder.Services.AddHttpClient();
 
 // Register alert channels in order (Discord -> SMS -> Email)
+// They will be resolved in the order they are registered for failover
 builder.Services.AddScoped<IAlertChannel, DiscordAlertChannel>();
 builder.Services.AddScoped<IAlertChannel, SmsAlertChannel>();
 builder.Services.AddScoped<IAlertChannel, EmailAlertChannel>();
@@ -82,6 +82,8 @@ builder.Services.AddScoped<MultiChannelNotificationService>();
 // Register services
 builder.Services.AddScoped<SignalService>();
 builder.Services.AddScoped<AlertThrottlingService>();
+// Keep DiscordNotificationService for backward compatibility (legacy code may use it)
+builder.Services.AddHttpClient<DiscordNotificationService>();
 builder.Services.AddScoped<DiscordNotificationService>();
 builder.Services.AddSingleton<SignalValidator>();
 builder.Services.AddSingleton<TradeBlueprint>();
