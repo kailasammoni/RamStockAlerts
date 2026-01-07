@@ -30,13 +30,17 @@ public class AlpacaStreamClient : BackgroundService
     private readonly decimal _zScoreThreshold;
     private readonly int _vwapHoldSeconds;
     private readonly int _vwapHoldPrints;
+    private readonly int _pingIntervalSeconds;
+    private readonly int _pongTimeoutSeconds;
 
     private ClientWebSocket? _webSocket;
     private IReadOnlyCollection<string> _subscribedSymbols = Array.Empty<string>();
     private DateTime _lastMessageTime = DateTime.UtcNow;
+    private DateTime _lastPongTime = DateTime.UtcNow;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 10;
     private const int FeedLagThresholdSeconds = 5;
+    private CancellationTokenSource? _pingCts;
 
     // Per-symbol market state
     private readonly ConcurrentDictionary<string, SymbolState> _symbolStates = new();
@@ -65,6 +69,8 @@ public class AlpacaStreamClient : BackgroundService
         _zScoreThreshold = configuration.GetValue("Alpaca:ZScoreThreshold", 2.0m);
         _vwapHoldSeconds = configuration.GetValue("Alpaca:VwapHoldSeconds", 5);
         _vwapHoldPrints = configuration.GetValue("Alpaca:VwapHoldPrints", 10);
+        _pingIntervalSeconds = configuration.GetValue("Alpaca:PingIntervalSeconds", 30);
+        _pongTimeoutSeconds = configuration.GetValue("Alpaca:PongTimeoutSeconds", 10);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -97,7 +103,11 @@ public class AlpacaStreamClient : BackgroundService
                     _reconnectAttempts = 0;
                 }
 
-                var delay = TimeSpan.FromSeconds(Math.Min(Math.Pow(2, _reconnectAttempts), 60));
+                // Jittered exponential backoff
+                var baseDelay = Math.Pow(2, _reconnectAttempts);
+                var jitter = Random.Shared.NextDouble() * 0.3; // 0-30% jitter
+                var delay = TimeSpan.FromSeconds(Math.Min(baseDelay * (1 + jitter), 60));
+                _logger.LogInformation("Reconnecting in {Delay}s (attempt {Attempt})", delay.TotalSeconds, _reconnectAttempts);
                 await Task.Delay(delay, stoppingToken);
             }
         }
@@ -134,6 +144,12 @@ public class AlpacaStreamClient : BackgroundService
 
         _reconnectAttempts = 0;
         _lastMessageTime = DateTime.UtcNow;
+        _lastPongTime = DateTime.UtcNow;
+
+        // Start ping/pong heartbeat
+        _pingCts = new CancellationTokenSource();
+        var pingToken = CancellationTokenSource.CreateLinkedTokenSource(_pingCts.Token, stoppingToken).Token;
+        _ = Task.Run(() => SendPingHeartbeatAsync(pingToken), pingToken);
 
         // Start feed lag monitor
         _ = Task.Run(() => MonitorFeedLagAsync(stoppingToken), stoppingToken);
@@ -157,6 +173,14 @@ public class AlpacaStreamClient : BackgroundService
             {
                 _logger.LogWarning("WebSocket closed by server");
                 break;
+            }
+
+            if (result.MessageType == WebSocketMessageType.Binary)
+            {
+                // Handle pong response
+                _lastPongTime = DateTime.UtcNow;
+                _logger.LogDebug("Received pong from server");
+                continue;
             }
 
             _lastMessageTime = DateTime.UtcNow;
@@ -351,7 +375,96 @@ public class AlpacaStreamClient : BackgroundService
                 _logger.LogWarning("Feed lag detected: {Seconds}s since last message", lag.TotalSeconds);
                 _circuitBreaker.Suspend(TimeSpan.FromMinutes(1), $"Feed lag {lag.TotalSeconds:F1}s");
             }
+
+            // Check for pong timeout (dead connection detection)
+            var pongLag = DateTime.UtcNow - _lastPongTime;
+            if (pongLag.TotalSeconds > _pongTimeoutSeconds + _pingIntervalSeconds)
+            {
+                _logger.LogError("Pong timeout detected: {Seconds}s since last pong. Connection may be dead.", pongLag.TotalSeconds);
+                _webSocket?.Abort();
+                break;
+            }
         }
+    }
+
+    private async Task SendPingHeartbeatAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested && _webSocket?.State == WebSocketState.Open)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(_pingIntervalSeconds), ct);
+
+                if (_webSocket?.State == WebSocketState.Open)
+                {
+                    // Send WebSocket ping frame
+                    await _webSocket.SendAsync(
+                        new ArraySegment<byte>(new byte[0]),
+                        WebSocketMessageType.Binary,
+                        true,
+                        ct);
+                    
+                    _logger.LogDebug("Sent ping to server");
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Error sending ping");
+                break;
+            }
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("AlpacaStreamClient stopping...");
+
+        // Cancel ping heartbeat
+        _pingCts?.Cancel();
+
+        // Send unsubscribe message if connected
+        if (_webSocket?.State == WebSocketState.Open && _subscribedSymbols.Any())
+        {
+            try
+            {
+                var unsubMsg = JsonSerializer.Serialize(new
+                {
+                    action = "unsubscribe",
+                    trades = _subscribedSymbols.ToArray(),
+                    quotes = _subscribedSymbols.ToArray()
+                });
+                
+                await SendAsync(unsubMsg, cancellationToken);
+                _logger.LogInformation("Sent unsubscribe message for {Count} symbols", _subscribedSymbols.Count);
+                
+                // Wait a moment for unsubscribe confirmation
+                await Task.Delay(500, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error sending unsubscribe during shutdown");
+            }
+        }
+
+        // Close WebSocket gracefully
+        if (_webSocket?.State == WebSocketState.Open)
+        {
+            try
+            {
+                await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Shutting down", cancellationToken);
+                _logger.LogInformation("WebSocket closed gracefully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error closing WebSocket");
+            }
+        }
+
+        _webSocket?.Dispose();
+        _pingCts?.Dispose();
+
+        await base.StopAsync(cancellationToken);
+        _logger.LogInformation("AlpacaStreamClient stopped");
     }
 }
 
