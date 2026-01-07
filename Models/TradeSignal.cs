@@ -23,6 +23,26 @@ public class TradeSignal
     public decimal? PnL { get; set; }
     public SignalStatus Status { get; set; } = SignalStatus.Pending;
     public string? RejectionReason { get; set; }
+
+    /// <summary>
+    /// Alpaca order ID if order was placed.
+    /// </summary>
+    public string? OrderId { get; set; }
+
+    /// <summary>
+    /// Order placement timestamp.
+    /// </summary>
+    public DateTime? OrderPlacedAt { get; set; }
+
+    /// <summary>
+    /// Whether auto-trading was attempted for this signal.
+    /// </summary>
+    public bool AutoTradingAttempted { get; set; }
+
+    /// <summary>
+    /// Reason if auto-trading was skipped.
+    /// </summary>
+    public string? AutoTradingSkipReason { get; set; }
 }
 
 public enum SignalStatus

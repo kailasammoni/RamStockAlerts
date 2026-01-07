@@ -15,6 +15,7 @@ public class UniverseBuilder
     private readonly AlpacaStreamClient _alpacaClient;
 
     private const string UniverseCacheKey = "universe.active";
+    private const string FloatCacheKeyPrefix = "float.";
     private static readonly TimeSpan UniverseTtl = TimeSpan.FromMinutes(5);
 
     // TODO: Replace IMemoryCache with Redis for distributed caching with 5-minute TTL
@@ -156,41 +157,117 @@ public class UniverseBuilder
                         return false;
                     }
                     
-                    // TODO: Filter by float < 150M - requires shares outstanding data from Polygon reference API
-                    // This needs a separate API call to /v3/reference/tickers/{ticker} which is not real-time
-                    
-                    // TODO: Exclude halted symbols - requires trading status check
-                    // Alpaca IEX feed doesn't provide halt status directly
-                    
                     return true;
                 })
-                .Take(maxTickers)
                 .ToList();
+
+            // Filter by float (shares outstanding < 150M)
+            // This requires async API calls, so we do it in a separate step
+            var floatFilteredTickers = new List<string>();
+            foreach (var ticker in filtered)
+            {
+                var sharesOutstanding = await GetSharesOutstandingAsync(ticker, cancellationToken);
+                if (sharesOutstanding.HasValue && sharesOutstanding.Value > maxFloat)
+                {
+                    _logger.LogDebug("{Ticker} filtered: float {Float}M exceeds max {MaxFloat}M", 
+                        ticker, sharesOutstanding.Value / 1_000_000m, maxFloat / 1_000_000m);
+                    continue;
+                }
+                // Note: If sharesOutstanding is null, we allow the ticker through (data unavailable)
+                floatFilteredTickers.Add(ticker);
+                
+                if (floatFilteredTickers.Count >= maxTickers)
+                    break;
+            }
+            
+            // TODO: Exclude halted symbols - requires trading status check
+            // Alpaca IEX feed doesn't provide halt status directly
+            
+            var finalFiltered = floatFilteredTickers;
 
             _logger.LogInformation(
                 "Universe built with {Count} symbols (Price ${Min}-${Max}, RelVol>{RelVol}, Spread<{Spread}, Float<{Float}M, excluding ETFs/ADRs/OTC/halted) | Top: {TopTickers}",
-                filtered.Count, 
+                finalFiltered.Count, 
                 minPrice, 
                 maxPrice,
                 minRelVol,
                 maxSpread,
-                maxFloat / 1_000_000,
-                string.Join(", ", filtered.Take(10)));
+                maxFloat / 1_000_000m,
+                string.Join(", ", finalFiltered.Take(10)));
 
-            if (!filtered.Any())
+            if (!finalFiltered.Any())
             {
                 _logger.LogWarning("No tickers passed filters; falling back to hardcoded list");
                 var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
                 return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
             }
 
-            return filtered;
+            return finalFiltered;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error building universe from market data; falling back to hardcoded tickers");
             var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
             return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+        }
+    }
+
+    /// <summary>
+    /// Get shares outstanding from cache or fetch from Polygon API.
+    /// </summary>
+    private async Task<long?> GetSharesOutstandingAsync(string ticker, CancellationToken cancellationToken)
+    {
+        var cacheKey = FloatCacheKeyPrefix + ticker;
+        
+        // Check cache first
+        if (_cache.TryGetValue(cacheKey, out long? cachedFloat))
+        {
+            return cachedFloat;
+        }
+        
+        // Fetch from Polygon API
+        var apiKey = _configuration["Polygon:ApiKey"];
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            return null;
+        }
+        
+        try
+        {
+            // Add small delay to avoid rate limiting (Polygon allows 5 req/min on free tier)
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+            
+            _logger.LogDebug("Fetching float data for {Ticker} from Polygon API", ticker);
+            
+            var url = $"https://api.polygon.io/v3/reference/tickers/{ticker}?apikey={apiKey}";
+            
+            using var client = _httpClientFactory.CreateClient();
+            var response = await client.GetAsync(url, cancellationToken);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug("Failed to fetch float data for {Ticker}: {Status}", ticker, response.StatusCode);
+                return null;
+            }
+            
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            var data = System.Text.Json.JsonSerializer.Deserialize<PolygonTickerDetailsResponse>(json);
+            
+            var sharesOutstanding = data?.Results?.SharesOutstanding 
+                                 ?? data?.Results?.WeightedSharesOutstanding;
+            
+            // Cache for 24 hours
+            if (sharesOutstanding.HasValue)
+            {
+                _cache.Set(cacheKey, sharesOutstanding.Value, TimeSpan.FromHours(24));
+            }
+            
+            return sharesOutstanding;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error fetching float data for {Ticker}", ticker);
+            return null;
         }
     }
 

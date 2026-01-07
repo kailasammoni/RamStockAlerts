@@ -97,6 +97,13 @@ namespace RamStockAlerts.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("AutoTradingAttempted")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("AutoTradingSkipReason")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal>("Entry")
                         .HasPrecision(18, 4)
                         .HasColumnType("TEXT");
@@ -112,9 +119,19 @@ namespace RamStockAlerts.Migrations
                         .HasPrecision(18, 4)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("OrderId")
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime?>("OrderPlacedAt")
+                        .HasColumnType("TEXT");
+
                     b.Property<decimal?>("PnL")
                         .HasPrecision(18, 4)
                         .HasColumnType("TEXT");
+
+                    b.Property<int?>("PositionSize")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("RejectionReason")
                         .HasColumnType("TEXT");
@@ -143,6 +160,8 @@ namespace RamStockAlerts.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("OrderId");
 
                     b.HasIndex("Ticker");
 

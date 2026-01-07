@@ -84,20 +84,39 @@ public class DiscordAlertChannel : IAlertChannel
     private object BuildEmbed(TradeSignal signal)
     {
         var color = signal.Score >= 8m ? 3066993 : 15844367;
+        
+        var fields = new List<object>
+        {
+            new { name = "Ticker", value = signal.Ticker, inline = true },
+            new { name = "Entry", value = $"${signal.Entry:F2}", inline = true },
+            new { name = "Stop", value = $"${signal.Stop:F2}", inline = true },
+            new { name = "Target", value = $"${signal.Target:F2}", inline = true },
+            new { name = "Score", value = $"{signal.Score:F1}/10", inline = true },
+            new { name = "Risk/Reward", value = GetRiskRewardRatio(signal), inline = true }
+        };
+        
+        // Add order information if available
+        if (signal.OrderId != null)
+        {
+            fields.Add(new { name = "🤖 Auto-Trade", value = $"✅ Order Placed", inline = true });
+            fields.Add(new { name = "Position", value = $"{signal.PositionSize} shares", inline = true });
+            fields.Add(new { name = "Order ID", value = signal.OrderId.Substring(0, Math.Min(8, signal.OrderId.Length)) + "...", inline = true });
+            color = 3447003; // Blue color for auto-traded signals
+        }
+        else if (signal.AutoTradingAttempted)
+        {
+            fields.Add(new { name = "🤖 Auto-Trade", value = $"⏭️ Skipped", inline = true });
+            if (!string.IsNullOrEmpty(signal.AutoTradingSkipReason))
+            {
+                fields.Add(new { name = "Reason", value = signal.AutoTradingSkipReason, inline = false });
+            }
+        }
 
         return new
         {
-            title = "🚨 Liquidity Setup Detected",
+            title = signal.OrderId != null ? "🚨 Liquidity Setup + AUTO-TRADE" : "🚨 Liquidity Setup Detected",
             color,
-            fields = new[]
-            {
-                new { name = "Ticker", value = signal.Ticker, inline = true },
-                new { name = "Entry", value = $"${signal.Entry:F2}", inline = true },
-                new { name = "Stop", value = $"${signal.Stop:F2}", inline = true },
-                new { name = "Target", value = $"${signal.Target:F2}", inline = true },
-                new { name = "Score", value = $"{signal.Score:F1}/10", inline = true },
-                new { name = "Risk/Reward", value = GetRiskRewardRatio(signal), inline = true }
-            },
+            fields = fields.ToArray(),
             timestamp = signal.Timestamp.ToString("o"),
             footer = new { text = "RamStockAlerts • Liquidity Engine" },
             thumbnail = new { url = "https://cdn-icons-png.flaticon.com/512/2920/2920299.png" }

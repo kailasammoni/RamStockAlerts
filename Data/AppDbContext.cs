@@ -26,8 +26,11 @@ public class AppDbContext : DbContext
             entity.Property(e => e.ExecutionPrice).HasPrecision(18, 4);
             entity.Property(e => e.ExitPrice).HasPrecision(18, 4);
             entity.Property(e => e.PnL).HasPrecision(18, 4);
+            entity.Property(e => e.OrderId).HasMaxLength(50);
+            entity.Property(e => e.AutoTradingSkipReason).HasMaxLength(256);
             entity.HasIndex(e => e.Ticker);
             entity.HasIndex(e => e.Timestamp);
+            entity.HasIndex(e => e.OrderId);
         });
 
         modelBuilder.Entity<SignalLifecycle>(entity =>

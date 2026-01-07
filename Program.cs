@@ -82,6 +82,7 @@ builder.Services.AddScoped<MultiChannelNotificationService>();
 // Register services
 builder.Services.AddScoped<SignalService>();
 builder.Services.AddScoped<AlertThrottlingService>();
+builder.Services.AddSingleton<AlpacaTradingClient>();
 // Keep DiscordNotificationService for backward compatibility (legacy code may use it)
 builder.Services.AddHttpClient<DiscordNotificationService>();
 builder.Services.AddScoped<DiscordNotificationService>();

@@ -11,6 +11,7 @@ public class SignalService
     private readonly AlertThrottlingService _throttlingService;
     private readonly CircuitBreakerService _circuitBreakerService;
     private readonly IEventStore _eventStore;
+    private readonly AlpacaTradingClient _tradingClient;
     private readonly ILogger<SignalService> _logger;
 
     public SignalService(
@@ -19,6 +20,7 @@ public class SignalService
         AlertThrottlingService throttlingService,
         CircuitBreakerService circuitBreakerService,
         IEventStore eventStore,
+        AlpacaTradingClient tradingClient,
         ILogger<SignalService> logger)
     {
         _dbContext = dbContext;
@@ -26,6 +28,7 @@ public class SignalService
         _throttlingService = throttlingService;
         _circuitBreakerService = circuitBreakerService;
         _eventStore = eventStore;
+        _tradingClient = tradingClient;
         _logger = logger;
     }
 
@@ -66,6 +69,42 @@ public class SignalService
         _logger.LogInformation(
             "Saved signal for {Ticker}: Entry={Entry}, Score={Score}",
             signal.Ticker, signal.Entry, signal.Score);
+
+        // Attempt auto-trading if enabled
+        signal.AutoTradingAttempted = true;
+        try
+        {
+            var orderId = await _tradingClient.PlaceBracketOrderAsync(signal);
+            if (orderId != null)
+            {
+                signal.OrderId = orderId;
+                signal.OrderPlacedAt = DateTime.UtcNow;
+                signal.Status = SignalStatus.Filled; // Mark as filled since order placed
+                
+                await _eventStore.AppendAsync("OrderPlaced", new
+                {
+                    signal.Id,
+                    signal.Ticker,
+                    OrderId = orderId,
+                    signal.Entry,
+                    signal.Stop,
+                    signal.Target,
+                    PositionSize = signal.PositionSize
+                });
+            }
+            else
+            {
+                signal.AutoTradingSkipReason = "Auto-trading disabled or conditions not met";
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Auto-trading failed for {Ticker}", signal.Ticker);
+            signal.AutoTradingSkipReason = $"Error: {ex.Message}";
+        }
+
+        // Update signal with order info
+        await _dbContext.SaveChangesAsync();
 
         // Send multi-channel notification with failover
         try

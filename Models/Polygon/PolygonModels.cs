@@ -268,3 +268,57 @@ public class PolygonSnapshotTrade
     [JsonPropertyName("t")]
     public long Timestamp { get; set; }
 }
+
+/// <summary>
+/// Response from Polygon.io /v3/reference/tickers/{ticker} endpoint
+/// </summary>
+public class PolygonTickerDetailsResponse
+{
+    [JsonPropertyName("status")]
+    public string? Status { get; set; }
+
+    [JsonPropertyName("results")]
+    public PolygonTickerDetails? Results { get; set; }
+}
+
+public class PolygonTickerDetails
+{
+    [JsonPropertyName("ticker")]
+    public string? Ticker { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("market")]
+    public string? Market { get; set; }
+
+    [JsonPropertyName("locale")]
+    public string? Locale { get; set; }
+
+    [JsonPropertyName("primary_exchange")]
+    public string? PrimaryExchange { get; set; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; set; }
+
+    [JsonPropertyName("currency_name")]
+    public string? CurrencyName { get; set; }
+
+    [JsonPropertyName("market_cap")]
+    public decimal? MarketCap { get; set; }
+
+    [JsonPropertyName("share_class_shares_outstanding")]
+    public long? SharesOutstanding { get; set; }
+
+    [JsonPropertyName("weighted_shares_outstanding")]
+    public long? WeightedSharesOutstanding { get; set; }
+
+    [JsonPropertyName("description")]
+    public string? Description { get; set; }
+
+    [JsonPropertyName("list_date")]
+    public string? ListDate { get; set; }
+}
