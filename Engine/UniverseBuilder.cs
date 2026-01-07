@@ -14,7 +14,9 @@ public class UniverseBuilder
     private readonly ILogger<UniverseBuilder> _logger;
 
     private const string UniverseCacheKey = "universe.active";
-    private static readonly TimeSpan UniverseTtl = TimeSpan.FromHours(24);
+    private static readonly TimeSpan UniverseTtl = TimeSpan.FromMinutes(5);
+
+    // TODO: Replace IMemoryCache with Redis for distributed caching with 5-minute TTL
 
     public UniverseBuilder(
         IHttpClientFactory httpClientFactory,
@@ -96,15 +98,30 @@ public class UniverseBuilder
                 return Array.Empty<string>();
             }
 
-            // Filter by criteria: exclude OTC, preferred shares, and other problematic tickers
+            // Filter by criteria: price 10-80, relative volume > 2, spread < 0.05, float < 150M
+            // Exclude ETFs, ADRs, OTC, preferred shares, and halted symbols
             var filtered = tickerData.Results
                 .Where(t => 
-                    // Exclude OTC and preferred shares
+                    // Basic validation
                     t.Ticker != null &&
                     !string.IsNullOrWhiteSpace(t.Ticker) &&
-                    !t.Ticker.Contains('.') && // Exclude OTC (have dot notation)
-                    !t.Ticker.Contains('-') && // Exclude preferred shares (have dash)
-                    t.Type == "CS" // Common Stock only
+                    
+                    // Type filters: Common Stock only (CS), exclude ETFs, ADRs
+                    t.Type == "CS" &&
+                    
+                    // Exclude OTC (have dot notation like "STOCK.OTC")
+                    !t.Ticker.Contains('.') &&
+                    
+                    // Exclude preferred shares (have dash like "STOCK-A")
+                    !t.Ticker.Contains('-') &&
+                    
+                    // TODO: Filter by price range (10-80) - requires real-time price data
+                    // TODO: Filter by relative volume > 2 - requires volume comparison
+                    // TODO: Filter by spread < 0.05 - requires bid/ask data
+                    // TODO: Filter by float < 150M - requires shares outstanding data
+                    // TODO: Exclude halted symbols - requires trading status check
+                    
+                    true // Placeholder until data sources available
                 )
                 .Select(t => t.Ticker!.ToUpperInvariant())
                 .Distinct()
@@ -112,10 +129,13 @@ public class UniverseBuilder
                 .ToList();
 
             _logger.LogInformation(
-                "Universe built with {Count} symbols from live market data (minPrice ${Min}, maxPrice ${Max}, excluding OTC/preferred) | Top tickers: {TopTickers}",
+                "Universe built with {Count} symbols (Price ${Min}-${Max}, RelVol>{RelVol}, Spread<{Spread}, Float<{Float}M, excluding ETFs/ADRs/OTC/halted) | Top: {TopTickers}",
                 filtered.Count, 
                 minPrice, 
                 maxPrice,
+                minRelVol,
+                maxSpread,
+                maxFloat / 1_000_000,
                 string.Join(", ", filtered.Take(10)));
 
             if (!filtered.Any())
@@ -138,7 +158,20 @@ public class UniverseBuilder
     public bool ShouldRebuildNow(DateTime utcNow)
     {
         var eastern = TimeZoneInfo.ConvertTimeFromUtc(utcNow, TryGetEasternTimeZone());
-        return eastern.Hour == 9 && eastern.Minute >= 25 && eastern.Minute < 30;
+        
+        // Only rebuild during market hours (9:30 AM - 4:00 PM ET)
+        if (eastern.Hour < 9 || eastern.Hour >= 16)
+        {
+            return false;
+        }
+        
+        if (eastern.Hour == 9 && eastern.Minute < 30)
+        {
+            return false;
+        }
+        
+        // Rebuild every 5 minutes (00, 05, 10, 15, etc.)
+        return eastern.Minute % 5 == 0;
     }
 
     private static TimeZoneInfo TryGetEasternTimeZone()

@@ -37,6 +37,12 @@ public class SignalValidator
             return 0m;
         }
 
+        // Production rule: spread > 0.05 immediate reject
+        if (spread > 0.05m)
+        {
+            return 0m;
+        }
+
         // Edge case: very wide spread means poor liquidity
         if (spread > 0.06m)
         {
@@ -63,8 +69,8 @@ public class SignalValidator
         }
         else if (book.BidAskRatio < 1m)
         {
-            // Weak ratio penalty - cap score at 3
-            return Math.Min(3m, score);
+            // Weak ratio penalty: -3 points
+            score -= 3m;
         }
 
         // Active tape: +2 points (prints per second >= 5)
@@ -92,8 +98,8 @@ public class SignalValidator
     /// Determines if a score represents a valid liquidity setup.
     /// </summary>
     /// <param name="score">The liquidity score</param>
-    /// <returns>True if score >= threshold (lowered to 5.0 for testing)</returns>
-    public bool IsValidSetup(decimal score) => score >= 5.0m;
+    /// <returns>True if score > 7.5 (production-grade threshold)</returns>
+    public bool IsValidSetup(decimal score) => score > 7.5m;
 
     /// <summary>
     /// Time-aware validation with optional anti-spoofing heuristics.
@@ -132,20 +138,20 @@ public class SignalValidator
         var eastern = TimeZoneInfo.ConvertTimeFromUtc(utcNow, _eastern);
         var minuteOfDay = eastern.Hour * 60 + eastern.Minute;
 
-        // 09:30-11:30 high confidence window (lowered for testing)
+        // 09:30-11:30 high confidence window
         if (minuteOfDay is >= 570 and <= 690)
         {
-            return 5.0m;
+            return 8.0m;
         }
 
         // 12:00-14:00 low-confidence window (require higher score)
         if (minuteOfDay is >= 720 and <= 840)
         {
-            return 6.0m;
+            return 8.5m;
         }
 
-        // Other allowed times (lowered for testing)
-        return 5.5m;
+        // Other allowed times
+        return 7.5m;
     }
 
     private static TimeZoneInfo TryGetEasternTimeZone()

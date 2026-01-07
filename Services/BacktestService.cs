@@ -66,7 +66,7 @@ public class BacktestService
     }
 
     /// <summary>
-    /// Calculate backtest performance metrics.
+    /// Calculate backtest performance metrics including expectancy analysis.
     /// </summary>
     public BacktestMetrics CalculateMetrics(BacktestResult result, List<TradeSignal> signals)
     {
@@ -79,15 +79,58 @@ public class BacktestService
         
         if (completedSignals.Any())
         {
-            var winners = completedSignals.Count(s => s.PnL > 0);
-            metrics.WinRate = (decimal)winners / completedSignals.Count * 100;
+            // Win/Loss counts
+            var winners = completedSignals.Where(s => s.PnL > 0).ToList();
+            var losers = completedSignals.Where(s => s.PnL <= 0).ToList();
+            
+            metrics.WinRate = (decimal)winners.Count / completedSignals.Count * 100;
             metrics.TotalSignals = completedSignals.Count;
-            metrics.Winners = winners;
-            metrics.Losers = completedSignals.Count - winners;
+            metrics.Winners = winners.Count;
+            metrics.Losers = losers.Count;
 
+            // PnL calculations
             var totalPnL = completedSignals.Sum(s => s.PnL ?? 0);
             metrics.TotalPnL = totalPnL;
             metrics.AveragePnL = totalPnL / completedSignals.Count;
+
+            // Expectancy metrics
+            if (winners.Any())
+            {
+                metrics.AvgWin = winners.Average(s => s.PnL ?? 0);
+            }
+
+            if (losers.Any())
+            {
+                metrics.AvgLoss = losers.Average(s => s.PnL ?? 0);
+            }
+
+            // Drawdown calculation (max peak-to-trough decline)
+            decimal runningPnL = 0;
+            decimal peak = 0;
+            decimal maxDrawdown = 0;
+
+            foreach (var signal in completedSignals.OrderBy(s => s.Timestamp))
+            {
+                runningPnL += signal.PnL ?? 0;
+                peak = Math.Max(peak, runningPnL);
+                var drawdown = peak - runningPnL;
+                maxDrawdown = Math.Max(maxDrawdown, drawdown);
+            }
+
+            metrics.Drawdown = maxDrawdown;
+
+            // Flag dataset if metrics below thresholds
+            if (metrics.WinRate < 62m)
+            {
+                metrics.DatasetFlags.Add($"Low win rate: {metrics.WinRate:F2}% (target >= 62%)");
+                _logger.LogWarning("Backtest dataset flagged: Win rate {WinRate:F2}% is below 62% threshold", metrics.WinRate);
+            }
+
+            if (metrics.AvgLoss > -0.3m)
+            {
+                metrics.DatasetFlags.Add($"Avg loss too small: {metrics.AvgLoss:F2}% (target <= -0.3%)");
+                _logger.LogWarning("Backtest dataset flagged: Avg loss {AvgLoss:F2}% is greater than -0.3% threshold", metrics.AvgLoss);
+            }
         }
 
         return metrics;
@@ -114,4 +157,24 @@ public class BacktestMetrics
     public int Losers { get; set; }
     public decimal TotalPnL { get; set; }
     public decimal AveragePnL { get; set; }
+    
+    /// <summary>
+    /// Average win amount (percentage or dollar value).
+    /// </summary>
+    public decimal AvgWin { get; set; }
+    
+    /// <summary>
+    /// Average loss amount (percentage or dollar value, typically negative).
+    /// </summary>
+    public decimal AvgLoss { get; set; }
+    
+    /// <summary>
+    /// Maximum peak-to-trough decline in cumulative PnL.
+    /// </summary>
+    public decimal Drawdown { get; set; }
+    
+    /// <summary>
+    /// Flags raised when dataset metrics fail validation thresholds.
+    /// </summary>
+    public List<string> DatasetFlags { get; set; } = new();
 }
