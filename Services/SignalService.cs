@@ -7,22 +7,25 @@ namespace RamStockAlerts.Services;
 public class SignalService
 {
     private readonly AppDbContext _dbContext;
-    private readonly DiscordNotificationService _discordService;
+    private readonly MultiChannelNotificationService _notificationService;
     private readonly AlertThrottlingService _throttlingService;
     private readonly CircuitBreakerService _circuitBreakerService;
+    private readonly IEventStore _eventStore;
     private readonly ILogger<SignalService> _logger;
 
     public SignalService(
         AppDbContext dbContext,
-        DiscordNotificationService discordService,
+        MultiChannelNotificationService notificationService,
         AlertThrottlingService throttlingService,
         CircuitBreakerService circuitBreakerService,
+        IEventStore eventStore,
         ILogger<SignalService> logger)
     {
         _dbContext = dbContext;
-        _discordService = discordService;
+        _notificationService = notificationService;
         _throttlingService = throttlingService;
         _circuitBreakerService = circuitBreakerService;
+        _eventStore = eventStore;
         _logger = logger;
     }
 
@@ -48,19 +51,39 @@ public class SignalService
         _dbContext.TradeSignals.Add(signal);
         await _dbContext.SaveChangesAsync();
 
+        // Store event for backtest replay
+        await _eventStore.AppendAsync("TradeSignalGenerated", new
+        {
+            signal.Id,
+            signal.Ticker,
+            signal.Entry,
+            signal.Stop,
+            signal.Target,
+            signal.Score,
+            signal.Timestamp
+        });
+
         _logger.LogInformation(
             "Saved signal for {Ticker}: Entry={Entry}, Score={Score}",
             signal.Ticker, signal.Entry, signal.Score);
 
-        // Send Discord notification
+        // Send multi-channel notification with failover
         try
         {
-            await _discordService.SendSignalAsync(signal);
+            var sent = await _notificationService.SendWithFailoverAsync(signal);
+            if (sent)
+            {
+                await _eventStore.AppendAsync("AlertSent", new
+                {
+                    signal.Id,
+                    signal.Ticker
+                });
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send Discord notification for {Ticker}", signal.Ticker);
-            // Don't fail the save if Discord fails
+            _logger.LogError(ex, "Failed to send notification for {Ticker}", signal.Ticker);
+            // Don't fail the save if notification fails
         }
 
         _circuitBreakerService.TrackOutcome(signal.Status);

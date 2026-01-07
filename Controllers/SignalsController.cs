@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using RamStockAlerts.Data;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
 
@@ -10,12 +11,18 @@ public class SignalsController : ControllerBase
 {
     private readonly SignalService _signalService;
     private readonly PerformanceTracker _performanceTracker;
+    private readonly IEventStore _eventStore;
     private readonly ILogger<SignalsController> _logger;
 
-    public SignalsController(SignalService signalService, PerformanceTracker performanceTracker, ILogger<SignalsController> logger)
+    public SignalsController(
+        SignalService signalService, 
+        PerformanceTracker performanceTracker, 
+        IEventStore eventStore,
+        ILogger<SignalsController> logger)
     {
         _signalService = signalService;
         _performanceTracker = performanceTracker;
+        _eventStore = eventStore;
         _logger = logger;
     }
 
@@ -100,6 +107,36 @@ public class SignalsController : ControllerBase
         var signal = await _performanceTracker.GetOutcomeAsync(id);
         return signal is null ? NotFound() : Ok(signal);
     }
+
+    /// <summary>
+    /// Replay events from the event store for debugging and backtesting.
+    /// </summary>
+    [HttpGet("events/replay")]
+    [ProducesResponseType(typeof(List<EventReplayDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ReplayEvents(
+        [FromQuery] DateTime? from = null,
+        [FromQuery] int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var events = new List<EventReplayDto>();
+        var count = 0;
+
+        await foreach (var evt in _eventStore.ReplayAsync(from, cancellationToken))
+        {
+            events.Add(new EventReplayDto
+            {
+                EventType = evt.EventType,
+                Data = evt.Data,
+                RecordedAt = evt.RecordedAt
+            });
+
+            count++;
+            if (count >= limit)
+                break;
+        }
+
+        return Ok(events);
+    }
 }
 
 public class CreateSignalRequest
@@ -110,4 +147,11 @@ public class CreateSignalRequest
     public decimal Target { get; set; }
     public decimal Score { get; set; }
     public DateTime? Timestamp { get; set; }
+}
+
+public class EventReplayDto
+{
+    public string EventType { get; set; } = string.Empty;
+    public string Data { get; set; } = string.Empty;
+    public DateTime RecordedAt { get; set; }
 }
