@@ -6,6 +6,17 @@ using RamStockAlerts.Models.Polygon;
 
 namespace RamStockAlerts.Engine;
 
+/// <summary>
+/// Tracks market phase for appropriate universe filtering strategy.
+/// </summary>
+public enum MarketPhase
+{
+    BeforePreMarket,  // Before 9:00 AM ET
+    PreMarket,        // 9:00-9:30 AM ET (real-time pre-market data from Alpaca)
+    RegularMarket,    // 9:30 AM-4:00 PM ET (regular trading hours)
+    AfterMarketClose  // After 4:00 PM ET
+}
+
 public class UniverseBuilder
 {
     private readonly IHttpClientFactory _httpClientFactory;
@@ -70,6 +81,9 @@ public class UniverseBuilder
         var maxFloat = _configuration.GetValue("Universe:MaxFloat", 150_000_000m);
         var maxTickers = _configuration.GetValue("Universe:MaxTickers", 100);
         var useStaticTickers = _configuration.GetValue("Universe:UseStaticTickers", false);
+        var enablePreMarketFiltering = _configuration.GetValue("Universe:EnablePreMarketFiltering", true);
+        var preMarketStartHour = _configuration.GetValue("Universe:PreMarketStartHour", 9);
+        var preMarketMinTrades = _configuration.GetValue("Universe:PreMarketMinTrades", 5);
 
         // If UseStaticTickers is true, use hardcoded list (for testing)
         if (useStaticTickers)
@@ -82,6 +96,14 @@ public class UniverseBuilder
             }
         }
 
+        // Determine current phase
+        var currentPhase = GetMarketPhase(enablePreMarketFiltering);
+        if (currentPhase == MarketPhase.BeforePreMarket || currentPhase == MarketPhase.AfterMarketClose)
+        {
+            _logger.LogInformation("Not rebuilding universe - market phase: {Phase}", currentPhase);
+            return Array.Empty<string>();
+        }
+
         // Fetch live tickers from Polygon API (market movers endpoint)
         var apiKey = _configuration["Polygon:ApiKey"];
         if (string.IsNullOrEmpty(apiKey))
@@ -92,9 +114,74 @@ public class UniverseBuilder
 
         try
         {
+            // Step 1: Get broad candidate list from Polygon
+            var candidates = await GetCandidateTickersAsync(apiKey, cancellationToken);
+            if (!candidates.Any())
+            {
+                _logger.LogWarning("No candidate tickers fetched from Polygon");
+                return Array.Empty<string>();
+            }
+
+            _logger.LogInformation("Fetched {CandidateCount} candidates from Polygon", candidates.Count);
+
+            // Step 2: Filter based on market phase
+            IReadOnlyCollection<string> filtered = currentPhase switch
+            {
+                MarketPhase.PreMarket => FilterWithPreMarketData(
+                    candidates,
+                    minPrice,
+                    maxPrice,
+                    maxSpread,
+                    preMarketMinTrades,
+                    maxTickers),
+                MarketPhase.RegularMarket => await FilterWithMarketDataAsync(
+                    candidates,
+                    minPrice,
+                    maxPrice,
+                    minRelVol,
+                    maxSpread,
+                    maxFloat,
+                    maxTickers,
+                    cancellationToken),
+                _ => Array.Empty<string>()
+            };
+
+            _logger.LogInformation(
+                "Universe built with {Count} symbols (Phase: {Phase}, Price ${Min}-${Max}, Spread<{Spread}, excluding ETFs/ADRs/OTC) | Top: {TopTickers}",
+                filtered.Count,
+                currentPhase,
+                minPrice,
+                maxPrice,
+                maxSpread,
+                string.Join(", ", filtered.Take(10)));
+
+            return filtered;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error building universe from market data");
+            return Array.Empty<string>();
+        }
+    }
+
+    /// <summary>
+    /// Get broad candidate list from Polygon API.
+    /// Cached for 1 hour since list doesn't change often.
+    /// </summary>
+    private async Task<List<string>> GetCandidateTickersAsync(string apiKey, CancellationToken cancellationToken)
+    {
+        var cacheKey = "universe.candidates";
+        
+        if (_cache.TryGetValue(cacheKey, out List<string>? cached) && cached is not null)
+        {
+            _logger.LogDebug("Using cached candidate list ({Count} tickers)", cached.Count);
+            return cached;
+        }
+
+        try
+        {
             // Use Polygon Ticker endpoint to search for US stocks
             // /v3/reference/tickers?market=stocks&type=CS filters for Common Stocks only (excludes ETFs, ADRs, warrants)
-            // Note: exchange parameter only accepts single value (XNAS or XNYS), not comma-separated
             var url = $"https://api.polygon.io/v3/reference/tickers?market=stocks&type=CS&active=true&exchange=XNAS&limit=1000&apikey={apiKey}";
             
             using var client = _httpClientFactory.CreateClient();
@@ -104,7 +191,7 @@ public class UniverseBuilder
             {
                 var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
                 _logger.LogError("Failed to fetch tickers from Polygon: {Status} - {Error}", response.StatusCode, errorBody);
-                return Array.Empty<string>();
+                return new List<string>();
             }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -113,12 +200,11 @@ public class UniverseBuilder
             if (tickerData?.Results == null || !tickerData.Results.Any())
             {
                 _logger.LogWarning("No ticker data returned from Polygon");
-                return Array.Empty<string>();
+                return new List<string>();
             }
 
-            // Filter by criteria: price 10-80, relative volume > 2, spread < 0.05, float < 150M
-            // Exclude OTC and preferred shares (API already filtered for type=CS)
-            var filtered = tickerData.Results
+            // Filter by basic validation: exclude OTC and preferred shares
+            var candidates = tickerData.Results
                 .Where(t => 
                     // Basic validation
                     t.Ticker != null &&
@@ -131,94 +217,190 @@ public class UniverseBuilder
                     !t.Ticker.Contains('-'))
                 .Select(t => t.Ticker!.ToUpperInvariant())
                 .Distinct()
-                .Where(ticker =>
-                {
-                    // Get real-time state for this ticker
-                    var state = _alpacaClient.GetSymbolState(ticker);
-                    if (state == null)
-                    {
-                        _logger.LogDebug("{Ticker} filtered: No real-time data available", ticker);
-                        return false; // No real-time data yet
-                    }
-                    
-                    // Filter by price (10-80)
-                    var price = state.GetCurrentPrice();
-                    if (!price.HasValue || price.Value < minPrice || price.Value > maxPrice)
-                    {
-                        if (price.HasValue)
-                            _logger.LogDebug("{Ticker} filtered: Price ${Price} outside range ${Min}-${Max}", ticker, price.Value, minPrice, maxPrice);
-                        return false;
-                    }
-                    
-                    // Filter by spread (< 0.05)
-                    var spread = state.GetCurrentSpread();
-                    if (!spread.HasValue || spread.Value > maxSpread)
-                    {
-                        if (spread.HasValue)
-                            _logger.LogDebug("{Ticker} filtered: Spread {Spread:P2} exceeds max {MaxSpread:P2}", ticker, spread.Value, maxSpread);
-                        return false;
-                    }
-                    
-                    // Filter by relative volume (> 2)
-                    var relVol = state.GetRelativeVolume();
-                    if (!relVol.HasValue || relVol.Value < minRelVol)
-                    {
-                        if (relVol.HasValue)
-                            _logger.LogDebug("{Ticker} filtered: RelVol {RelVol:F2} below min {MinRelVol}", ticker, relVol.Value, minRelVol);
-                        return false;
-                    }
-                    
-                    return true;
-                })
                 .ToList();
 
-            // Filter by float (shares outstanding < 150M)
-            // This requires async API calls, so we do it in a separate step
-            var floatFilteredTickers = new List<string>();
-            foreach (var ticker in filtered)
-            {
-                var sharesOutstanding = await GetSharesOutstandingAsync(ticker, cancellationToken);
-                if (sharesOutstanding.HasValue && sharesOutstanding.Value > maxFloat)
-                {
-                    _logger.LogDebug("{Ticker} filtered: float {Float}M exceeds max {MaxFloat}M", 
-                        ticker, sharesOutstanding.Value / 1_000_000m, maxFloat / 1_000_000m);
-                    continue;
-                }
-                // Note: If sharesOutstanding is null, we allow the ticker through (data unavailable)
-                floatFilteredTickers.Add(ticker);
-                
-                if (floatFilteredTickers.Count >= maxTickers)
-                    break;
-            }
-            
-            // TODO: Exclude halted symbols - requires trading status check
-            // Alpaca IEX feed doesn't provide halt status directly
-            
-            var finalFiltered = floatFilteredTickers;
+            // Cache for 1 hour
+            _cache.Set(cacheKey, candidates, TimeSpan.FromHours(1));
 
-            _logger.LogInformation(
-                "Universe built with {Count} symbols (Price ${Min}-${Max}, RelVol>{RelVol}, Spread<{Spread}, Float<{Float}M, excluding ETFs/ADRs/OTC/halted) | Top: {TopTickers}",
-                finalFiltered.Count, 
-                minPrice, 
-                maxPrice,
-                minRelVol,
-                maxSpread,
-                maxFloat / 1_000_000m,
-                string.Join(", ", finalFiltered.Take(10)));
-
-            if (!finalFiltered.Any())
-            {
-                _logger.LogWarning("No tickers passed filters.");
-                return Array.Empty<string>();
-            }
-
-            return finalFiltered;
+            return candidates;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error building universe from market data");
-            return Array.Empty<string>();
+            _logger.LogWarning(ex, "Error fetching candidate tickers from Polygon");
+            return new List<string>();
         }
+    }
+
+    /// <summary>
+    /// Filter candidates using real-time pre-market data from Alpaca (9:00-9:25 AM ET).
+    /// This gives us TODAY'S actual conditions, not yesterday's stale data.
+    /// </summary>
+    private List<string> FilterWithPreMarketData(
+        List<string> candidates,
+        decimal minPrice,
+        decimal maxPrice,
+        decimal maxSpread,
+        int preMarketMinTrades,
+        int maxTickers)
+    {
+        var filtered = new List<string>();
+        int candidatesWithData = 0;
+
+        foreach (var ticker in candidates)
+        {
+            // Check if we have pre-market data for this ticker
+            var state = _alpacaClient.GetSymbolState(ticker);
+            if (state == null)
+            {
+                _logger.LogDebug("{Ticker} filtered: No pre-market data yet", ticker);
+                continue;
+            }
+
+            candidatesWithData++;
+
+            // Filter by price (minPrice to maxPrice)
+            var price = state.GetCurrentPrice();
+            if (!price.HasValue || price.Value < minPrice || price.Value > maxPrice)
+            {
+                if (price.HasValue)
+                    _logger.LogDebug("{Ticker} filtered: Price ${Price} outside range ${Min}-${Max}", ticker, price.Value, minPrice, maxPrice);
+                continue;
+            }
+
+            // Filter by spread (< maxSpread)
+            var spread = state.GetCurrentSpread();
+            if (!spread.HasValue || spread.Value > maxSpread)
+            {
+                if (spread.HasValue)
+                    _logger.LogDebug("{Ticker} filtered: Spread {Spread:P2} exceeds max {MaxSpread:P2}", ticker, spread.Value, maxSpread);
+                continue;
+            }
+
+            // Filter by pre-market activity (at least N trades)
+            // Note: We access _recentTrades via reflection since it's internal
+            var recentTradesProperty = state.GetType().GetField("_recentTrades", 
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (recentTradesProperty == null)
+            {
+                _logger.LogDebug("{Ticker}: Cannot access trade data for pre-market filtering", ticker);
+                continue;
+            }
+
+            var recentTrades = recentTradesProperty.GetValue(state) as dynamic;
+            var tradeCount = recentTrades?.Count ?? 0;
+            if (tradeCount < preMarketMinTrades)
+            {
+                _logger.LogDebug("{Ticker} filtered: Only {TradeCount} trades, need {MinTrades}", ticker, tradeCount, preMarketMinTrades);
+                continue;
+            }
+
+            filtered.Add(ticker);
+
+            if (filtered.Count >= maxTickers)
+                break;
+        }
+
+        _logger.LogInformation(
+            "Pre-market universe filter: {CandidateCount} candidates, {WithDataCount} with data, {PassedCount} passed filters",
+            candidates.Count,
+            candidatesWithData,
+            filtered.Count);
+
+        return filtered;
+    }
+
+    /// <summary>
+    /// Filter candidates using market data from Alpaca (9:30+ AM ET).
+    /// More restrictive than pre-market: adds relative volume and float checks.
+    /// </summary>
+    private async Task<List<string>> FilterWithMarketDataAsync(
+        List<string> candidates,
+        decimal minPrice,
+        decimal maxPrice,
+        decimal minRelVol,
+        decimal maxSpread,
+        decimal maxFloat,
+        int maxTickers,
+        CancellationToken cancellationToken)
+    {
+        var filtered = new List<string>();
+
+        foreach (var ticker in candidates)
+        {
+            // Check if we have market data for this ticker
+            var state = _alpacaClient.GetSymbolState(ticker);
+            if (state == null)
+            {
+                _logger.LogDebug("{Ticker} filtered: No real-time data available", ticker);
+                continue;
+            }
+
+            // Filter by price (minPrice to maxPrice)
+            var price = state.GetCurrentPrice();
+            if (!price.HasValue || price.Value < minPrice || price.Value > maxPrice)
+            {
+                if (price.HasValue)
+                    _logger.LogDebug("{Ticker} filtered: Price ${Price} outside range ${Min}-${Max}", ticker, price.Value, minPrice, maxPrice);
+                continue;
+            }
+
+            // Filter by spread (< maxSpread)
+            var spread = state.GetCurrentSpread();
+            if (!spread.HasValue || spread.Value > maxSpread)
+            {
+                if (spread.HasValue)
+                    _logger.LogDebug("{Ticker} filtered: Spread {Spread:P2} exceeds max {MaxSpread:P2}", ticker, spread.Value, maxSpread);
+                continue;
+            }
+
+            // Filter by relative volume (> minRelVol)
+            var relVol = state.GetRelativeVolume();
+            if (!relVol.HasValue || relVol.Value < minRelVol)
+            {
+                if (relVol.HasValue)
+                    _logger.LogDebug("{Ticker} filtered: RelVol {RelVol:F2} below min {MinRelVol}", ticker, relVol.Value, minRelVol);
+                continue;
+            }
+
+            // Filter by float (shares outstanding < maxFloat)
+            var sharesOutstanding = await GetSharesOutstandingAsync(ticker, cancellationToken);
+            if (sharesOutstanding.HasValue && sharesOutstanding.Value > maxFloat)
+            {
+                _logger.LogDebug("{Ticker} filtered: float {Float}M exceeds max {MaxFloat}M",
+                    ticker, sharesOutstanding.Value / 1_000_000m, maxFloat / 1_000_000m);
+                continue;
+            }
+
+            filtered.Add(ticker);
+
+            if (filtered.Count >= maxTickers)
+                break;
+        }
+
+        return filtered;
+    }
+
+    /// <summary>
+    /// Determine the current market phase based on Eastern Time.
+    /// </summary>
+    private MarketPhase GetMarketPhase(bool enablePreMarketFiltering)
+    {
+        var eastern = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TryGetEasternTimeZone());
+
+        // After 4:00 PM ET
+        if (eastern.Hour >= 16)
+            return MarketPhase.AfterMarketClose;
+
+        // 9:30 AM to 4:00 PM ET
+        if (eastern.Hour > 9 || (eastern.Hour == 9 && eastern.Minute >= 30))
+            return MarketPhase.RegularMarket;
+
+        // 9:00 AM to 9:30 AM ET (pre-market)
+        if (enablePreMarketFiltering && eastern.Hour == 9 && eastern.Minute >= 0)
+            return MarketPhase.PreMarket;
+
+        // Before 9:00 AM ET
+        return MarketPhase.BeforePreMarket;
     }
 
     /// <summary>
@@ -292,22 +474,25 @@ public class UniverseBuilder
     {
         var eastern = TimeZoneInfo.ConvertTimeFromUtc(utcNow, TryGetEasternTimeZone());
         
-        // Only rebuild during market hours (9:30 AM - 4:00 PM ET)
-        if (eastern.Hour < 9 || eastern.Hour >= 16)
+        // Don't rebuild after market close (after 4:00 PM ET)
+        if (eastern.Hour >= 16)
         {
             return false;
         }
         
-        if (eastern.Hour == 9 && eastern.Minute < 30)
+        // START REBUILDING AT 9:00 AM (not 9:30)
+        // This allows progressive refinement as more pre-market data arrives
+        if (eastern.Hour < 9)
         {
             return false;
         }
         
-        // Line 265: log decision context before returning
-        _logger.LogInformation("Universe rebuild check at {Time} ET -> {RebuildNow}", eastern, eastern.Minute % 5 == 0);
-
         // Rebuild every 5 minutes (00, 05, 10, 15, etc.)
-        return eastern.Minute % 5 == 0;
+        var shouldRebuild = eastern.Minute % 5 == 0;
+        
+        _logger.LogInformation("Universe rebuild check at {Time} ET -> {RebuildNow}", eastern, shouldRebuild);
+
+        return shouldRebuild;
     }
 
     private static TimeZoneInfo TryGetEasternTimeZone()

@@ -124,11 +124,12 @@ public class SignalValidator
     {
         var eastern = TimeZoneInfo.ConvertTimeFromUtc(utcNow, _eastern);
 
-        // Graceful shutdown after 15:45 ET
+        // Graceful shutdown after 15:45 ET (3:45 PM)
         if (eastern.Hour > 15 || (eastern.Hour == 15 && eastern.Minute >= 45)) return false;
 
-        // Pre-market block
-        if (eastern.Hour < 9 || (eastern.Hour == 9 && eastern.Minute < 25)) return false;
+        // Signal generation only after 9:30 AM ET (not 9:25)
+        // This allows 9:00-9:30 for pre-market data collection and universe building
+        if (eastern.Hour < 9 || (eastern.Hour == 9 && eastern.Minute < 30)) return false;
 
         return true;
     }
