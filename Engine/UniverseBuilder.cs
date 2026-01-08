@@ -165,8 +165,10 @@ public class UniverseBuilder
     }
 
     /// <summary>
-    /// Get broad candidate list from Polygon API.
-    /// Cached for 1 hour since list doesn't change often.
+    /// Get smart pre-filtered candidate list using yesterday's market data (FREE Polygon tier).
+    /// Filters by price, volume, and float BEFORE subscribing to Alpaca WebSocket.
+    /// This reduces Alpaca subscriptions from 5,000 to ~200-250 tickers.
+    /// Cached for 1 hour since yesterday's data doesn't change.
     /// </summary>
     private async Task<List<string>> GetCandidateTickersAsync(string apiKey, CancellationToken cancellationToken)
     {
@@ -180,9 +182,15 @@ public class UniverseBuilder
 
         try
         {
-            // Use Polygon Ticker endpoint to search for US stocks
-            // /v3/reference/tickers?market=stocks&type=CS filters for Common Stocks only (excludes ETFs, ADRs, warrants)
-            var url = $"https://api.polygon.io/v3/reference/tickers?market=stocks&type=CS&active=true&exchange=XNAS&limit=1000&apikey={apiKey}";
+            var minPrice = _configuration.GetValue("Universe:MinPrice", 10m);
+            var maxPrice = _configuration.GetValue("Universe:MaxPrice", 80m);
+            var minVolumeYesterday = _configuration.GetValue("Universe:MinVolumeYesterday", 500_000m);
+            var maxFloat = _configuration.GetValue("Universe:MaxFloat", 150_000_000m);
+            var maxCandidates = _configuration.GetValue("Universe:MaxCandidates", 250);
+
+            // Get yesterday's market data using grouped daily endpoint (FREE tier - v2/aggs/grouped)
+            var yesterday = DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-dd");
+            var url = $"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{yesterday}?adjusted=true&apiKey={apiKey}";
             
             using var client = _httpClientFactory.CreateClient();
             var response = await client.GetAsync(url, cancellationToken);
@@ -190,39 +198,127 @@ public class UniverseBuilder
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogError("Failed to fetch tickers from Polygon: {Status} - {Error}", response.StatusCode, errorBody);
+                _logger.LogError("Failed to fetch grouped daily from Polygon: {Status} - {Error}", response.StatusCode, errorBody);
                 return new List<string>();
             }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
-            var tickerData = System.Text.Json.JsonSerializer.Deserialize<PolygonTickerListResponse>(json);
+            var groupedData = System.Text.Json.JsonSerializer.Deserialize<PolygonAggregateResponse>(json);
 
-            if (tickerData?.Results == null || !tickerData.Results.Any())
+            if (groupedData?.Results == null || !groupedData.Results.Any())
             {
-                _logger.LogWarning("No ticker data returned from Polygon");
+                _logger.LogWarning("No grouped daily data returned from Polygon for {Date}", yesterday);
                 return new List<string>();
             }
 
-            // Filter by basic validation: exclude OTC and preferred shares
-            var candidates = tickerData.Results
-                .Where(t => 
+            _logger.LogInformation("Fetched {Count} tickers from Polygon grouped daily ({Date})", 
+                groupedData.Results.Count, yesterday);
+
+            // Step 1: Filter by price and volume using yesterday's close
+            var priceVolumeFiltered = groupedData.Results
+                .Where(agg =>
                     // Basic validation
-                    t.Ticker != null &&
-                    !string.IsNullOrWhiteSpace(t.Ticker) &&
+                    agg.Ticker != null &&
+                    !string.IsNullOrWhiteSpace(agg.Ticker) &&
                     
                     // Exclude OTC (have dot notation like "STOCK.OTC")
-                    !t.Ticker.Contains('.') &&
+                    !agg.Ticker.Contains('.') &&
                     
                     // Exclude preferred shares (have dash like "STOCK-A")
-                    !t.Ticker.Contains('-'))
-                .Select(t => t.Ticker!.ToUpperInvariant())
+                    !agg.Ticker.Contains('-') &&
+                    
+                    // Price filter (use yesterday's close as proxy for today's range)
+                    agg.Close >= minPrice &&
+                    agg.Close <= maxPrice &&
+                    
+                    // Volume filter (require active trading)
+                    agg.Volume >= minVolumeYesterday)
+                .OrderByDescending(agg => agg.Volume) // Prioritize high volume stocks
+                .Take(maxCandidates * 2) // Get 2x candidates before float filter
+                .Select(agg => agg.Ticker!.ToUpperInvariant())
                 .Distinct()
                 .ToList();
 
-            // Cache for 1 hour
-            _cache.Set(cacheKey, candidates, TimeSpan.FromHours(1));
+            _logger.LogInformation(
+                "Price/Volume filter: {Total} → {Filtered} tickers (Price ${Min}-${Max}, Volume >{MinVol})",
+                groupedData.Results.Count,
+                priceVolumeFiltered.Count,
+                minPrice,
+                maxPrice,
+                minVolumeYesterday);
 
-            return candidates;
+            if (!priceVolumeFiltered.Any())
+            {
+                _logger.LogWarning("No tickers passed price/volume filters");
+                return new List<string>();
+            }
+
+            // Step 2: Filter by float (shares outstanding < maxFloat) and sort by smallest float
+            // Smaller float = higher volatility = better momentum signals
+            var maxAlpacaSubscriptions = _configuration.GetValue("Universe:MaxAlpacaSubscriptions", 40);
+            var tickersWithFloat = new List<(string Ticker, long Float)>();
+            
+            foreach (var ticker in priceVolumeFiltered)
+            {
+                var sharesOutstanding = await GetSharesOutstandingAsync(ticker, cancellationToken);
+                
+                if (sharesOutstanding.HasValue && sharesOutstanding.Value > maxFloat)
+                {
+                    _logger.LogDebug("{Ticker} filtered: float {Float}M exceeds max {MaxFloat}M",
+                        ticker, sharesOutstanding.Value / 1_000_000m, maxFloat / 1_000_000m);
+                    continue;
+                }
+                
+                // Store ticker with float data for sorting
+                if (sharesOutstanding.HasValue)
+                {
+                    tickersWithFloat.Add((ticker, sharesOutstanding.Value));
+                }
+                else
+                {
+                    // No float data - assign high value to deprioritize
+                    tickersWithFloat.Add((ticker, (long)maxFloat));
+                }
+                
+                // Collect more than we need for better sorting
+                if (tickersWithFloat.Count >= maxCandidates)
+                    break;
+            }
+
+            // Sort by smallest float first (better for momentum trading)
+            var floatFiltered = tickersWithFloat
+                .OrderBy(t => t.Float)
+                .Take(maxAlpacaSubscriptions) // Only take what Alpaca IEX free tier can handle (40)
+                .Select(t => t.Ticker)
+                .ToList();
+
+            _logger.LogInformation(
+                "Float filter + sort: {Before} → {After} tickers (Float <{MaxFloat}M, sorted by smallest) | Top: {TopTickers}",
+                priceVolumeFiltered.Count,
+                floatFiltered.Count,
+                maxFloat / 1_000_000m,
+                string.Join(", ", floatFiltered.Take(10)));
+
+            if (floatFiltered.Any())
+            {
+                // Log float distribution for top picks
+                var topFloats = tickersWithFloat.OrderBy(t => t.Float).Take(10);
+                _logger.LogInformation(
+                    "Top 10 by smallest float: {Tickers}",
+                    string.Join(", ", topFloats.Select(t => $"{t.Ticker}({t.Float / 1_000_000m:F1}M)")));
+            }
+
+            if (!floatFiltered.Any())
+            {
+                _logger.LogWarning("No tickers passed float filter - using price/volume filtered list (top {Max})",
+                    maxAlpacaSubscriptions);
+                floatFiltered = priceVolumeFiltered.Take(maxAlpacaSubscriptions).ToList();
+            }
+
+            // Cache for 1 hour (yesterday's data doesn't change)
+            _cache.Set(cacheKey, floatFiltered, TimeSpan.FromHours(1));
+
+            return floatFiltered;
         }
         catch (Exception ex)
         {
@@ -290,7 +386,7 @@ public class UniverseBuilder
             var tradeCount = recentTrades?.Count ?? 0;
             if (tradeCount < preMarketMinTrades)
             {
-                _logger.LogDebug("{Ticker} filtered: Only {TradeCount} trades, need {MinTrades}", ticker, tradeCount, preMarketMinTrades);
+                _logger.LogDebug("{Ticker} filtered: Only {TradeCount} trades, need {MinTrades}", ticker, (int)tradeCount, preMarketMinTrades);
                 continue;
             }
 
