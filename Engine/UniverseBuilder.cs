@@ -169,6 +169,14 @@ public class UniverseBuilder
     /// Filters by price, volume, and float BEFORE subscribing to Alpaca WebSocket.
     /// This reduces Alpaca subscriptions from 5,000 to ~200-250 tickers.
     /// Cached for 1 hour since yesterday's data doesn't change.
+    /// Get smart pre-filtered candidate list using yesterday's market data (FREE Polygon tier).
+    /// Filters by price, volume, and float BEFORE subscribing to Alpaca WebSocket.
+    /// This reduces Alpaca subscriptions from 5,000 to ~200-250 tickers.
+    /// Cached for 1 hour since yesterday's data doesn't change.
+    /// Get smart pre-filtered candidate list using yesterday's market data (FREE Polygon tier).
+    /// Filters by price, volume, and float BEFORE subscribing to Alpaca WebSocket.
+    /// This reduces Alpaca subscriptions from 5,000 to ~200-250 tickers.
+    /// Cached for 1 hour since yesterday's data doesn't change.
     /// </summary>
     private async Task<List<string>> GetCandidateTickersAsync(string apiKey, CancellationToken cancellationToken)
     {
@@ -253,14 +261,28 @@ public class UniverseBuilder
                 return new List<string>();
             }
 
-            // Step 2: Filter by float (shares outstanding < maxFloat) and sort by smallest float
+            // Step 2: Filter by stock type and float (shares outstanding < maxFloat) and sort by smallest float
             // Smaller float = higher volatility = better momentum signals
             var maxAlpacaSubscriptions = _configuration.GetValue("Universe:MaxAlpacaSubscriptions", 40);
             var tickersWithFloat = new List<(string Ticker, long Float)>();
             
             foreach (var ticker in priceVolumeFiltered)
             {
-                var sharesOutstanding = await GetSharesOutstandingAsync(ticker, cancellationToken);
+                var tickerDetails = await GetTickerDetailsAsync(ticker, cancellationToken);
+                
+                // Filter by stock type - only allow "Common Stock", exclude ETF/ADR/ADRC/Unit/Right/Warrant
+                if (tickerDetails?.Type != null)
+                {
+                    var type = tickerDetails.Type;
+                    if (type != "CS" && type != "Common Stock")
+                    {
+                        _logger.LogDebug("{Ticker} filtered: type={Type} (only Common Stock allowed)", ticker, type);
+                        continue;
+                    }
+                }
+                
+                var sharesOutstanding = tickerDetails?.SharesOutstanding 
+                                     ?? tickerDetails?.WeightedSharesOutstanding;
                 
                 if (sharesOutstanding.HasValue && sharesOutstanding.Value > maxFloat)
                 {
@@ -500,16 +522,17 @@ public class UniverseBuilder
     }
 
     /// <summary>
-    /// Get shares outstanding from cache or fetch from Polygon API.
+    /// Get ticker details (type, shares outstanding) from cache or fetch from Polygon API.
+    /// Implements rate limiting (5 req/min for free tier) and retry logic for 429 responses.
     /// </summary>
-    private async Task<long?> GetSharesOutstandingAsync(string ticker, CancellationToken cancellationToken)
+    private async Task<PolygonTickerDetails?> GetTickerDetailsAsync(string ticker, CancellationToken cancellationToken)
     {
         var cacheKey = FloatCacheKeyPrefix + ticker;
         
         // Check cache first
-        if (_cache.TryGetValue(cacheKey, out long? cachedFloat))
+        if (_cache.TryGetValue(cacheKey, out PolygonTickerDetails? cachedDetails))
         {
-            return cachedFloat;
+            return cachedDetails;
         }
         
         // Fetch from Polygon API
@@ -521,49 +544,107 @@ public class UniverseBuilder
         
         try
         {
-            // Add small delay to avoid rate limiting (Polygon allows 5 req/min on free tier)
-            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+            // Polygon free tier: 5 requests per minute = 12 seconds per request
+            await Task.Delay(TimeSpan.FromSeconds(12), cancellationToken);
             
-            _logger.LogDebug("Fetching float data for {Ticker} from Polygon API", ticker);
+            _logger.LogDebug("Fetching ticker details for {Ticker} from Polygon API", ticker);
             
             var url = $"https://api.polygon.io/v3/reference/tickers/{ticker}?apikey={apiKey}";
             
             using var client = _httpClientFactory.CreateClient();
-            var response = await client.GetAsync(url, cancellationToken);
             
-            if (!response.IsSuccessStatusCode)
+            // Retry logic for 429 rate limit errors with exponential backoff
+            int maxRetries = 3;
+            int retryDelaySeconds = 15;
+            
+            for (int attempt = 0; attempt <= maxRetries; attempt++)
             {
-                _logger.LogDebug("Failed to fetch float data for {Ticker}: {Status}", ticker, response.StatusCode);
-                return null;
+                var response = await client.GetAsync(url, cancellationToken);
+                
+                // Check rate limit headers
+                if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remainingValues))
+                {
+                    var remaining = remainingValues.FirstOrDefault();
+                    _logger.LogDebug("{Ticker}: Rate limit remaining: {Remaining}", ticker, remaining);
+                }
+                
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    // Check Retry-After header
+                    int retryAfter = retryDelaySeconds;
+                    if (response.Headers.TryGetValues("Retry-After", out var retryAfterValues))
+                    {
+                        if (int.TryParse(retryAfterValues.FirstOrDefault(), out var parsed))
+                        {
+                            retryAfter = parsed;
+                        }
+                    }
+                    
+                    if (attempt < maxRetries)
+                    {
+                        _logger.LogWarning(
+                            "{Ticker}: Rate limit hit (429), retrying in {RetryAfter}s (attempt {Attempt}/{MaxRetries})",
+                            ticker, retryAfter, attempt + 1, maxRetries);
+                        
+                        await Task.Delay(TimeSpan.FromSeconds(retryAfter), cancellationToken);
+                        retryDelaySeconds *= 2; // Exponential backoff
+                        continue;
+                    }
+                    else
+                    {
+                        _logger.LogError("{Ticker}: Rate limit hit (429), max retries exceeded", ticker);
+                        return null;
+                    }
+                }
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug("Failed to fetch ticker details for {Ticker}: {Status}", ticker, response.StatusCode);
+                    return null;
+                }
+                
+                var json = await response.Content.ReadAsStringAsync(cancellationToken);
+                var data = System.Text.Json.JsonSerializer.Deserialize<PolygonTickerDetailsResponse>(json);
+                
+                var tickerDetails = data?.Results;
+                
+                if (tickerDetails != null)
+                {
+                    var sharesOutstanding = tickerDetails.SharesOutstanding 
+                                         ?? tickerDetails.WeightedSharesOutstanding;
+                    
+                    // Log resolved ticker details for visibility
+                    _logger.LogInformation(
+                        "Polygon details for {Ticker}: Type={Type}, SharesOutstanding={SharesOutstanding} (~{FloatMillions}M)",
+                        ticker,
+                        tickerDetails.Type,
+                        sharesOutstanding,
+                        sharesOutstanding.HasValue ? sharesOutstanding.Value / 1_000_000m : null);
+                    
+                    // Cache for 24 hours
+                    _cache.Set(cacheKey, tickerDetails, TimeSpan.FromHours(24));
+                }
+                
+                return tickerDetails;
             }
             
-            var json = await response.Content.ReadAsStringAsync(cancellationToken);
-            var data = System.Text.Json.JsonSerializer.Deserialize<PolygonTickerDetailsResponse>(json);
-            
-            var sharesOutstanding = data?.Results?.SharesOutstanding 
-                                 ?? data?.Results?.WeightedSharesOutstanding;
-
-            // Log resolved shares outstanding for visibility
-            _logger.LogInformation(
-                "Polygon float for {Ticker}: SharesOutstanding={SharesOutstanding} (~{FloatMillions}M); WeightedSharesOutstanding={WeightedSharesOutstanding}",
-                ticker,
-                sharesOutstanding,
-                sharesOutstanding.HasValue ? sharesOutstanding.Value / 1_000_000m : null,
-                data?.Results?.WeightedSharesOutstanding);
-            
-            // Cache for 24 hours
-            if (sharesOutstanding.HasValue)
-            {
-                _cache.Set(cacheKey, sharesOutstanding.Value, TimeSpan.FromHours(24));
-            }
-            
-            return sharesOutstanding;
+            return null;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error fetching float data for {Ticker}", ticker);
+            _logger.LogWarning(ex, "Error fetching ticker details for {Ticker}", ticker);
             return null;
         }
+    }
+    
+    /// <summary>
+    /// Get shares outstanding from cache or fetch from Polygon API.
+    /// Wrapper for backward compatibility - calls GetTickerDetailsAsync.
+    /// </summary>
+    private async Task<long?> GetSharesOutstandingAsync(string ticker, CancellationToken cancellationToken)
+    {
+        var details = await GetTickerDetailsAsync(ticker, cancellationToken);
+        return details?.SharesOutstanding ?? details?.WeightedSharesOutstanding;
     }
 
     public bool ShouldRebuildNow(DateTime utcNow)
