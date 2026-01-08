@@ -94,14 +94,14 @@ builder.Services.AddScoped<PerformanceTracker>();
 builder.Services.AddSingleton<ApiQuotaTracker>();
 builder.Services.AddScoped<BacktestService>();
 
-// Event store - use PostgreSQL-backed if enabled
+// Event store - use PostgreSQL-backed if enabled, otherwise use file-based store
 if (usePostgreSQL)
 {
     builder.Services.AddSingleton<IEventStore, PostgresEventStore>();
 }
 else
 {
-    builder.Services.AddSingleton<IEventStore, InMemoryEventStore>();
+    builder.Services.AddSingleton<IEventStore, FileEventStore>();
 }
 
 // Register Polygon background service (fallback for daily aggregates)

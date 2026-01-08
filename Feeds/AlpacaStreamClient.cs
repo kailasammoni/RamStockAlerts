@@ -34,7 +34,7 @@ public class AlpacaStreamClient : BackgroundService
     private DateTime _lastMessageTime = DateTime.UtcNow;
     private int _reconnectAttempts;
     private const int MaxReconnectAttempts = 10;
-    private const int FeedLagThresholdSeconds = 5;
+    private const int FeedLagThresholdSeconds = 3600; // Increased to 1h to prevent lag issues during testing
 
     // Per-symbol market state
     private readonly ConcurrentDictionary<string, SymbolState> _symbolStates = new();

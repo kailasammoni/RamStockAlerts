@@ -86,9 +86,8 @@ public class UniverseBuilder
         var apiKey = _configuration["Polygon:ApiKey"];
         if (string.IsNullOrEmpty(apiKey))
         {
-            _logger.LogWarning("Polygon API key not configured; falling back to hardcoded tickers");
-            var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
-            return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+            _logger.LogError("Polygon API key not configured and strict mode is on. No universe will be built.");
+            return Array.Empty<string>();
         }
 
         try
@@ -104,9 +103,8 @@ public class UniverseBuilder
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogWarning("Failed to fetch tickers from Polygon: {Status} - {Error}", response.StatusCode, errorBody);
-                var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
-                return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+                _logger.LogError("Failed to fetch tickers from Polygon: {Status} - {Error}", response.StatusCode, errorBody);
+                return Array.Empty<string>();
             }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -210,18 +208,16 @@ public class UniverseBuilder
 
             if (!finalFiltered.Any())
             {
-                _logger.LogWarning("No tickers passed filters; falling back to hardcoded list");
-                var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
-                return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+                _logger.LogWarning("No tickers passed filters.");
+                return Array.Empty<string>();
             }
 
             return finalFiltered;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error building universe from market data; falling back to hardcoded tickers");
-            var fallback = _configuration.GetSection("Polygon:Tickers").Get<string[]>() ?? Array.Empty<string>();
-            return fallback.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim().ToUpperInvariant()).Distinct().ToList();
+            _logger.LogError(ex, "Error building universe from market data");
+            return Array.Empty<string>();
         }
     }
 

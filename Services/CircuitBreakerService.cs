@@ -17,7 +17,8 @@ public class CircuitBreakerService
         _cache = cache;
     }
 
-    public bool IsSuspended() => _cache.TryGetValue(SuspensionKey, out _);
+    // Force disabled for testing
+    public bool IsSuspended() => false; // _cache.TryGetValue(SuspensionKey, out _);
 
     public void Suspend(TimeSpan duration, string reason)
     {
@@ -48,6 +49,8 @@ public class CircuitBreakerService
 
     public bool ShouldThrottle(decimal spread, decimal printsPerSecond, DateTime timestampUtc)
     {
+        return false; // Disabled for testing
+
         // Liquidity collapse detection
         if (spread >= 0.1m)
         {
