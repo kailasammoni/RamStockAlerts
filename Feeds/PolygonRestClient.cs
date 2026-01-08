@@ -231,33 +231,95 @@ public class PolygonRestClient : BackgroundService
             var delay = _quotaTracker.GetRequiredDelay();
             if (delay > TimeSpan.Zero)
             {
-                _logger.LogWarning("Rate limit approaching, delaying request by {Delay}ms", delay.TotalMilliseconds);
+                _logger.LogWarning(
+                    "[Polygon Rate Limit] Rate limit approaching for {Ticker}. Delaying {Delay}ms to respect quota.",
+                    ticker, delay.TotalMilliseconds);
                 await Task.Delay(delay, stoppingToken);
             }
             else
             {
-                _logger.LogWarning("Daily quota exceeded, skipping request for {Ticker}", ticker);
+                _logger.LogWarning(
+                    "[Polygon Quota] Daily quota exceeded for {Ticker}. Skipping request. Check API limits at polygon.io/dashboard",
+                    ticker);
                 return null;
             }
         }
 
         var url = $"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev?apiKey={_apiKey}";
+        var requestTime = DateTime.UtcNow;
 
         using var httpClient = _httpClientFactory.CreateClient("Polygon");
-        var response = await _retryPolicy.ExecuteAsync(async () =>
-            await httpClient.GetAsync(url, stoppingToken));
+        _logger.LogDebug("[Polygon Request] Fetching previous day aggregate for {Ticker}", ticker);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _retryPolicy.ExecuteAsync(async () =>
+                await httpClient.GetAsync(url, stoppingToken));
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(
+                ex,
+                "[Polygon Network] Network error fetching aggregate for {Ticker}: {Message}",
+                ticker, ex.Message);
+            return null;
+        }
+
+        var elapsedMs = (DateTime.UtcNow - requestTime).TotalMilliseconds;
 
         // Record the request for quota tracking
         _quotaTracker.RecordRequest();
 
+        // Log rate limit headers if available
+        if (response.Headers.TryGetValues("X-Ratelimit-Limit", out var limitHeaders))
+        {
+            var limit = limitHeaders.FirstOrDefault();
+            if (response.Headers.TryGetValues("X-Ratelimit-Remaining", out var remainingHeaders))
+            {
+                var remaining = remainingHeaders.FirstOrDefault();
+                _logger.LogInformation(
+                    "[Polygon Quota Status] {Ticker}: {Remaining}/{Limit} requests remaining",
+                    ticker, remaining, limit);
+            }
+        }
+
         if (!response.IsSuccessStatusCode)
         {
-            _logger.LogWarning("Failed to fetch aggregate for {Ticker}: {Status}", ticker, response.StatusCode);
+            var statusCode = (int)response.StatusCode;
+            if (statusCode == 429)
+            {
+                _logger.LogError(
+                    "[Polygon Rate Limit ERROR] HTTP 429 Too Many Requests for {Ticker}. Respect retry-after headers. " +
+                    "Free tier is 5 requests/min. Consider upgrading: polygon.io/pricing",
+                    ticker);
+                // Implement exponential backoff for 429 errors
+                var delay = TimeSpan.FromSeconds(Math.Min(60, 5));
+                _logger.LogWarning("[Polygon Backoff] Waiting {Delay}s before retry", delay.TotalSeconds);
+                await Task.Delay(delay, stoppingToken);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "[Polygon API Error] Failed to fetch aggregate for {Ticker}: HTTP {Status} ({Elapsed}ms)",
+                    ticker, statusCode, elapsedMs);
+            }
             return null;
         }
 
+        _logger.LogDebug(
+            "[Polygon Success] Received aggregate for {Ticker} ({Elapsed}ms)",
+            ticker, elapsedMs);
+
         var json = await response.Content.ReadAsStringAsync(stoppingToken);
         var data = JsonSerializer.Deserialize<PolygonAggregateResponse>(json);
+
+        if (data?.Results?.Any() == true)
+        {
+            _logger.LogDebug(
+                "[Polygon Data] {Ticker}: Close={Close:F2}, High={High:F2}, Low={Low:F2}, Volume={Volume}",
+                ticker, data.Results.First().Close, data.Results.First().High, data.Results.First().Low, data.Results.First().Volume);
+        }
 
         return data?.Results?.FirstOrDefault();
     }

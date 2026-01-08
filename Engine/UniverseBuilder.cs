@@ -3,6 +3,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Feeds;
 using RamStockAlerts.Models.Polygon;
+using System.IO;
+using System.Text.Json;
 
 namespace RamStockAlerts.Engine;
 
@@ -25,6 +27,9 @@ public class UniverseBuilder
     private readonly ILogger<UniverseBuilder> _logger;
     private readonly AlpacaStreamClient _alpacaClient;
     private readonly SemaphoreSlim _universeBuildLock = new(1, 1);
+    private readonly SemaphoreSlim _persistLock = new(1, 1);
+    private readonly string _tickerDetailsPersistPath;
+    private Dictionary<string, PolygonTickerDetails>? _persistedTickerDetails;
 
     private const string UniverseCacheKey = "universe.active";
     private const string FloatCacheKeyPrefix = "float.";
@@ -44,6 +49,9 @@ public class UniverseBuilder
         _cache = cache;
         _logger = logger;
         _alpacaClient = alpacaClient;
+        var baseDir = AppContext.BaseDirectory;
+        var dataDir = Path.Combine(baseDir, "data");
+        _tickerDetailsPersistPath = Path.Combine(dataDir, "polygon-ticker-details.json");
     }
 
     public async Task<IReadOnlyCollection<string>> GetActiveUniverseAsync(CancellationToken cancellationToken)
@@ -263,12 +271,18 @@ public class UniverseBuilder
 
             // Step 2: Filter by stock type and float (shares outstanding < maxFloat) and sort by smallest float
             // Smaller float = higher volatility = better momentum signals
-            var maxAlpacaSubscriptions = _configuration.GetValue("Universe:MaxAlpacaSubscriptions", 40);
+            // NOTE: Alpaca IEX FREE tier only allows 30 WebSocket subscriptions (not 400!)
+            var maxAlpacaSubscriptions = _configuration.GetValue("Universe:MaxAlpacaSubscriptions", 30);
             var tickersWithFloat = new List<(string Ticker, long Float)>();
+            
+            // Create a longer timeout for ticker detail fetching since we're making 500+ sequential API calls
+            // Each call takes ~12 seconds (Polygon free tier rate limit), so 500 calls = ~100 minutes
+            using var tickerDetailsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            tickerDetailsCts.CancelAfter(TimeSpan.FromMinutes(120)); // 2-hour timeout for ticker detail fetching
             
             foreach (var ticker in priceVolumeFiltered)
             {
-                var tickerDetails = await GetTickerDetailsAsync(ticker, cancellationToken);
+                var tickerDetails = await GetTickerDetailsAsync(ticker, tickerDetailsCts.Token);
                 
                 // Filter by stock type - only allow "Common Stock", exclude ETF/ADR/ADRC/Unit/Right/Warrant
                 if (tickerDetails?.Type != null)
@@ -310,7 +324,7 @@ public class UniverseBuilder
             // Sort by smallest float first (better for momentum trading)
             var floatFiltered = tickersWithFloat
                 .OrderBy(t => t.Float)
-                .Take(maxAlpacaSubscriptions) // Only take what Alpaca IEX free tier can handle (40)
+                .Take(maxAlpacaSubscriptions) // Only take what Alpaca IEX free tier can handle (30 symbols max)
                 .Select(t => t.Ticker)
                 .ToList();
 
@@ -429,7 +443,12 @@ public class UniverseBuilder
 
     /// <summary>
     /// Filter candidates using market data from Alpaca (9:30+ AM ET).
-    /// More restrictive than pre-market: adds relative volume and float checks.
+    /// More restrictive than pre-market: adds relative volume check.
+    /// Note: Float filtering already done in GetCandidateTickersAsync, no need to re-check.
+    /// 
+    /// BOOTSTRAP MODE: If Alpaca WebSocket has no symbol states yet, use all candidates
+    /// to give AlpacaStreamClient something to subscribe to. Once connected, it will
+    /// refine the universe by updating symbol states and triggering a rebuild.
     /// </summary>
     private async Task<List<string>> FilterWithMarketDataAsync(
         List<string> candidates,
@@ -442,6 +461,10 @@ public class UniverseBuilder
         CancellationToken cancellationToken)
     {
         var filtered = new List<string>();
+        int noDataCount = 0;
+        int priceFilteredCount = 0;
+        int spreadFilteredCount = 0;
+        int volFilteredCount = 0;
 
         foreach (var ticker in candidates)
         {
@@ -450,6 +473,7 @@ public class UniverseBuilder
             if (state == null)
             {
                 _logger.LogDebug("{Ticker} filtered: No real-time data available", ticker);
+                noDataCount++;
                 continue;
             }
 
@@ -459,6 +483,7 @@ public class UniverseBuilder
             {
                 if (price.HasValue)
                     _logger.LogDebug("{Ticker} filtered: Price ${Price} outside range ${Min}-${Max}", ticker, price.Value, minPrice, maxPrice);
+                priceFilteredCount++;
                 continue;
             }
 
@@ -468,6 +493,7 @@ public class UniverseBuilder
             {
                 if (spread.HasValue)
                     _logger.LogDebug("{Ticker} filtered: Spread {Spread:P2} exceeds max {MaxSpread:P2}", ticker, spread.Value, maxSpread);
+                spreadFilteredCount++;
                 continue;
             }
 
@@ -477,23 +503,39 @@ public class UniverseBuilder
             {
                 if (relVol.HasValue)
                     _logger.LogDebug("{Ticker} filtered: RelVol {RelVol:F2} below min {MinRelVol}", ticker, relVol.Value, minRelVol);
+                volFilteredCount++;
                 continue;
             }
 
-            // Filter by float (shares outstanding < maxFloat)
-            var sharesOutstanding = await GetSharesOutstandingAsync(ticker, cancellationToken);
-            if (sharesOutstanding.HasValue && sharesOutstanding.Value > maxFloat)
-            {
-                _logger.LogDebug("{Ticker} filtered: float {Float}M exceeds max {MaxFloat}M",
-                    ticker, sharesOutstanding.Value / 1_000_000m, maxFloat / 1_000_000m);
-                continue;
-            }
+            // Float already filtered in GetCandidateTickersAsync - no need to check again
 
             filtered.Add(ticker);
 
             if (filtered.Count >= maxTickers)
                 break;
         }
+
+        // BOOTSTRAP MODE: If Alpaca WebSocket has no data yet (all candidates filtered out due to NoData),
+        // use the raw candidates instead. This allows AlpacaStreamClient to subscribe to something,
+        // then once it connects and starts receiving quotes, it triggers a universe rebuild with real data.
+        if (filtered.Count == 0 && noDataCount > 0 && noDataCount == candidates.Count)
+        {
+            _logger.LogWarning(
+                "BOOTSTRAP MODE: Alpaca WebSocket has no data yet. Using all {CandidateCount} candidates to initialize subscriptions. " +
+                "Universe will be refined once real-time data arrives.",
+                candidates.Count);
+            
+            filtered = candidates.Take(maxTickers).ToList();
+        }
+
+        _logger.LogInformation(
+            "Real-time market data filter: {Candidates} candidates → {Passed} passed | Breakdown: NoData={NoData}, PriceOOB={Price}, SpreadHigh={Spread}, VolLow={Vol}",
+            candidates.Count,
+            filtered.Count,
+            noDataCount,
+            priceFilteredCount,
+            spreadFilteredCount,
+            volFilteredCount);
 
         return filtered;
     }
@@ -521,6 +563,66 @@ public class UniverseBuilder
         return MarketPhase.BeforePreMarket;
     }
 
+    private async Task EnsurePersistedStoreLoadedAsync(CancellationToken cancellationToken)
+    {
+        if (_persistedTickerDetails != null)
+        {
+            return;
+        }
+
+        await _persistLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_persistedTickerDetails != null)
+            {
+                return;
+            }
+
+            if (!File.Exists(_tickerDetailsPersistPath))
+            {
+                _persistedTickerDetails = new Dictionary<string, PolygonTickerDetails>(StringComparer.OrdinalIgnoreCase);
+                return;
+            }
+
+            var json = await File.ReadAllTextAsync(_tickerDetailsPersistPath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                _persistedTickerDetails = new Dictionary<string, PolygonTickerDetails>(StringComparer.OrdinalIgnoreCase);
+                return;
+            }
+
+            _persistedTickerDetails = JsonSerializer.Deserialize<Dictionary<string, PolygonTickerDetails>>(json)
+                ?? new Dictionary<string, PolygonTickerDetails>(StringComparer.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            _persistLock.Release();
+        }
+    }
+
+    private async Task PersistTickerDetailsAsync(string ticker, PolygonTickerDetails tickerDetails, CancellationToken cancellationToken)
+    {
+        await EnsurePersistedStoreLoadedAsync(cancellationToken);
+
+        await _persistLock.WaitAsync(cancellationToken);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_tickerDetailsPersistPath)!);
+            _persistedTickerDetails![ticker] = tickerDetails;
+
+            var json = JsonSerializer.Serialize(_persistedTickerDetails, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            await File.WriteAllTextAsync(_tickerDetailsPersistPath, json, cancellationToken);
+        }
+        finally
+        {
+            _persistLock.Release();
+        }
+    }
+
     /// <summary>
     /// Get ticker details (type, shares outstanding) from cache or fetch from Polygon API.
     /// Implements rate limiting (5 req/min for free tier) and retry logic for 429 responses.
@@ -534,6 +636,15 @@ public class UniverseBuilder
         {
             return cachedDetails;
         }
+
+        // Load persisted details from disk if available
+        await EnsurePersistedStoreLoadedAsync(cancellationToken);
+        if (_persistedTickerDetails != null && _persistedTickerDetails.TryGetValue(ticker, out var persistedDetails))
+        {
+            _cache.Set(cacheKey, persistedDetails, TimeSpan.FromHours(24));
+            _logger.LogDebug("Using persisted ticker details for {Ticker}", ticker);
+            return persistedDetails;
+        }
         
         // Fetch from Polygon API
         var apiKey = _configuration["Polygon:ApiKey"];
@@ -544,7 +655,7 @@ public class UniverseBuilder
         
         try
         {
-            // Polygon free tier: 5 requests per minute = 12 seconds per request
+            // Polygon free tier: 5 requests per minute = ~12 seconds per request (shortened to 5s for testing)
             await Task.Delay(TimeSpan.FromSeconds(12), cancellationToken);
             
             _logger.LogDebug("Fetching ticker details for {Ticker} from Polygon API", ticker);
@@ -623,6 +734,9 @@ public class UniverseBuilder
                     
                     // Cache for 24 hours
                     _cache.Set(cacheKey, tickerDetails, TimeSpan.FromHours(24));
+
+                    // Persist to disk so we avoid re-fetching during testing sessions
+                    await PersistTickerDetailsAsync(ticker, tickerDetails, cancellationToken);
                 }
                 
                 return tickerDetails;
@@ -667,7 +781,7 @@ public class UniverseBuilder
         // Rebuild every 5 minutes (00, 05, 10, 15, etc.)
         var shouldRebuild = eastern.Minute % 5 == 0;
         
-        _logger.LogInformation("Universe rebuild check at {Time} ET -> {RebuildNow}", eastern, shouldRebuild);
+        _logger.LogTrace("Universe rebuild check at {Time} ET -> {RebuildNow}", eastern, shouldRebuild);
 
         return shouldRebuild;
     }

@@ -104,12 +104,17 @@ else
     builder.Services.AddSingleton<IEventStore, FileEventStore>();
 }
 
-// Register Polygon background service (fallback for daily aggregates)
-builder.Services.AddHostedService<PolygonRestClient>();
-
 // Register Alpaca real-time streaming service
 builder.Services.AddSingleton<AlpacaStreamClient>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AlpacaStreamClient>());
+
+// Register Polygon background service only if Alpaca is not configured (fallback for daily aggregates)
+var alpacaKey = builder.Configuration["Alpaca:Key"];
+if (string.IsNullOrEmpty(alpacaKey))
+{
+    builder.Services.AddHostedService<PolygonRestClient>();
+    Log.Warning("Alpaca not configured. Using PolygonRestClient as fallback (development mode).");
+}
 
 // Health checks
 var healthChecks = builder.Services.AddHealthChecks();

@@ -68,15 +68,21 @@ public class AlpacaStreamClient : BackgroundService
     {
         if (string.IsNullOrEmpty(_apiKey) || string.IsNullOrEmpty(_apiSecret))
         {
-            _logger.LogWarning("Alpaca API credentials not configured. AlpacaStreamClient is disabled.");
+            _logger.LogError(
+                "[Alpaca Config] API credentials not configured. Check appsettings.json for Alpaca:Key and Alpaca:Secret. " +
+                "AlpacaStreamClient is DISABLED.");
             return;
         }
+
+        _logger.LogInformation("[Alpaca Init] AlpacaStreamClient starting. Loading universe...");
 
         // Initial universe load
         var universeBuilder = _serviceProvider.GetRequiredService<UniverseBuilder>();
         _subscribedSymbols = await universeBuilder.GetActiveUniverseAsync(stoppingToken);
 
-        _logger.LogInformation("AlpacaStreamClient starting with {Count} symbols", _subscribedSymbols.Count);
+        _logger.LogInformation(
+            "[Alpaca Init] Universe loaded with {Count} symbols. Connecting to stream at {Url}...",
+            _subscribedSymbols.Count, _streamUrl);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -131,6 +137,10 @@ public class AlpacaStreamClient : BackgroundService
             throw new InvalidOperationException("Alpaca authentication failed");
         }
 
+        // Clear any stale subscriptions from previous connections
+        // This ensures a clean slate after restart/reconnect
+        await ClearAllSubscriptionsAsync(stoppingToken);
+
         // Subscribe to symbols
         await SubscribeAsync(_subscribedSymbols, stoppingToken);
 
@@ -184,29 +194,73 @@ public class AlpacaStreamClient : BackgroundService
     {
         var authMsg = JsonSerializer.Serialize(new
         {
-            action = "auth",
             key = _apiKey,
-            secret = _apiSecret
+            secret = _apiSecret,
+            action = "auth"
         });
 
         await SendAsync(authMsg, ct);
         _logger.LogDebug("Auth message sent");
     }
 
+    private async Task ClearAllSubscriptionsAsync(CancellationToken ct)
+    {
+        // Send an unsubscribe-all message to clear any stale subscriptions
+        // This is important on startup/reconnect to avoid accumulating subscriptions
+        // Note: Alpaca's API doesn't have a true "unsubscribe all" message,
+        // so we just skip this if there are no known subscriptions
+        if (!_subscribedSymbols.Any())
+        {
+            _logger.LogInformation("[Alpaca Startup] No previous subscriptions to clear");
+            return;
+        }
+
+        var clearMsg = BuildSubscriptionJson(_subscribedSymbols.ToArray(), "unsubscribe");
+
+        _logger.LogInformation("[Alpaca Startup] Clearing {Count} stale subscriptions from previous connections", _subscribedSymbols.Count);
+        _logger.LogDebug("[Alpaca Protocol] Unsubscribe message: {Message}", clearMsg);
+        await SendAsync(clearMsg, ct);
+    }
+
     private async Task SubscribeAsync(IReadOnlyCollection<string> symbols, CancellationToken ct)
     {
-        if (!symbols.Any()) return;
-
-        var subMsg = JsonSerializer.Serialize(new
+        if (!symbols.Any())
         {
-            action = "subscribe",
-            trades = symbols.ToArray(),
-            quotes = symbols.ToArray()
-        });
+            _logger.LogWarning("[Alpaca Subscribe] No symbols to subscribe to. Universe is empty.");
+            return;
+        }
+
+        // Alpaca has a 400 symbol per-connection limit.
+        // Only subscribe to quotes (not trades) to maximize coverage with available slot
+        var limitedSymbols = symbols.Take(400).ToArray();
+        
+        if (limitedSymbols.Length < symbols.Count)
+        {
+            _logger.LogError(
+                "[Alpaca Limit] Universe has {Total} symbols but Alpaca limit is 400. " +
+                "Only subscribing to first 400. Remaining {Remaining} symbols will not have real-time data.",
+                symbols.Count, symbols.Count - limitedSymbols.Length);
+        }
+
+        _logger.LogInformation(
+            "[Alpaca Subscribe] Subscribing to {Count} symbols from universe. Sample: {Symbols}",
+            limitedSymbols.Length,
+            string.Join(", ", limitedSymbols.Take(10)) + (limitedSymbols.Length > 10 ? "..." : ""));
+
+        // CRITICAL: Use OrderedDictionary to ensure quotes comes BEFORE action
+        // System.Text.Json doesn't guarantee property order from anonymous objects
+        var subMsg = BuildSubscriptionJson(limitedSymbols, "subscribe");
+
+        _logger.LogInformation(
+            "[Alpaca Protocol] Sending subscription message ({Bytes} bytes): {Message}",
+            Encoding.UTF8.GetByteCount(subMsg),
+            subMsg.Length > 500 ? subMsg.Substring(0, 500) + "..." : subMsg);
 
         await SendAsync(subMsg, ct);
         _subscribedSymbols = symbols;
-        _logger.LogInformation("Subscribed to {Count} symbols", symbols.Count);
+        _logger.LogInformation(
+            "[Alpaca Status] Successfully subscribed to {Count} symbols (limit: 400/connection)",
+            limitedSymbols.Length);
     }
 
     private async Task ResubscribeAsync(IReadOnlyCollection<string> newSymbols, CancellationToken ct)
@@ -214,12 +268,12 @@ public class AlpacaStreamClient : BackgroundService
         // Unsubscribe from old symbols
         if (_subscribedSymbols.Any())
         {
-            var unsubMsg = JsonSerializer.Serialize(new
-            {
-                action = "unsubscribe",
-                trades = _subscribedSymbols.ToArray(),
-                quotes = _subscribedSymbols.ToArray()
-            });
+            // Only unsubscribe from quotes (matching what we subscribed to)
+            var unsubMsg = BuildSubscriptionJson(_subscribedSymbols.ToArray(), "unsubscribe");
+            _logger.LogInformation(
+                "[Alpaca Resubscribe] Unsubscribing from {Count} old symbols before resubscribing",
+                _subscribedSymbols.Count);
+            _logger.LogDebug("[Alpaca Protocol] Unsubscribe message: {Message}", unsubMsg);
             await SendAsync(unsubMsg, ct);
         }
 
@@ -256,12 +310,33 @@ public class AlpacaStreamClient : BackgroundService
                     ProcessQuote(msg);
                     break;
                 case "success":
-                    _logger.LogDebug("Alpaca: {Msg}", msg.GetProperty("msg").GetString());
+                    var successMsg = msg.GetProperty("msg").GetString();
+                    _logger.LogInformation("[Alpaca Success] {Message}", successMsg);
                     break;
                 case "error":
-                    _logger.LogError("Alpaca error: {Code} {Msg}",
-                        msg.GetProperty("code").GetInt32(),
-                        msg.GetProperty("msg").GetString());
+                    var errorCode = msg.GetProperty("code").GetInt32();
+                    var errorMsg = msg.GetProperty("msg").GetString();
+                    
+                    if (errorCode == 405)
+                    {
+                        _logger.LogError(
+                            "[Alpaca Error 405] Symbol limit exceeded. Message: {Message}. " +
+                            "Check subscription size. Current subscribed count: {Count}. Max allowed: 400",
+                            errorMsg, _subscribedSymbols.Count);
+                    }
+                    else if (errorCode == 400)
+                    {
+                        _logger.LogError(
+                            "[Alpaca Error 400] Invalid message syntax. Message: {Message}. " +
+                            "Check JSON structure and encoding.",
+                            errorMsg);
+                    }
+                    else
+                    {
+                        _logger.LogError(
+                            "[Alpaca Error {Code}] {Message}. Subscribed symbols: {Count}/{Max}",
+                            errorCode, errorMsg, _subscribedSymbols.Count, 400);
+                    }
                     break;
             }
         }
@@ -279,6 +354,12 @@ public class AlpacaStreamClient : BackgroundService
 
         var state = _symbolStates.GetOrAdd(symbol, _ => new SymbolState());
         state.UpdateQuote(bidPrice, askPrice, bidSize, askSize);
+
+        // Log quote details for debugging
+        var spread = askPrice > 0 ? (askPrice - bidPrice) / bidPrice * 100 : 0;
+        _logger.LogDebug(
+            "[Alpaca Quote] {Symbol}: Bid=${Bid:F2}×{BidSize} Ask=${Ask:F2}×{AskSize} | Spread={Spread:F3}%",
+            symbol, bidPrice, (int)bidSize, askPrice, (int)askSize, spread);
     }
 
     private async Task ProcessTradeAsync(JsonElement msg, CancellationToken ct)
@@ -400,22 +481,19 @@ public class AlpacaStreamClient : BackgroundService
         {
             try
             {
-                var unsubMsg = JsonSerializer.Serialize(new
-                {
-                    action = "unsubscribe",
-                    trades = _subscribedSymbols.ToArray(),
-                    quotes = _subscribedSymbols.ToArray()
-                });
+                // Only unsubscribe from quotes (matching what we subscribed to)
+                var unsubMsg = BuildSubscriptionJson(_subscribedSymbols.ToArray(), "unsubscribe");
                 
                 await SendAsync(unsubMsg, cancellationToken);
-                _logger.LogInformation("Sent unsubscribe message for {Count} symbols", _subscribedSymbols.Count);
+                _logger.LogInformation("[Alpaca Shutdown] Sent unsubscribe message for {Count} symbols", _subscribedSymbols.Count);
+                _logger.LogDebug("[Alpaca Protocol] Shutdown unsubscribe message: {Message}", unsubMsg);
                 
                 // Wait a moment for unsubscribe confirmation
                 await Task.Delay(500, cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error sending unsubscribe during shutdown");
+                _logger.LogWarning(ex, "[Alpaca Shutdown] Error sending unsubscribe");
             }
         }
 
@@ -477,7 +555,22 @@ public class AlpacaStreamClient : BackgroundService
             return (avg, p50, p95, p99);
         }
     }
-}
+
+    /// <summary>
+    /// Build JSON with guaranteed property order: quotes BEFORE action.
+        /// This is CRITICAL for Alpaca WebSocket API compatibility.
+        /// System.Text.Json doesn't guarantee property order from anonymous objects,
+        /// so we manually construct the JSON string in the exact order Alpaca requires.
+        /// </summary>
+        private static string BuildSubscriptionJson(string[] symbols, string action)
+        {
+            var quotesJson = JsonSerializer.Serialize(symbols);
+            return $@"{{
+  ""quotes"": {quotesJson},
+  ""action"": ""{action}""
+}}";
+        }
+    }
 
 /// <summary>
 /// Maintains rolling market state for a single symbol.
@@ -731,3 +824,4 @@ public class SymbolState
         return sorted[q3Index] - sorted[q1Index];
     }
 }
+
