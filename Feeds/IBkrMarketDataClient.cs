@@ -32,9 +32,6 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly ConcurrentDictionary<string, OrderBookState> _orderBooks = new();
     
     private const int MARKET_DEPTH_LEVELS = 10;
-    private const string HOST = "127.0.0.1";
-    private const int PORT = 7497; // TWS API port (paper trading: 7497, live: 7496)
-    private const int CLIENT_ID = 1;
     
     public IBkrMarketDataClient(
         ILogger<IBkrMarketDataClient> logger,
@@ -60,15 +57,23 @@ public class IBkrMarketDataClient : BackgroundService
             _eClientSocket = new EClientSocket(_wrapper, _readerSignal);
             
             // Connect to TWS
-            _eClientSocket.eConnect(HOST, PORT, CLIENT_ID);
+            var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
+            var port = _configuration.GetValue<int?>("IBKR:Port")
+                       ?? _configuration.GetValue<int?>("Ibkr:Port")
+                       ?? 7497; // default to paper trading port
+            var clientId = _configuration.GetValue<int?>("IBKR:ClientId")
+                          ?? _configuration.GetValue<int?>("Ibkr:ClientId")
+                          ?? 1;
+
+            _eClientSocket.eConnect(host, port, clientId);
             
             if (!_eClientSocket.IsConnected())
             {
-                _logger.LogError("[IBKR] Failed to connect to TWS at {Host}:{Port}", HOST, PORT);
+                _logger.LogError("[IBKR] Failed to connect to TWS at {Host}:{Port}", host, port);
                 return;
             }
             
-            _logger.LogInformation("[IBKR] Connected to TWS at {Host}:{Port}", HOST, PORT);
+            _logger.LogInformation("[IBKR] Connected to TWS at {Host}:{Port}", host, port);
 
             // Start API (required by some connection modes)
             _eClientSocket.startApi();
@@ -415,4 +420,6 @@ internal class IBkrWrapperImpl : EWrapper
     // Added in newer APIs; keep stubs for compatibility if present
     public void tickReqParams(int tickerId, double minTick, string bboExchange, int snapshotPermissions) { }
     public void tickByTick(int reqId, int tickType, long time, double price, int size, TickAttribLast tickAttribLast, string exchange, string specialConditions) { }
+
+
 }

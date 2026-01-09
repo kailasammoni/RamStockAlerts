@@ -20,6 +20,27 @@ Log.Logger = new LoggerConfiguration()
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
     .CreateLogger();
 
+// Check if running in RECORD mode (for IBKR data validation)
+var mode = Environment.GetEnvironmentVariable("MODE")?.Trim().ToLowerInvariant();
+
+if (mode == "record")
+{
+    // RECORD MODE: Simple IBKR data recorder (writes L2 + tape to JSONL files)
+    Log.Information("Starting in RECORD mode - IBKR data will be written to logs/");
+    
+    var hostBuilder = Host.CreateDefaultBuilder(args)
+        .UseSerilog()
+        .ConfigureServices((context, services) =>
+        {
+            services.AddHostedService<IbkrRecorderHostedService>();
+        });
+    
+    var host = hostBuilder.Build();
+    await host.RunAsync();
+    return;
+}
+
+// NORMAL MODE: Full API application
 var builder = WebApplication.CreateBuilder(args);
 
 // Use Serilog
@@ -124,7 +145,8 @@ builder.Services.AddSingleton<OrderFlowSignalValidator>();
 var ibkrEnabled = builder.Configuration.GetValue("IBKR:Enabled", false);
 if (ibkrEnabled)
 {
-    builder.Services.AddHostedService<IBkrMarketDataClient>();
+    builder.Services.AddSingleton<IBkrMarketDataClient>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<IBkrMarketDataClient>());
     Log.Information("IBkrMarketDataClient enabled");
 }
 

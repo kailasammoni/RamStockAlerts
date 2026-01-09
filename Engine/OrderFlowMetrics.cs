@@ -1,5 +1,6 @@
 using RamStockAlerts.Models;
 using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 
 namespace RamStockAlerts.Engine;
 
@@ -19,6 +20,7 @@ public class OrderFlowMetrics
     
     private readonly Dictionary<string, MetricSnapshot> _snapshots = new();
     private readonly Dictionary<string, TapeWindow> _tapeWindows = new();
+    private readonly ConcurrentDictionary<string, OrderBookState> _orderBooks = new();
     
     private const long WALL_PERSISTENCE_MS = 1000; // 1 second
     private const int TAPE_WINDOW_MS = 3000;       // 3 second acceleration window
@@ -75,6 +77,9 @@ public class OrderFlowMetrics
     /// </summary>
     public MetricSnapshot UpdateMetrics(OrderBookState book, long currentTimeMs)
     {
+        // Store the order book state for external access
+        _orderBooks[book.Symbol] = book;
+        
         var snapshot = new MetricSnapshot
         {
             Symbol = book.Symbol,
@@ -247,5 +252,21 @@ public class OrderFlowMetrics
     public MetricSnapshot? GetLatestSnapshot(string symbol)
     {
         return _snapshots.TryGetValue(symbol, out var snap) ? snap : null;
+    }
+    
+    /// <summary>
+    /// Get order book snapshot for a symbol (for testing/monitoring)
+    /// </summary>
+    public OrderBookState? GetOrderBookSnapshot(string symbol)
+    {
+        return _orderBooks.TryGetValue(symbol, out var book) ? book : null;
+    }
+    
+    /// <summary>
+    /// Get list of all subscribed symbols with order book data
+    /// </summary>
+    public List<string> GetSubscribedSymbols()
+    {
+        return _orderBooks.Keys.OrderBy(x => x).ToList();
     }
 }
