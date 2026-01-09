@@ -32,6 +32,7 @@
     <PackageReference Include="MailKit" Version="4.10.0" />
     <PackageReference Include="Polly" Version="8.6.5" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.0" />
+    <PackageReference Include="IBApi" Version="1.0.0-preview-975" />
   </ItemGroup>
 
 </Project>
