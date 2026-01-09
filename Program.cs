@@ -116,6 +116,18 @@ if (string.IsNullOrEmpty(alpacaKey))
     Log.Warning("Alpaca not configured. Using PolygonRestClient as fallback (development mode).");
 }
 
+// Register order flow metrics and signal validation (IBKR Phase 3-4)
+builder.Services.AddSingleton<OrderFlowMetrics>();
+builder.Services.AddSingleton<OrderFlowSignalValidator>();
+
+// Register IBKR market data client (Phase 1-2) if configured
+var ibkrEnabled = builder.Configuration.GetValue("IBKR:Enabled", false);
+if (ibkrEnabled)
+{
+    builder.Services.AddHostedService<IBkrMarketDataClient>();
+    Log.Information("IBkrMarketDataClient enabled");
+}
+
 // Health checks
 var healthChecks = builder.Services.AddHealthChecks();
 
