@@ -74,13 +74,18 @@ public class OrderFlowMetrics
     
     /// <summary>
     /// Update metrics based on current order book state
+    /// MANDATORY FIX #1: Hard gate enforces that metrics are NEVER emitted for invalid books.
+    /// Any invalid book returns a zeroed snapshot. Callers must not use invalid snapshots for signal generation.
     /// </summary>
     public MetricSnapshot UpdateMetrics(OrderBookState book, long currentTimeMs)
     {
-        // Gate: Skip metrics on invalid book
+        // HARD GATE: Absolute check - no exceptions
         if (!book.IsBookValid(out var validityReason))
         {
-            _logger.LogWarning("Skipping metrics update for {Symbol} due to invalid book: {Reason}", book.Symbol, validityReason);
+            _logger.LogWarning("[Metrics GATE] Blocking metrics for {Symbol}: {Reason} (timestamp={TimestampMs})", 
+                book.Symbol, validityReason, currentTimeMs);
+            
+            // Return zeroed snapshot - safe for consumers
             var invalidSnapshot = new MetricSnapshot
             {
                 Symbol = book.Symbol,
@@ -93,6 +98,11 @@ public class OrderFlowMetrics
                 SpoofScore = 0m,
                 TapeAcceleration = 0m
             };
+            
+            // DO NOT store invalid snapshot - prevent downstream signal generation
+            // Also clear any stale cached snapshot for this symbol to prevent reuse
+            _snapshots.Remove(book.Symbol, out _);
+            
             return invalidSnapshot;
         }
 
@@ -270,7 +280,20 @@ public class OrderFlowMetrics
     
     public MetricSnapshot? GetLatestSnapshot(string symbol)
     {
-        return _snapshots.TryGetValue(symbol, out var snap) ? snap : null;
+        if (!_snapshots.TryGetValue(symbol, out var snap))
+        {
+            return null;
+        }
+        
+        // HARD GATE FIX #1: Secondary safety check - verify snapshot is not zeroed (indicates invalid book)
+        // Zeroed snapshots must never be used for signal generation
+        if (snap.QueueImbalance == 0m && snap.TapeAcceleration == 0m && snap.Spread == 0m)
+        {
+            _logger.LogWarning("[Metrics Safety] Rejecting zeroed snapshot for {Symbol} - likely from invalid book", symbol);
+            return null; // Prevent downstream signal generation
+        }
+        
+        return snap;
     }
     
     /// <summary>

@@ -24,6 +24,11 @@ public sealed class DepthReplayService
         TapeVelocityTracker tapeVelocityTracker,
         CancellationToken cancellationToken = default)
     {
+        // FIX #2: Mandatory hard-gate counters
+        long invalidBookCount = 0;
+        long crossedBookCount = 0;
+        long exceptionsCount = 0;
+
         var events = new List<ReplayEvent>();
         long sequence = 0;
 
@@ -50,24 +55,56 @@ public sealed class DepthReplayService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            switch (evt.Kind)
+            try
             {
-                case ReplayEventKind.Depth when evt.DepthUpdate.HasValue:
-                    var depthUpdate = evt.DepthUpdate.Value;
-                    orderBook.ApplyDepthUpdate(depthUpdate);
-                    bidWallTracker.ApplyDepthUpdate(depthUpdate);
-                    break;
+                switch (evt.Kind)
+                {
+                    case ReplayEventKind.Depth when evt.DepthUpdate.HasValue:
+                        var depthUpdate = evt.DepthUpdate.Value;
+                        orderBook.ApplyDepthUpdate(depthUpdate);
+                        
+                        // Fix 3 & 2: Validity gate before bidWallTracker + counter
+                        if (orderBook.IsBookValid(out var validityReason, evt.TimestampMs))
+                        {
+                            bidWallTracker.ApplyDepthUpdate(depthUpdate);
+                        }
+                        else
+                        {
+                            invalidBookCount++;
+                            // FIX #2: Hard gate - crossed or locked books must fail replay
+                            if (validityReason == "CrossedBook" || validityReason == "LockedBook")
+                            {
+                                crossedBookCount++;
+                            }
+                        }
+                        break;
 
-                case ReplayEventKind.Tape when evt.TradePrint.HasValue:
-                    var trade = evt.TradePrint.Value;
-                    orderBook.RecordTrade(trade.TimestampMs, trade.Price, trade.Size);
-                    tapeVelocityTracker.AddTrade(trade.TimestampMs, trade.Price, trade.Size);
-                    break;
+                    case ReplayEventKind.Tape when evt.TradePrint.HasValue:
+                        var trade = evt.TradePrint.Value;
+                        orderBook.RecordTrade(trade.TimestampMs, trade.Price, trade.Size);
+                        tapeVelocityTracker.AddTrade(trade.TimestampMs, trade.Price, trade.Size);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Fix 4 & 2: Log and skip malformed events + counter
+                exceptionsCount++;
+                System.Diagnostics.Debug.WriteLine($"[DepthReplay] Error processing event at {evt.TimestampMs}ms: {ex.Message}");
+                // Continue processing remaining events
             }
         }
 
         // Close any remaining active walls at the last seen timestamp to capture final durations.
         bidWallTracker.CloseOpenLevels(events[^1].TimestampMs);
+
+        // FIX #2: MANDATORY BINARY GATE - Fail replay on crossed books or exceptions
+        if (crossedBookCount > 0 || exceptionsCount > 0)
+        {
+            var failureMsg = $"[DepthReplay] HARD GATE FAILED: CrossedBooks={crossedBookCount}, Exceptions={exceptionsCount}";
+            System.Diagnostics.Debug.WriteLine(failureMsg);
+            throw new InvalidOperationException(failureMsg);
+        }
 
         await Task.CompletedTask;
     }

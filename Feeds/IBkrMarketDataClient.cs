@@ -250,41 +250,57 @@ internal class IBkrWrapperImpl : EWrapper
     // === Core callbacks we care about (Phase 1-2) ===
     public void updateMktDepth(int tickerId, int position, int operation, int side, double price, int size)
     {
-        if (!TryGetBook(tickerId, out var book))
+        try
         {
-            return;
-        }
-
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var px = (decimal)price;
-        var sz = (decimal)size;
-
-        // side: 0=ask, 1=bid (per IB API convention)
-        // operation: 0=insert, 1=update, 2=delete
-        if (operation == 2 || size <= 0)
-        {
-            if (side == 0)
+            if (!TryGetBook(tickerId, out var book))
             {
-                book.UpdateAskDepth(px, 0m, nowMs);
+                return;
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var px = (decimal)price;
+            var sz = (decimal)size;
+
+            // side: 0=ask, 1=bid (per IB API convention)
+            // operation: 0=insert, 1=update, 2=delete
+            if (operation == 2 || size <= 0)
+            {
+                if (side == 0)
+                {
+                    book.UpdateAskDepth(px, 0m, nowMs);
+                }
+                else
+                {
+                    book.UpdateBidDepth(px, 0m, nowMs);
+                }
             }
             else
             {
-                book.UpdateBidDepth(px, 0m, nowMs);
+                if (side == 0)
+                {
+                    book.UpdateAskDepth(px, sz, nowMs);
+                }
+                else
+                {
+                    book.UpdateBidDepth(px, sz, nowMs);
+                }
             }
-        }
-        else
-        {
-            if (side == 0)
+
+            // Fix 3: Only update metrics if book is valid
+            if (book.IsBookValid(out var validityReason, nowMs))
             {
-                book.UpdateAskDepth(px, sz, nowMs);
+                _metrics.UpdateMetrics(book, nowMs);
             }
             else
             {
-                book.UpdateBidDepth(px, sz, nowMs);
+                _logger.LogDebug("[IBKR Depth] Skipped metrics for {Symbol}: {Reason}", book.Symbol, validityReason);
             }
         }
-
-        _metrics.UpdateMetrics(book, nowMs);
+        catch (Exception ex)
+        {
+            // Fix 4: Log exception and return safely, do not propagate
+            _logger.LogError(ex, "[IBKR Depth] Error processing updateMktDepth callback for tickerId={TickerId}", tickerId);
+        }
     }
 
     public void updateMktDepthL2(int tickerId, int position, string marketMaker, int operation, int side, double price, int size, bool isSmartDepth)
@@ -294,15 +310,32 @@ internal class IBkrWrapperImpl : EWrapper
 
     public void tickByTickAllLast(int reqId, int tickType, long time, double price, int size, TickAttribLast tickAttribLast, string exchange, string specialConditions)
     {
-        if (!TryGetBook(reqId, out var book))
+        try
         {
-            return;
-        }
+            if (!TryGetBook(reqId, out var book))
+            {
+                return;
+            }
 
-        // IB gives epoch seconds for some callbacks; normalize to ms when it looks like seconds.
-        var tsMs = time < 10_000_000_000 ? time * 1000 : time;
-        book.RecordTrade(tsMs, price, (decimal)size);
-        _metrics.UpdateMetrics(book, tsMs);
+            // IB gives epoch seconds for some callbacks; normalize to ms when it looks like seconds.
+            var tsMs = time < 10_000_000_000 ? time * 1000 : time;
+            book.RecordTrade(tsMs, price, (decimal)size);
+            
+            // Fix 3: Only update metrics if book is valid
+            if (book.IsBookValid(out var validityReason, tsMs))
+            {
+                _metrics.UpdateMetrics(book, tsMs);
+            }
+            else
+            {
+                _logger.LogDebug("[IBKR Tape] Skipped metrics for {Symbol}: {Reason}", book.Symbol, validityReason);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Fix 4: Log exception and return safely, do not propagate
+            _logger.LogError(ex, "[IBKR Tape] Error processing tickByTickAllLast callback for reqId={ReqId}", reqId);
+        }
     }
 
     public void tickByTickBidAsk(int reqId, long time, double bidPrice, double askPrice, int bidSize, int askSize, TickAttribBidAsk tickAttribBidAsk)

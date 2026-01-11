@@ -3,6 +3,30 @@ using System.Linq;
 
 namespace RamStockAlerts.Models;
 
+/*
+REVIEW ANSWERS
+1. Depth Semantics
+- Ordered list (not dictionary): YES
+- Insert shifts down: YES
+- Delete shifts up: YES
+- Trim to DepthRows after each update: YES
+
+2. Book Reset Handling
+- Reset condition exists for suspected refresh: YES
+- Stale levels survive reset: NO
+
+3. Validity Gate
+- Single authoritative IsBookValid(out reason): YES
+- Checked before scoring: YES
+- Checked before blueprint creation: NO
+- Checked before alerting: PARTIAL
+- Blocks crossed OR locked books: YES
+
+4. Exception Hygiene
+- Depth callbacks wrapped so one bad event cannot kill stream: NO
+- Malformed events logged and skipped (not thrown): YES (in replay only)
+*/
+
 /// <summary>
 /// Side of the depth book.
 /// </summary>
@@ -51,12 +75,13 @@ public readonly record struct DepthLevel(decimal Price, decimal Size, long Times
 public sealed class OrderBookState
 {
     private const int DefaultMaxTrades = 512;
-    private const int DefaultMaxDepthRows = 10;
     private const long StaleDepthThresholdMs = 2000;
 
     private readonly List<DepthLevel> _bidLevels = new();
     private readonly List<DepthLevel> _askLevels = new();
     private readonly Queue<TradePrint> _recentTrades;
+    private Action<string>? _logger;
+    private Action<string, DepthSide, decimal, decimal, int, long>? _onBookReset;
 
     public OrderBookState(string symbol = "")
     {
@@ -69,6 +94,21 @@ public sealed class OrderBookState
     /// Symbol for this book.
     /// </summary>
     public string Symbol { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Maximum number of depth levels to maintain per side. Defaults to 10.
+    /// </summary>
+    public int MaxDepthRows { get; set; } = 10;
+
+    /// <summary>
+    /// Total count of book resets detected (Insert at position 0 with empty or large price jump).
+    /// </summary>
+    public int ResetCount { get; private set; }
+
+    /// <summary>
+    /// Timestamp (ms) of the most recent book reset event.
+    /// </summary>
+    public long LastResetMs { get; private set; }
 
     /// <summary>
     /// Timestamp of the last applied update or trade (ms since epoch).
@@ -236,79 +276,130 @@ public sealed class OrderBookState
     }
 
     /// <summary>
+    /// Set an optional logger for depth operation tracing.
+    /// </summary>
+    public void SetLogger(Action<string> logger)
+    {
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Set an optional callback for BookReset events. Called when Insert at position 0 triggers a reset.
+    /// Receives: Symbol, Side, CurrentBestPrice, NewPrice, ResetCount, TimestampMs
+    /// </summary>
+    public void SetBookResetCallback(Action<string, DepthSide, decimal, decimal, int, long>? callback)
+    {
+        _onBookReset = callback;
+    }
+
+    /// <summary>
     /// Apply a deterministic depth update to the book using IBKR position-based semantics.
+    /// Position-based operations: Insert shifts down, Delete shifts up, Update replaces.
+    /// Position extension fills gaps with placeholder levels (0,0,ts) to maintain alignment.
+    /// Delete semantics: only (price==0 && size==0) or operation==Delete triggers removal.
     /// </summary>
     public void ApplyDepthUpdate(DepthUpdate update)
     {
         var levels = update.Side == DepthSide.Bid ? _bidLevels : _askLevels;
         var size = update.Size;
+        var price = update.Price;
 
-        // Clamp negative sizes to 0 and log warning.
+        // Clamp negative sizes to 0.
         if (size < 0m)
         {
             size = 0m;
         }
 
-        // Book reset: if Insert at position 0 and large jump in price, clear side and rebuild.
-        if (update.Operation == DepthOperation.Insert && update.Position == 0 && levels.Count > 0)
+        // Book reset: if Insert at position 0 and (empty book OR large price jump), clear and rebuild.
+        if (update.Operation == DepthOperation.Insert && update.Position == 0)
         {
-            var currentBest = levels[0].Price;
-            if (currentBest > 0m && Math.Abs(update.Price - currentBest) >= 0.10m)
+            var currentBest = levels.Count > 0 ? levels[0].Price : 0m;
+            // Trigger reset if: empty book (currentBest<=0) OR large price jump (>=10 cents)
+            if (currentBest <= 0m || Math.Abs(price - currentBest) >= 0.10m)
             {
                 levels.Clear();
+                ResetCount++;
+                LastResetMs = update.TimestampMs;
+                var resetMsg = $"[{update.Side}] Book reset at Insert/pos0: currentBest=${currentBest}, newPrice=${price}, ResetCount={ResetCount}, ts={update.TimestampMs}ms";
+                _logger?.Invoke(resetMsg);
+                _onBookReset?.Invoke(update.Symbol, update.Side, currentBest, price, ResetCount, update.TimestampMs);
             }
         }
 
+        // Determine if this is a delete: either Delete operation or (price==0 && size==0).
+        bool isDelete = update.Operation == DepthOperation.Delete || (price == 0m && size == 0m);
+
         // Apply operation.
-        if (update.Operation == DepthOperation.Delete || size == 0m)
+        if (isDelete)
         {
             // Delete: remove at position if exists.
             if (update.Position >= 0 && update.Position < levels.Count)
             {
+                var removed = levels[update.Position];
                 levels.RemoveAt(update.Position);
+                _logger?.Invoke($"[{update.Side}] Deleted at pos {update.Position}: {removed.Price}@{removed.Size}");
+            }
+            else if (update.Position >= 0)
+            {
+                _logger?.Invoke($"[{update.Side}] Delete pos {update.Position} out of range (count={levels.Count})");
             }
         }
         else if (update.Operation == DepthOperation.Insert)
         {
-            // Insert: add at position, shift down, trim.
+            // Insert: add at position, shift down.
             if (update.Position < 0)
             {
-                // Invalid position; skip.
+                _logger?.Invoke($"[{update.Side}] Invalid Insert position {update.Position}; skipping");
             }
             else if (update.Position >= levels.Count)
             {
-                // Extend with this level.
-                levels.Add(new DepthLevel(update.Price, size, update.TimestampMs));
+                // Extend with placeholder levels up to position, then add the new level.
+                while (levels.Count < update.Position)
+                {
+                    levels.Add(new DepthLevel(0m, 0m, update.TimestampMs));
+                }
+                levels.Add(new DepthLevel(price, size, update.TimestampMs));
+                _logger?.Invoke($"[{update.Side}] Extended and inserted at pos {update.Position}: {price}@{size}");
             }
             else
             {
                 // Insert at position, shift existing down.
-                levels.Insert(update.Position, new DepthLevel(update.Price, size, update.TimestampMs));
+                levels.Insert(update.Position, new DepthLevel(price, size, update.TimestampMs));
+                _logger?.Invoke($"[{update.Side}] Inserted at pos {update.Position}: {price}@{size}");
             }
         }
         else if (update.Operation == DepthOperation.Update)
         {
-            // Update: replace at position if exists, else extend.
+            // Update: replace at position if exists, else extend with placeholders.
             if (update.Position < 0)
             {
-                // Invalid position; skip.
+                _logger?.Invoke($"[{update.Side}] Invalid Update position {update.Position}; skipping");
             }
             else if (update.Position >= levels.Count)
             {
-                // Extend with this level.
-                levels.Add(new DepthLevel(update.Price, size, update.TimestampMs));
+                // Extend with placeholder levels up to position, then add the new level.
+                while (levels.Count < update.Position)
+                {
+                    levels.Add(new DepthLevel(0m, 0m, update.TimestampMs));
+                }
+                levels.Add(new DepthLevel(price, size, update.TimestampMs));
+                _logger?.Invoke($"[{update.Side}] Extended and updated at pos {update.Position}: {price}@{size}");
             }
             else
             {
                 // Replace at position.
-                levels[update.Position] = new DepthLevel(update.Price, size, update.TimestampMs);
+                var oldLevel = levels[update.Position];
+                levels[update.Position] = new DepthLevel(price, size, update.TimestampMs);
+                _logger?.Invoke($"[{update.Side}] Updated pos {update.Position}: {oldLevel.Price}@{oldLevel.Size} -> {price}@{size}");
             }
         }
 
-        // Trim to max depth rows.
-        while (levels.Count > DefaultMaxDepthRows)
+        // Trim to max depth rows (configurable).
+        while (levels.Count > MaxDepthRows)
         {
+            var removed = levels[levels.Count - 1];
             levels.RemoveAt(levels.Count - 1);
+            _logger?.Invoke($"[{update.Side}] Trimmed: removed {removed.Price}@{removed.Size}");
         }
 
         LastUpdateMs = Math.Max(LastUpdateMs, update.TimestampMs);

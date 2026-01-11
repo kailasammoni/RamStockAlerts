@@ -144,8 +144,29 @@ public sealed class IbkrReplayHostedService : BackgroundService
                     depthPayload.Position,
                     evt.TimestampUtc.ToUnixTimeMilliseconds());
 
-                orderBook.ApplyDepthUpdate(depthUpdate);
-                bidWallTracker.ApplyDepthUpdate(depthUpdate);
+                // Fix 4: Wrap depth application in try-catch to prevent one bad event from failing replay
+                try
+                {
+                    orderBook.ApplyDepthUpdate(depthUpdate);
+                    
+                    // Fix 3: Only apply to bidWallTracker if book is valid
+                    var depthTimestampMs = evt.TimestampUtc.ToUnixTimeMilliseconds();
+                    if (orderBook.IsBookValid(out var depthValidityReason, depthTimestampMs))
+                    {
+                        bidWallTracker.ApplyDepthUpdate(depthUpdate);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("[Replay] Skipped bidWallTracker update: {Reason}", depthValidityReason);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[Replay] Error applying depth update at {Timestamp}", evt.TimestampUtc);
+                    exceptionsCount++;
+                    // Continue with next event
+                    continue;
+                }
 
                 var postBestBid = orderBook.BestBid;
                 var postBestAsk = orderBook.BestAsk;
