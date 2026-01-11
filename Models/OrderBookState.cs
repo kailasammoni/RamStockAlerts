@@ -40,23 +40,29 @@ public readonly record struct DepthUpdate(
 public readonly record struct TradePrint(long TimestampMs, double Price, decimal Size);
 
 /// <summary>
+/// Single depth level: price with size and timestamp.
+/// </summary>
+public readonly record struct DepthLevel(decimal Price, decimal Size, long TimestampMs);
+
+/// <summary>
 /// Deterministic in-memory order book state for a single symbol.
-/// Maintains bid/ask levels, best prices, spread, and rolling trade prints.
+/// Maintains position-based bid/ask lists per IBKR semantics, best prices, spread, and rolling trade prints.
 /// </summary>
 public sealed class OrderBookState
 {
     private const int DefaultMaxTrades = 512;
+    private const int DefaultMaxDepthRows = 10;
+    private const long StaleDepthThresholdMs = 2000;
 
-    private static readonly IComparer<decimal> BidComparer = Comparer<decimal>.Create((a, b) => b.CompareTo(a));
-
-    private readonly SortedDictionary<decimal, BookLevel> _bidLevels = new(BidComparer);
-    private readonly SortedDictionary<decimal, BookLevel> _askLevels = new();
+    private readonly List<DepthLevel> _bidLevels = new();
+    private readonly List<DepthLevel> _askLevels = new();
     private readonly Queue<TradePrint> _recentTrades;
 
     public OrderBookState(string symbol = "")
     {
         Symbol = symbol ?? string.Empty;
         _recentTrades = new Queue<TradePrint>(DefaultMaxTrades);
+        LastDepthUpdateUtcMs = 0;
     }
 
     /// <summary>
@@ -70,14 +76,19 @@ public sealed class OrderBookState
     public long LastUpdateMs { get; private set; }
 
     /// <summary>
-    /// Read-only bid levels (price -> level state). Highest price first.
+    /// Timestamp of the last applied depth update (ms since epoch). Used for staleness check.
     /// </summary>
-    public IEnumerable<KeyValuePair<decimal, BookLevel>> BidLevels => _bidLevels;
+    public long LastDepthUpdateUtcMs { get; private set; }
 
     /// <summary>
-    /// Read-only ask levels (price -> level state). Lowest price first.
+    /// Read-only bid levels in position order (index 0 = best bid).
     /// </summary>
-    public IEnumerable<KeyValuePair<decimal, BookLevel>> AskLevels => _askLevels;
+    public IReadOnlyList<DepthLevel> BidLevels => _bidLevels.AsReadOnly();
+
+    /// <summary>
+    /// Read-only ask levels in position order (index 0 = best ask).
+    /// </summary>
+    public IReadOnlyList<DepthLevel> AskLevels => _askLevels.AsReadOnly();
 
     /// <summary>
     /// Rolling tape buffer (bounded) for compatibility with existing metrics.
@@ -85,17 +96,17 @@ public sealed class OrderBookState
     public IReadOnlyCollection<TradePrint> RecentTrades => _recentTrades;
 
     /// <summary>
-    /// Best bid price (0 when empty).
+    /// Best bid price (0 when empty or invalid).
     /// </summary>
-    public decimal BestBid => _bidLevels.Count > 0 ? _bidLevels.First().Key : 0m;
+    public decimal BestBid => _bidLevels.Count > 0 && _bidLevels[0].Size > 0m ? _bidLevels[0].Price : 0m;
 
     /// <summary>
-    /// Best ask price (0 when empty).
+    /// Best ask price (0 when empty or invalid).
     /// </summary>
-    public decimal BestAsk => _askLevels.Count > 0 ? _askLevels.First().Key : 0m;
+    public decimal BestAsk => _askLevels.Count > 0 && _askLevels[0].Size > 0m ? _askLevels[0].Price : 0m;
 
     /// <summary>
-    /// Spread in price units (ask - bid). Returns 0 when either side is empty.
+    /// Spread in price units (ask - bid). Returns 0 when either side is empty or invalid.
     /// </summary>
     public decimal Spread => BestBid > 0m && BestAsk > 0m ? BestAsk - BestBid : 0m;
 
@@ -111,8 +122,7 @@ public sealed class OrderBookState
                 return long.MaxValue;
             }
 
-            var best = _bidLevels.First().Value;
-            return LastUpdateMs - best.LastUpdateMs;
+            return LastUpdateMs - _bidLevels[0].TimestampMs;
         }
     }
 
@@ -128,8 +138,7 @@ public sealed class OrderBookState
                 return long.MaxValue;
             }
 
-            var best = _askLevels.First().Value;
-            return LastUpdateMs - best.LastUpdateMs;
+            return LastUpdateMs - _askLevels[0].TimestampMs;
         }
     }
 
@@ -145,7 +154,7 @@ public sealed class OrderBookState
 
         return _bidLevels
             .Take(levels)
-            .Sum(kv => kv.Value.Size);
+            .Sum(x => x.Size);
     }
 
     /// <summary>
@@ -160,7 +169,7 @@ public sealed class OrderBookState
 
         return _askLevels
             .Take(levels)
-            .Sum(kv => kv.Value.Size);
+            .Sum(x => x.Size);
     }
 
     /// <summary>
@@ -170,22 +179,140 @@ public sealed class OrderBookState
     public decimal TotalAskSize4Level => TotalAskSize(4);
 
     /// <summary>
-    /// Apply a deterministic depth update to the book.
+    /// Check if the book is valid for trading.
+    /// </summary>
+    public bool IsBookValid(out string reason, long nowUtcMs = 0)
+    {
+        reason = string.Empty;
+
+        if (nowUtcMs == 0)
+        {
+            nowUtcMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+
+        if (BestBid <= 0m)
+        {
+            reason = "BestBidZeroOrNegative";
+            return false;
+        }
+
+        if (BestAsk <= 0m)
+        {
+            reason = "BestAskZeroOrNegative";
+            return false;
+        }
+
+        if (BestBid >= BestAsk)
+        {
+            reason = BestBid > BestAsk ? "CrossedBook" : "LockedBook";
+            return false;
+        }
+
+        if (Spread <= 0m || Spread > 0.20m)
+        {
+            reason = $"SpreadOutOfBounds:{Spread}";
+            return false;
+        }
+
+        if (_bidLevels.Count == 0 || _bidLevels[0].Size <= 0m)
+        {
+            reason = "BestBidSizeZeroOrNegative";
+            return false;
+        }
+
+        if (_askLevels.Count == 0 || _askLevels[0].Size <= 0m)
+        {
+            reason = "BestAskSizeZeroOrNegative";
+            return false;
+        }
+
+        if (nowUtcMs - LastDepthUpdateUtcMs > StaleDepthThresholdMs)
+        {
+            reason = "StaleDepthData";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Apply a deterministic depth update to the book using IBKR position-based semantics.
     /// </summary>
     public void ApplyDepthUpdate(DepthUpdate update)
     {
         var levels = update.Side == DepthSide.Bid ? _bidLevels : _askLevels;
+        var size = update.Size;
 
-        if (update.Operation == DepthOperation.Delete || update.Size <= 0m)
+        // Clamp negative sizes to 0 and log warning.
+        if (size < 0m)
         {
-            levels.Remove(update.Price);
+            size = 0m;
         }
-        else
+
+        // Book reset: if Insert at position 0 and large jump in price, clear side and rebuild.
+        if (update.Operation == DepthOperation.Insert && update.Position == 0 && levels.Count > 0)
         {
-            levels[update.Price] = new BookLevel(update.Size, update.TimestampMs);
+            var currentBest = levels[0].Price;
+            if (currentBest > 0m && Math.Abs(update.Price - currentBest) >= 0.10m)
+            {
+                levels.Clear();
+            }
+        }
+
+        // Apply operation.
+        if (update.Operation == DepthOperation.Delete || size == 0m)
+        {
+            // Delete: remove at position if exists.
+            if (update.Position >= 0 && update.Position < levels.Count)
+            {
+                levels.RemoveAt(update.Position);
+            }
+        }
+        else if (update.Operation == DepthOperation.Insert)
+        {
+            // Insert: add at position, shift down, trim.
+            if (update.Position < 0)
+            {
+                // Invalid position; skip.
+            }
+            else if (update.Position >= levels.Count)
+            {
+                // Extend with this level.
+                levels.Add(new DepthLevel(update.Price, size, update.TimestampMs));
+            }
+            else
+            {
+                // Insert at position, shift existing down.
+                levels.Insert(update.Position, new DepthLevel(update.Price, size, update.TimestampMs));
+            }
+        }
+        else if (update.Operation == DepthOperation.Update)
+        {
+            // Update: replace at position if exists, else extend.
+            if (update.Position < 0)
+            {
+                // Invalid position; skip.
+            }
+            else if (update.Position >= levels.Count)
+            {
+                // Extend with this level.
+                levels.Add(new DepthLevel(update.Price, size, update.TimestampMs));
+            }
+            else
+            {
+                // Replace at position.
+                levels[update.Position] = new DepthLevel(update.Price, size, update.TimestampMs);
+            }
+        }
+
+        // Trim to max depth rows.
+        while (levels.Count > DefaultMaxDepthRows)
+        {
+            levels.RemoveAt(levels.Count - 1);
         }
 
         LastUpdateMs = Math.Max(LastUpdateMs, update.TimestampMs);
+        LastDepthUpdateUtcMs = Math.Max(LastDepthUpdateUtcMs, update.TimestampMs);
     }
 
     /// <summary>

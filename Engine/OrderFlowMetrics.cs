@@ -77,6 +77,25 @@ public class OrderFlowMetrics
     /// </summary>
     public MetricSnapshot UpdateMetrics(OrderBookState book, long currentTimeMs)
     {
+        // Gate: Skip metrics on invalid book
+        if (!book.IsBookValid(out var validityReason))
+        {
+            _logger.LogWarning("Skipping metrics update for {Symbol} due to invalid book: {Reason}", book.Symbol, validityReason);
+            var invalidSnapshot = new MetricSnapshot
+            {
+                Symbol = book.Symbol,
+                TimestampMs = currentTimeMs,
+                QueueImbalance = 0m,
+                BidDepth4Level = 0m,
+                AskDepth4Level = 0m,
+                Spread = 0m,
+                MidPrice = 0m,
+                SpoofScore = 0m,
+                TapeAcceleration = 0m
+            };
+            return invalidSnapshot;
+        }
+
         // Store the order book state for external access
         _orderBooks[book.Symbol] = book;
         

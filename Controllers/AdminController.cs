@@ -92,23 +92,21 @@ public class AdminController : ControllerBase
             BidSize4Level = orderBook.TotalBidSize4Level,
             AskSize4Level = orderBook.TotalAskSize4Level,
             BidLevels = orderBook.BidLevels
-                .OrderByDescending(x => x.Key)
                 .Take(10)
                 .Select(x => new PriceLevel 
                 { 
-                    Price = x.Key, 
-                    Size = x.Value.Size,
-                    AgeMs = now - x.Value.LastUpdateMs
+                    Price = x.Price, 
+                    Size = x.Size,
+                    AgeMs = now - x.TimestampMs
                 })
                 .ToList(),
             AskLevels = orderBook.AskLevels
-                .OrderBy(x => x.Key)
                 .Take(10)
                 .Select(x => new PriceLevel 
                 { 
-                    Price = x.Key, 
-                    Size = x.Value.Size,
-                    AgeMs = now - x.Value.LastUpdateMs
+                    Price = x.Price, 
+                    Size = x.Size,
+                    AgeMs = now - x.TimestampMs
                 })
                 .ToList(),
             RecentTradesCount = orderBook.RecentTrades.Count,
