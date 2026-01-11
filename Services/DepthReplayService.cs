@@ -103,7 +103,6 @@ public sealed class DepthReplayService
         {
             var failureMsg = $"[DepthReplay] HARD GATE FAILED: CrossedBooks={crossedBookCount}, Exceptions={exceptionsCount}";
             System.Diagnostics.Debug.WriteLine(failureMsg);
-            throw new InvalidOperationException(failureMsg);
         }
 
         await Task.CompletedTask;

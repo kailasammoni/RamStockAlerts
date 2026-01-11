@@ -263,28 +263,16 @@ internal class IBkrWrapperImpl : EWrapper
 
             // side: 0=ask, 1=bid (per IB API convention)
             // operation: 0=insert, 1=update, 2=delete
-            if (operation == 2 || size <= 0)
+            if (!Enum.IsDefined(typeof(DepthOperation), operation))
             {
-                if (side == 0)
-                {
-                    book.UpdateAskDepth(px, 0m, nowMs);
-                }
-                else
-                {
-                    book.UpdateBidDepth(px, 0m, nowMs);
-                }
+                _logger.LogDebug("[IBKR Depth] Unknown operation {Operation} for tickerId={TickerId}", operation, tickerId);
+                return;
             }
-            else
-            {
-                if (side == 0)
-                {
-                    book.UpdateAskDepth(px, sz, nowMs);
-                }
-                else
-                {
-                    book.UpdateBidDepth(px, sz, nowMs);
-                }
-            }
+
+            var depthSide = side == 0 ? DepthSide.Ask : DepthSide.Bid;
+            var depthOperation = (DepthOperation)operation;
+            var depthUpdate = new DepthUpdate(book.Symbol, depthSide, depthOperation, px, sz, position, nowMs);
+            book.ApplyDepthUpdate(depthUpdate);
 
             // Fix 3: Only update metrics if book is valid
             if (book.IsBookValid(out var validityReason, nowMs))
