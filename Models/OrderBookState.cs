@@ -76,6 +76,7 @@ public sealed class OrderBookState
 {
     private const int DefaultMaxTrades = 512;
     private const long StaleDepthThresholdMs = 2000;
+    private const int PositionSlack = 5;
 
     private readonly List<DepthLevel> _bidLevels = new();
     private readonly List<DepthLevel> _askLevels = new();
@@ -304,10 +305,37 @@ public sealed class OrderBookState
         var size = update.Size;
         var price = update.Price;
 
-        // Clamp negative sizes to 0.
+        if (update.Position < 0 || update.Position > MaxDepthRows + PositionSlack)
+        {
+            _logger?.Invoke($"[{update.Side}] Invalid position {update.Position}; skipping");
+            return;
+        }
+
+        if (price <= 0m)
+        {
+            _logger?.Invoke($"[{update.Side}] Invalid price {price}; skipping");
+            return;
+        }
+
         if (size < 0m)
         {
-            size = 0m;
+            _logger?.Invoke($"[{update.Side}] Invalid size {size}; skipping");
+            return;
+        }
+
+        if (update.Position == 0)
+        {
+            if (update.Side == DepthSide.Bid && BestAsk > 0m && price >= BestAsk)
+            {
+                _logger?.Invoke($"[{update.Side}] Crossed bid {price} >= best ask {BestAsk}; skipping");
+                return;
+            }
+
+            if (update.Side == DepthSide.Ask && BestBid > 0m && price <= BestBid)
+            {
+                _logger?.Invoke($"[{update.Side}] Crossed ask {price} <= best bid {BestBid}; skipping");
+                return;
+            }
         }
 
         // Book reset: if Insert at position 0 and (empty book OR large price jump), clear and rebuild.

@@ -260,31 +260,25 @@ internal class IBkrWrapperImpl : EWrapper
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var px = (decimal)price;
             var sz = (decimal)size;
+            var depthSide = side == 0 ? DepthSide.Ask : DepthSide.Bid;
 
             // side: 0=ask, 1=bid (per IB API convention)
             // operation: 0=insert, 1=update, 2=delete
-            if (operation == 2 || size <= 0)
+            if (!Enum.IsDefined(typeof(DepthOperation), operation))
             {
-                if (side == 0)
-                {
-                    book.UpdateAskDepth(px, 0m, nowMs);
-                }
-                else
-                {
-                    book.UpdateBidDepth(px, 0m, nowMs);
-                }
+                _logger.LogWarning("[IBKR Depth] Invalid operation {Operation} for tickerId={TickerId}", operation, tickerId);
+                return;
             }
-            else
-            {
-                if (side == 0)
-                {
-                    book.UpdateAskDepth(px, sz, nowMs);
-                }
-                else
-                {
-                    book.UpdateBidDepth(px, sz, nowMs);
-                }
-            }
+
+            var depthUpdate = new DepthUpdate(
+                book.Symbol,
+                depthSide,
+                (DepthOperation)operation,
+                px,
+                sz,
+                position,
+                nowMs);
+            book.ApplyDepthUpdate(depthUpdate);
 
             // Fix 3: Only update metrics if book is valid
             if (book.IsBookValid(out var validityReason, nowMs))
@@ -305,7 +299,44 @@ internal class IBkrWrapperImpl : EWrapper
 
     public void updateMktDepthL2(int tickerId, int position, string marketMaker, int operation, int side, double price, int size, bool isSmartDepth)
     {
-        // We currently subscribe via reqMktDepth (not L2). Keep stubbed but harmless.
+        try
+        {
+            if (!TryGetBook(tickerId, out var book))
+            {
+                return;
+            }
+
+            if (!Enum.IsDefined(typeof(DepthOperation), operation))
+            {
+                _logger.LogWarning("[IBKR DepthL2] Invalid operation {Operation} for tickerId={TickerId}", operation, tickerId);
+                return;
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var depthSide = side == 0 ? DepthSide.Ask : DepthSide.Bid;
+            var depthUpdate = new DepthUpdate(
+                book.Symbol,
+                depthSide,
+                (DepthOperation)operation,
+                (decimal)price,
+                (decimal)size,
+                position,
+                nowMs);
+            book.ApplyDepthUpdate(depthUpdate);
+
+            if (book.IsBookValid(out var validityReason, nowMs))
+            {
+                _metrics.UpdateMetrics(book, nowMs);
+            }
+            else
+            {
+                _logger.LogDebug("[IBKR DepthL2] Skipped metrics for {Symbol}: {Reason}", book.Symbol, validityReason);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[IBKR DepthL2] Error processing updateMktDepthL2 callback for tickerId={TickerId}", tickerId);
+        }
     }
 
     public void tickByTickAllLast(int reqId, int tickType, long time, double price, int size, TickAttribLast tickAttribLast, string exchange, string specialConditions)
