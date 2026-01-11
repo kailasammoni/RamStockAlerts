@@ -7,6 +7,7 @@ using Serilog;
 using Serilog.Events;
 using HealthChecks.UI.Client;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Configuration;
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
@@ -20,8 +21,31 @@ Log.Logger = new LoggerConfiguration()
         outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
     .CreateLogger();
 
-// Check if running in RECORD mode (for IBKR data validation)
-var mode = Environment.GetEnvironmentVariable("MODE")?.Trim().ToLowerInvariant();
+// Bootstrap configuration early for mode + symbol resolution
+var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development";
+var initialConfig = new ConfigurationBuilder()
+    .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile($"appsettings.{env}.json", optional: true)
+    .AddEnvironmentVariables()
+    .Build();
+
+string ResolveMode(IConfiguration config)
+{
+    var modeValue = Environment.GetEnvironmentVariable("MODE")
+                   ?? config["MODE"]
+                   ?? config["Mode"]
+                   ?? config["Ibkr:Mode"];
+    return modeValue?.Trim() ?? string.Empty;
+}
+
+string ResolveSymbol(IConfiguration config)
+{
+    return Environment.GetEnvironmentVariable("SYMBOL")?.Trim() ??
+           config["Ibkr:Symbol"] ??
+           "AAPL";
+}
+
+var mode = ResolveMode(initialConfig).ToLowerInvariant();
 
 if (mode == "record")
 {
@@ -35,6 +59,22 @@ if (mode == "record")
             services.AddHostedService<IbkrRecorderHostedService>();
         });
     
+    var host = hostBuilder.Build();
+    await host.RunAsync();
+    return;
+}
+
+if (mode == "replay")
+{
+    Log.Information("Starting in REPLAY mode - deterministic state reconstruction");
+
+    var hostBuilder = Host.CreateDefaultBuilder(args)
+        .UseSerilog()
+        .ConfigureServices((context, services) =>
+        {
+            services.AddHostedService<IbkrReplayHostedService>();
+        });
+
     var host = hostBuilder.Build();
     await host.RunAsync();
     return;

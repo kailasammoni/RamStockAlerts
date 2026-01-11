@@ -91,24 +91,24 @@ public class AdminController : ControllerBase
             SpreadCents = orderBook.Spread,
             BidSize4Level = orderBook.TotalBidSize4Level,
             AskSize4Level = orderBook.TotalAskSize4Level,
-            BidLevels = orderBook.BidDepth
+            BidLevels = orderBook.BidLevels
                 .OrderByDescending(x => x.Key)
                 .Take(10)
                 .Select(x => new PriceLevel 
                 { 
                     Price = x.Key, 
                     Size = x.Value.Size,
-                    AgeMs = now - x.Value.TimestampMs
+                    AgeMs = now - x.Value.LastUpdateMs
                 })
                 .ToList(),
-            AskLevels = orderBook.AskDepth
+            AskLevels = orderBook.AskLevels
                 .OrderBy(x => x.Key)
                 .Take(10)
                 .Select(x => new PriceLevel 
                 { 
                     Price = x.Key, 
                     Size = x.Value.Size,
-                    AgeMs = now - x.Value.TimestampMs
+                    AgeMs = now - x.Value.LastUpdateMs
                 })
                 .ToList(),
             RecentTradesCount = orderBook.RecentTrades.Count,
@@ -134,8 +134,8 @@ public class AdminController : ControllerBase
                 Symbol = symbol,
                 HasData = book != null && book.LastUpdateMs > 0,
                 LastUpdateAgeSeconds = book != null ? (now - book.LastUpdateMs) / 1000.0 : null,
-                BidLevels = book?.BidDepth.Count ?? 0,
-                AskLevels = book?.AskDepth.Count ?? 0,
+                BidLevels = book?.BidLevels.Count() ?? 0,
+                AskLevels = book?.AskLevels.Count() ?? 0,
                 RecentTrades = book?.RecentTrades.Count ?? 0
             };
         }).ToList();
