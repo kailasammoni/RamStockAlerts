@@ -193,6 +193,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<ShadowTradeJournal
 builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();
 builder.Services.AddSingleton<ShadowTradingCoordinator>();
+builder.Services.AddSingleton<PreviewSignalEmitter>();
 builder.Services.AddSingleton<StaticUniverseSource>();
 builder.Services.AddSingleton<IbkrScannerUniverseSource>();
 builder.Services.AddSingleton<UniverseService>();
