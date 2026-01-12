@@ -6,6 +6,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Polygon;
 using RamStockAlerts.Services;
+using RamStockAlerts.Universe;
 
 namespace RamStockAlerts.Feeds;
 
@@ -27,7 +28,7 @@ public class PolygonRestClient : BackgroundService
     private readonly IServiceProvider _serviceProvider;
     private readonly IConfiguration _configuration;
     private readonly ILogger<PolygonRestClient> _logger;
-    private readonly UniverseBuilder _universeBuilder;
+    private readonly UniverseService _universeService;
     private readonly CircuitBreakerService _circuitBreaker;
     private readonly ApiQuotaTracker _quotaTracker;
     private readonly AsyncRetryPolicy<HttpResponseMessage> _retryPolicy;
@@ -37,6 +38,7 @@ public class PolygonRestClient : BackgroundService
     private readonly string _apiKey;
     private IReadOnlyCollection<string> _tickers;
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(60); // Poll once per minute to respect API quotas
+    private readonly string _universeSource;
 
     public PolygonRestClient(
         IHttpClientFactory httpClientFactory,
@@ -45,7 +47,7 @@ public class PolygonRestClient : BackgroundService
         IServiceProvider serviceProvider,
         IConfiguration configuration,
         ILogger<PolygonRestClient> logger,
-        UniverseBuilder universeBuilder,
+        UniverseService universeService,
         CircuitBreakerService circuitBreaker,
         ApiQuotaTracker quotaTracker)
     {
@@ -55,11 +57,12 @@ public class PolygonRestClient : BackgroundService
         _serviceProvider = serviceProvider;
         _configuration = configuration;
         _logger = logger;
-        _universeBuilder = universeBuilder;
+        _universeService = universeService;
         _circuitBreaker = circuitBreaker;
         _quotaTracker = quotaTracker;
 
         _apiKey = configuration["Polygon:ApiKey"] ?? "";
+        _universeSource = configuration["Universe:Source"]?.Trim() ?? "Legacy";
         _tickers = configuration.GetSection("Polygon:Tickers").Get<List<string>>() 
             ?? new List<string> { "AAPL", "TSLA", "NVDA" };
 
@@ -94,7 +97,7 @@ public class PolygonRestClient : BackgroundService
             return;
         }
 
-        _tickers = await _universeBuilder.GetActiveUniverseAsync(stoppingToken);
+        _tickers = await LoadUniverseAsync(stoppingToken);
 
         _logger.LogInformation(
             "PolygonRestClient started. Polling {TickerCount} tickers every {Interval}s",
@@ -107,9 +110,21 @@ public class PolygonRestClient : BackgroundService
         {
             try
             {
-                if (_universeBuilder.ShouldRebuildNow(DateTime.UtcNow))
+                if (UseLegacyUniverse())
                 {
-                    _tickers = await _universeBuilder.BuildUniverseAsync(stoppingToken);
+                    var legacyBuilder = _serviceProvider.GetRequiredService<LegacyUniverseBuilder>();
+                    if (legacyBuilder.ShouldRebuildNow(DateTime.UtcNow))
+                    {
+                        _tickers = await legacyBuilder.BuildUniverseAsync(stoppingToken);
+                    }
+                }
+                else
+                {
+                    var refreshed = await _universeService.GetUniverseAsync(stoppingToken);
+                    if (!refreshed.SequenceEqual(_tickers))
+                    {
+                        _tickers = refreshed;
+                    }
                 }
 
                 await PollAllTickersAsync(stoppingToken);
@@ -382,5 +397,21 @@ public class PolygonRestClient : BackgroundService
         };
 
         return (orderBook, tapeData, vwapData, estimatedSpread);
+    }
+
+    private bool UseLegacyUniverse()
+    {
+        return string.Equals(_universeSource, "Legacy", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<IReadOnlyCollection<string>> LoadUniverseAsync(CancellationToken ct)
+    {
+        if (UseLegacyUniverse())
+        {
+            var legacyBuilder = _serviceProvider.GetRequiredService<LegacyUniverseBuilder>();
+            return await legacyBuilder.GetActiveUniverseAsync(ct);
+        }
+
+        return await _universeService.GetUniverseAsync(ct);
     }
 }

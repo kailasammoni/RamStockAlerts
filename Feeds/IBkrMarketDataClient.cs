@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
+using RamStockAlerts.Services;
+using RamStockAlerts.Universe;
 using System.Collections.Concurrent;
 
 namespace RamStockAlerts.Feeds;
@@ -21,8 +23,9 @@ public class IBkrMarketDataClient : BackgroundService
 {
     private readonly ILogger<IBkrMarketDataClient> _logger;
     private readonly IConfiguration _configuration;
-    private readonly UniverseBuilder _universeBuilder;
+    private readonly UniverseService _universeService;
     private readonly OrderFlowMetrics _metrics;
+    private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
     
     private EClientSocket? _eClientSocket;
     private EReaderSignal? _readerSignal;
@@ -36,13 +39,15 @@ public class IBkrMarketDataClient : BackgroundService
     public IBkrMarketDataClient(
         ILogger<IBkrMarketDataClient> logger,
         IConfiguration configuration,
-        UniverseBuilder universeBuilder,
-        OrderFlowMetrics metrics)
+        UniverseService universeService,
+        OrderFlowMetrics metrics,
+        ShadowTradingCoordinator shadowTradingCoordinator)
     {
         _logger = logger;
         _configuration = configuration;
-        _universeBuilder = universeBuilder;
+        _universeService = universeService;
         _metrics = metrics;
+        _shadowTradingCoordinator = shadowTradingCoordinator;
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -52,7 +57,7 @@ public class IBkrMarketDataClient : BackgroundService
             _logger.LogInformation("[IBKR] Initializing market data client...");
             
             // Create socket and wrapper
-            _wrapper = new IBkrWrapperImpl(_logger, _tickerIdMap, _orderBooks, _metrics);
+            _wrapper = new IBkrWrapperImpl(_logger, _tickerIdMap, _orderBooks, _metrics, _shadowTradingCoordinator);
             _readerSignal = new EReaderMonitorSignal();
             _eClientSocket = new EClientSocket(_wrapper, _readerSignal);
             
@@ -85,12 +90,12 @@ public class IBkrMarketDataClient : BackgroundService
             await Task.Delay(2000, stoppingToken);
             
             // Get tickers from universe
-            var tickers = await _universeBuilder.GetActiveUniverseAsync(stoppingToken);
+            var tickers = await _universeService.GetUniverseAsync(stoppingToken);
             while (!stoppingToken.IsCancellationRequested && tickers.Count == 0)
             {
                 _logger.LogWarning("[IBKR] No tickers in universe. Waiting...");
                 await Task.Delay(5000, stoppingToken);
-                tickers = await _universeBuilder.GetActiveUniverseAsync(stoppingToken);
+                tickers = await _universeService.GetUniverseAsync(stoppingToken);
             }
 
             var maxSymbols = _configuration.GetValue("IBKR:MaxSymbols", 20);
@@ -215,17 +220,20 @@ internal class IBkrWrapperImpl : EWrapper
     private readonly ConcurrentDictionary<int, string> _tickerIdMap;
     private readonly ConcurrentDictionary<string, OrderBookState> _orderBooks;
     private readonly OrderFlowMetrics _metrics;
+    private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
     
     public IBkrWrapperImpl(
         ILogger<IBkrMarketDataClient> logger,
         ConcurrentDictionary<int, string> tickerIdMap,
         ConcurrentDictionary<string, OrderBookState> orderBooks,
-        OrderFlowMetrics metrics)
+        OrderFlowMetrics metrics,
+        ShadowTradingCoordinator shadowTradingCoordinator)
     {
         _logger = logger;
         _tickerIdMap = tickerIdMap;
         _orderBooks = orderBooks;
         _metrics = metrics;
+        _shadowTradingCoordinator = shadowTradingCoordinator;
     }
 
     private bool TryGetBook(int tickerId, out OrderBookState book)
@@ -284,6 +292,7 @@ internal class IBkrWrapperImpl : EWrapper
             if (book.IsBookValid(out var validityReason, nowMs))
             {
                 _metrics.UpdateMetrics(book, nowMs);
+                _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
             }
             else
             {
@@ -327,6 +336,7 @@ internal class IBkrWrapperImpl : EWrapper
             if (book.IsBookValid(out var validityReason, nowMs))
             {
                 _metrics.UpdateMetrics(book, nowMs);
+                _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
             }
             else
             {
@@ -356,6 +366,7 @@ internal class IBkrWrapperImpl : EWrapper
             if (book.IsBookValid(out var validityReason, tsMs))
             {
                 _metrics.UpdateMetrics(book, tsMs);
+                _shadowTradingCoordinator.ProcessSnapshot(book, tsMs);
             }
             else
             {

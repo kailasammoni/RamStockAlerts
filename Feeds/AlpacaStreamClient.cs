@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
+using RamStockAlerts.Universe;
 
 namespace RamStockAlerts.Feeds;
 
@@ -18,6 +19,7 @@ public class AlpacaStreamClient : BackgroundService
     private readonly IConfiguration _configuration;
     private readonly ILogger<AlpacaStreamClient> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly UniverseService _universeService;
     private readonly SignalValidator _validator;
     private readonly CircuitBreakerService _circuitBreaker;
 
@@ -28,11 +30,13 @@ public class AlpacaStreamClient : BackgroundService
     private readonly decimal _zScoreThreshold;
     private readonly int _vwapHoldSeconds;
     private readonly int _vwapHoldPrints;
+    private readonly string _universeSource;
 
     private ClientWebSocket? _webSocket;
     private IReadOnlyCollection<string> _subscribedSymbols = Array.Empty<string>();
     private DateTime _lastMessageTime = DateTime.UtcNow;
     private int _reconnectAttempts;
+    private DateTime _nextUniverseRefreshUtc = DateTime.MinValue;
     private const int MaxReconnectAttempts = 10;
     private const int FeedLagThresholdSeconds = 3600; // Increased to 1h to prevent lag issues during testing
 
@@ -46,12 +50,14 @@ public class AlpacaStreamClient : BackgroundService
         IConfiguration configuration,
         ILogger<AlpacaStreamClient> logger,
         IServiceProvider serviceProvider,
+        UniverseService universeService,
         SignalValidator validator,
         CircuitBreakerService circuitBreaker)
     {
         _configuration = configuration;
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _universeService = universeService;
         _validator = validator;
         _circuitBreaker = circuitBreaker;
 
@@ -62,6 +68,7 @@ public class AlpacaStreamClient : BackgroundService
         _zScoreThreshold = configuration.GetValue("Alpaca:ZScoreThreshold", 2.0m);
         _vwapHoldSeconds = configuration.GetValue("Alpaca:VwapHoldSeconds", 5);
         _vwapHoldPrints = configuration.GetValue("Alpaca:VwapHoldPrints", 10);
+        _universeSource = configuration["Universe:Source"]?.Trim() ?? "Legacy";
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -77,8 +84,8 @@ public class AlpacaStreamClient : BackgroundService
         _logger.LogInformation("[Alpaca Init] AlpacaStreamClient starting. Loading universe...");
 
         // Initial universe load
-        var universeBuilder = _serviceProvider.GetRequiredService<UniverseBuilder>();
-        _subscribedSymbols = await universeBuilder.GetActiveUniverseAsync(stoppingToken);
+        _subscribedSymbols = await LoadUniverseAsync(stoppingToken);
+        _nextUniverseRefreshUtc = DateTime.UtcNow.AddMinutes(1);
 
         _logger.LogInformation(
             "[Alpaca Init] Universe loaded with {Count} symbols. Connecting to stream at {Url}...",
@@ -158,14 +165,27 @@ public class AlpacaStreamClient : BackgroundService
         while (_webSocket.State == WebSocketState.Open && !stoppingToken.IsCancellationRequested)
         {
             // Check for universe rebuild
-            var universeBuilder = _serviceProvider.GetRequiredService<UniverseBuilder>();
-            if (universeBuilder.ShouldRebuildNow(DateTime.UtcNow))
+            if (UseLegacyUniverse())
             {
-                var newUniverse = await universeBuilder.BuildUniverseAsync(stoppingToken);
+                var legacyBuilder = _serviceProvider.GetRequiredService<LegacyUniverseBuilder>();
+                if (legacyBuilder.ShouldRebuildNow(DateTime.UtcNow))
+                {
+                    var newUniverse = await legacyBuilder.BuildUniverseAsync(stoppingToken);
+                    if (!newUniverse.SequenceEqual(_subscribedSymbols))
+                    {
+                        await ResubscribeAsync(newUniverse, stoppingToken);
+                    }
+                }
+            }
+            else if (DateTime.UtcNow >= _nextUniverseRefreshUtc)
+            {
+                var newUniverse = await _universeService.GetUniverseAsync(stoppingToken);
                 if (!newUniverse.SequenceEqual(_subscribedSymbols))
                 {
                     await ResubscribeAsync(newUniverse, stoppingToken);
                 }
+
+                _nextUniverseRefreshUtc = DateTime.UtcNow.AddMinutes(1);
             }
 
             var result = await _webSocket.ReceiveAsync(buffer, stoppingToken);
@@ -554,6 +574,22 @@ public class AlpacaStreamClient : BackgroundService
             
             return (avg, p50, p95, p99);
         }
+    }
+
+    private bool UseLegacyUniverse()
+    {
+        return string.Equals(_universeSource, "Legacy", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<IReadOnlyCollection<string>> LoadUniverseAsync(CancellationToken ct)
+    {
+        if (UseLegacyUniverse())
+        {
+            var legacyBuilder = _serviceProvider.GetRequiredService<LegacyUniverseBuilder>();
+            return await legacyBuilder.GetActiveUniverseAsync(ct);
+        }
+
+        return await _universeService.GetUniverseAsync(ct);
     }
 
     /// <summary>

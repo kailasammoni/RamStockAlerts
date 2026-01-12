@@ -55,6 +55,14 @@ public class OrderFlowSignalValidator
                    $"Confidence={Confidence}%";
         }
     }
+
+    public sealed record OrderFlowSignalDecision(
+        bool HasCandidate,
+        bool Accepted,
+        string? RejectionReason,
+        OrderFlowSignal? Signal,
+        OrderFlowMetrics.MetricSnapshot? Snapshot,
+        string? Direction);
     
     public OrderFlowSignalValidator(ILogger<OrderFlowSignalValidator> logger, OrderFlowMetrics metrics)
     {
@@ -67,91 +75,88 @@ public class OrderFlowSignalValidator
     /// </summary>
     public OrderFlowSignal? ValidateSignal(OrderBookState book, long currentTimeMs)
     {
-        // Check if symbol is in cooldown
-        if (IsInCooldown(book.Symbol, currentTimeMs))
+        var decision = EvaluateDecision(book, currentTimeMs);
+        if (!decision.HasCandidate || !decision.Accepted || decision.Signal == null)
         {
             return null;
         }
-        
-        // Check rate limit
-        if (!CanIssueAlert(currentTimeMs))
-        {
-            _logger.LogDebug("[OrderFlow] Rate limit reached. Max {Max} alerts per hour.", MAX_ALERTS_PER_HOUR);
-            return null;
-        }
-        
-        // Get latest metrics
+
+        RecordAcceptedSignal(decision.Signal.Symbol, currentTimeMs);
+        _logger.LogWarning("[OrderFlow Signal] {Signal}", decision.Signal);
+        return decision.Signal;
+    }
+
+    public OrderFlowSignalDecision EvaluateDecision(OrderBookState book, long currentTimeMs)
+    {
         var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
         if (snapshot == null)
         {
-            return null;
+            return new OrderFlowSignalDecision(false, false, null, null, null, null);
         }
-        
-        // Check buy signal
-        if (_metrics.IsBuyLiquidityFailure(snapshot))
+
+        var isBuyCandidate = _metrics.IsBuyLiquidityFailure(snapshot);
+        var isSellCandidate = !isBuyCandidate && _metrics.IsSellLiquidityFailure(snapshot);
+
+        if (!isBuyCandidate && !isSellCandidate)
         {
-            return GenerateBuySignal(snapshot, currentTimeMs);
+            return new OrderFlowSignalDecision(false, false, null, null, snapshot, null);
         }
-        
-        // Check sell signal
-        if (_metrics.IsSellLiquidityFailure(snapshot))
+
+        var direction = isBuyCandidate ? "BUY" : "SELL";
+        var signal = BuildSignal(snapshot, currentTimeMs, isBuyCandidate);
+
+        if (IsInCooldown(snapshot.Symbol, currentTimeMs))
         {
-            return GenerateSellSignal(snapshot, currentTimeMs);
+            return new OrderFlowSignalDecision(true, false, "CooldownActive", signal, snapshot, direction);
         }
-        
-        return null;
+
+        if (!CanIssueAlert(currentTimeMs))
+        {
+            _logger.LogDebug("[OrderFlow] Rate limit reached. Max {Max} alerts per hour.", MAX_ALERTS_PER_HOUR);
+            return new OrderFlowSignalDecision(true, false, "GlobalRateLimit", signal, snapshot, direction);
+        }
+
+        return new OrderFlowSignalDecision(true, true, null, signal, snapshot, direction);
     }
     
     private OrderFlowSignal GenerateBuySignal(OrderFlowMetrics.MetricSnapshot snapshot, long currentTimeMs)
     {
-        // Compute confidence based on signal strength
-        var confidence = ComputeConfidence(snapshot, isBuy: true);
-        
-        var signal = new OrderFlowSignal
-        {
-            Symbol = snapshot.Symbol,
-            Direction = "BUY",
-            TimestampMs = currentTimeMs,
-            QueueImbalance = snapshot.QueueImbalance,
-            WallPersistenceMs = snapshot.BidWallAgeMs,
-            AbsorptionRate = snapshot.BidAbsorptionRate,
-            SpoofScore = snapshot.SpoofScore,
-            TapeAcceleration = snapshot.TapeAcceleration,
-            Confidence = confidence
-        };
-        
+        var signal = BuildSignal(snapshot, currentTimeMs, isBuy: true);
+        RecordAcceptedSignal(snapshot.Symbol, currentTimeMs);
         _logger.LogWarning("[OrderFlow Signal] {Signal}", signal);
-        
-        // Record cooldown
-        _lastSignalMs[snapshot.Symbol] = currentTimeMs;
-        RecordAlert(currentTimeMs);
-        
         return signal;
     }
     
     private OrderFlowSignal GenerateSellSignal(OrderFlowMetrics.MetricSnapshot snapshot, long currentTimeMs)
     {
-        var confidence = ComputeConfidence(snapshot, isBuy: false);
-        
-        var signal = new OrderFlowSignal
+        var signal = BuildSignal(snapshot, currentTimeMs, isBuy: false);
+        RecordAcceptedSignal(snapshot.Symbol, currentTimeMs);
+        _logger.LogWarning("[OrderFlow Signal] {Signal}", signal);
+        return signal;
+    }
+
+    private OrderFlowSignal BuildSignal(OrderFlowMetrics.MetricSnapshot snapshot, long currentTimeMs, bool isBuy)
+    {
+        var confidence = ComputeConfidence(snapshot, isBuy);
+
+        return new OrderFlowSignal
         {
             Symbol = snapshot.Symbol,
-            Direction = "SELL",
+            Direction = isBuy ? "BUY" : "SELL",
             TimestampMs = currentTimeMs,
             QueueImbalance = snapshot.QueueImbalance,
-            WallPersistenceMs = snapshot.AskWallAgeMs,
-            AbsorptionRate = snapshot.AskAbsorptionRate,
+            WallPersistenceMs = isBuy ? snapshot.BidWallAgeMs : snapshot.AskWallAgeMs,
+            AbsorptionRate = isBuy ? snapshot.BidAbsorptionRate : snapshot.AskAbsorptionRate,
             SpoofScore = snapshot.SpoofScore,
             TapeAcceleration = snapshot.TapeAcceleration,
             Confidence = confidence
         };
-        
-        _logger.LogWarning("[OrderFlow Signal] {Signal}", signal);
-        
-        _lastSignalMs[snapshot.Symbol] = currentTimeMs;
+    }
+
+    public void RecordAcceptedSignal(string symbol, long currentTimeMs)
+    {
+        _lastSignalMs[symbol] = currentTimeMs;
         RecordAlert(currentTimeMs);
-        
-        return signal;
     }
     
     private int ComputeConfidence(OrderFlowMetrics.MetricSnapshot snapshot, bool isBuy)
@@ -242,6 +247,17 @@ public class OrderFlowSignalValidator
             
             return _alertTimestamps.Count;
         }
+    }
+
+    public double GetCooldownRemainingSeconds(string symbol, long currentTimeMs)
+    {
+        if (!_lastSignalMs.TryGetValue(symbol, out var lastSignalMs))
+        {
+            return 0;
+        }
+
+        var remainingMs = SYMBOL_COOLDOWN_MS - (currentTimeMs - lastSignalMs);
+        return remainingMs > 0 ? remainingMs / 1000.0 : 0;
     }
     
     public void ResetSymbolCooldown(string symbol)

@@ -26,6 +26,8 @@ Book validity gate
 
 Exception containment
 
+IBKR universe module added (Static/IbkrScanner) with legacy builder retained for Polygon/Alpaca
+
 OUT OF SCOPE (DO NOT TOUCH)
 
 Scoring thresholds

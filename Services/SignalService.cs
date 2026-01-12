@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using RamStockAlerts.Data;
 using RamStockAlerts.Models;
+using Microsoft.Extensions.Configuration;
 
 namespace RamStockAlerts.Services;
 
@@ -13,6 +14,8 @@ public class SignalService
     private readonly IEventStore _eventStore;
     private readonly AlpacaTradingClient _tradingClient;
     private readonly ILogger<SignalService> _logger;
+    private readonly bool _alertsEnabled;
+    private readonly bool _isShadowMode;
 
     public SignalService(
         AppDbContext dbContext,
@@ -21,6 +24,7 @@ public class SignalService
         CircuitBreakerService circuitBreakerService,
         IEventStore eventStore,
         AlpacaTradingClient tradingClient,
+        IConfiguration configuration,
         ILogger<SignalService> logger)
     {
         _dbContext = dbContext;
@@ -29,6 +33,9 @@ public class SignalService
         _circuitBreakerService = circuitBreakerService;
         _eventStore = eventStore;
         _tradingClient = tradingClient;
+        _alertsEnabled = configuration.GetValue("AlertsEnabled", true);
+        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
+        _isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _logger = logger;
     }
 
@@ -70,59 +77,74 @@ public class SignalService
             "Saved signal for {Ticker}: Entry={Entry}, Score={Score}",
             signal.Ticker, signal.Entry, signal.Score);
 
-        // Attempt auto-trading if enabled
-        signal.AutoTradingAttempted = true;
-        try
+        if (_isShadowMode)
         {
-            var orderId = await _tradingClient.PlaceBracketOrderAsync(signal);
-            if (orderId != null)
-            {
-                signal.OrderId = orderId;
-                signal.OrderPlacedAt = DateTime.UtcNow;
-                signal.Status = SignalStatus.Filled; // Mark as filled since order placed
-                
-                await _eventStore.AppendAsync("OrderPlaced", new
-                {
-                    signal.Id,
-                    signal.Ticker,
-                    OrderId = orderId,
-                    signal.Entry,
-                    signal.Stop,
-                    signal.Target,
-                    PositionSize = signal.PositionSize
-                });
-            }
-            else
-            {
-                signal.AutoTradingSkipReason = "Auto-trading disabled or conditions not met";
-            }
+            signal.AutoTradingAttempted = false;
+            signal.AutoTradingSkipReason = "Shadow mode - auto-trading disabled";
         }
-        catch (Exception ex)
+        else
         {
-            _logger.LogError(ex, "Auto-trading failed for {Ticker}", signal.Ticker);
-            signal.AutoTradingSkipReason = $"Error: {ex.Message}";
+            // Attempt auto-trading if enabled
+            signal.AutoTradingAttempted = true;
+            try
+            {
+                var orderId = await _tradingClient.PlaceBracketOrderAsync(signal);
+                if (orderId != null)
+                {
+                    signal.OrderId = orderId;
+                    signal.OrderPlacedAt = DateTime.UtcNow;
+                    signal.Status = SignalStatus.Filled; // Mark as filled since order placed
+                    
+                    await _eventStore.AppendAsync("OrderPlaced", new
+                    {
+                        signal.Id,
+                        signal.Ticker,
+                        OrderId = orderId,
+                        signal.Entry,
+                        signal.Stop,
+                        signal.Target,
+                        PositionSize = signal.PositionSize
+                    });
+                }
+                else
+                {
+                    signal.AutoTradingSkipReason = "Auto-trading disabled or conditions not met";
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Auto-trading failed for {Ticker}", signal.Ticker);
+                signal.AutoTradingSkipReason = $"Error: {ex.Message}";
+            }
         }
 
         // Update signal with order info
         await _dbContext.SaveChangesAsync();
 
-        // Send multi-channel notification with failover
-        try
+        if (_alertsEnabled)
         {
-            var sent = await _notificationService.SendWithFailoverAsync(signal);
-            if (sent)
+            // Send multi-channel notification with failover
+            try
             {
-                await _eventStore.AppendAsync("AlertSent", new
+                var sent = await _notificationService.SendWithFailoverAsync(signal);
+                if (sent)
                 {
-                    signal.Id,
-                    signal.Ticker
-                });
+                    await _eventStore.AppendAsync("AlertSent", new
+                    {
+                        signal.Id,
+                        signal.Ticker
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send notification for {Ticker}", signal.Ticker);
+                // Don't fail the save if notification fails
             }
         }
-        catch (Exception ex)
+        else
         {
-            _logger.LogError(ex, "Failed to send notification for {Ticker}", signal.Ticker);
-            // Don't fail the save if notification fails
+            _logger.LogInformation("Alerts disabled; skipping notifications for {Ticker}", signal.Ticker);
         }
 
         _circuitBreakerService.TrackOutcome(signal.Status);

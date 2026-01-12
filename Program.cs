@@ -8,6 +8,7 @@ using Serilog.Events;
 using HealthChecks.UI.Client;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Configuration;
+using RamStockAlerts.Universe;
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
@@ -47,6 +48,26 @@ string ResolveSymbol(IConfiguration config)
 
 var mode = ResolveMode(initialConfig).ToLowerInvariant();
 
+var dailyRollupRequested = initialConfig.GetValue("Report:DailyRollup", false);
+if (dailyRollupRequested)
+{
+    var journalPath = initialConfig.GetValue<string>("Report:JournalPath");
+    if (string.IsNullOrWhiteSpace(journalPath))
+    {
+        journalPath = initialConfig.GetValue<string>("ShadowTradeJournal:FilePath")
+                      ?? Path.Combine("logs", "shadow-trade-journal.jsonl");
+    }
+    var writeToFile = initialConfig.GetValue("Report:WriteToFile", false);
+    var outputPath = initialConfig.GetValue<string>("Report:OutputPath");
+
+    Log.Information("Running daily rollup report for {JournalPath} (writeToFile={WriteToFile})",
+        journalPath, writeToFile);
+
+    var reporter = new DailyRollupReporter();
+    await reporter.RunAsync(journalPath, writeToFile, outputPath);
+    return;
+}
+
 if (mode == "record")
 {
     // RECORD MODE: Simple IBKR data recorder (writes L2 + tape to JSONL files)
@@ -85,6 +106,20 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Use Serilog
 builder.Host.UseSerilog();
+
+var tradingMode = builder.Configuration.GetValue<string>("TradingMode") ?? string.Empty;
+var alertsEnabled = builder.Configuration.GetValue("AlertsEnabled", true);
+var recordBlueprints = builder.Configuration.GetValue("RecordBlueprints", true);
+var isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
+var universeSource = builder.Configuration.GetValue<string>("Universe:Source");
+var isLegacyUniverse = string.IsNullOrWhiteSpace(universeSource)
+    || string.Equals(universeSource, "Legacy", StringComparison.OrdinalIgnoreCase);
+
+if (isShadowMode)
+{
+    Log.Information("TradingMode=Shadow (AlertsEnabled={AlertsEnabled}, RecordBlueprints={RecordBlueprints})",
+        alertsEnabled, recordBlueprints);
+}
 
 // Add Application Insights
 var appInsightsConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
@@ -150,10 +185,21 @@ builder.Services.AddScoped<DiscordNotificationService>();
 builder.Services.AddSingleton<SignalValidator>();
 builder.Services.AddSingleton<TradeBlueprint>();
 builder.Services.AddSingleton<CircuitBreakerService>();
-builder.Services.AddSingleton<UniverseBuilder>();
 builder.Services.AddScoped<PerformanceTracker>();
 builder.Services.AddSingleton<ApiQuotaTracker>();
 builder.Services.AddScoped<BacktestService>();
+builder.Services.AddSingleton<ShadowTradeJournal>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ShadowTradeJournal>());
+builder.Services.AddSingleton<ScarcityController>();
+builder.Services.AddSingleton<ShadowTradingCoordinator>();
+builder.Services.AddSingleton<StaticUniverseSource>();
+builder.Services.AddSingleton<IbkrScannerUniverseSource>();
+builder.Services.AddSingleton<UniverseService>();
+
+if (!isShadowMode && isLegacyUniverse)
+{
+    builder.Services.AddSingleton<LegacyUniverseBuilder>();
+}
 
 // Event store - use PostgreSQL-backed if enabled, otherwise use file-based store
 if (usePostgreSQL)
@@ -165,16 +211,22 @@ else
     builder.Services.AddSingleton<IEventStore, FileEventStore>();
 }
 
-// Register Alpaca real-time streaming service
-builder.Services.AddSingleton<AlpacaStreamClient>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AlpacaStreamClient>());
-
-// Register Polygon background service only if Alpaca is not configured (fallback for daily aggregates)
-var alpacaKey = builder.Configuration["Alpaca:Key"];
-if (string.IsNullOrEmpty(alpacaKey))
+if (!isShadowMode)
 {
-    builder.Services.AddHostedService<PolygonRestClient>();
-    Log.Warning("Alpaca not configured. Using PolygonRestClient as fallback (development mode).");
+    builder.Services.AddSingleton<AlpacaStreamClient>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<AlpacaStreamClient>());
+
+    // Register Polygon background service only if Alpaca is not configured (fallback for daily aggregates)
+    var alpacaKey = builder.Configuration["Alpaca:Key"];
+    if (string.IsNullOrEmpty(alpacaKey))
+    {
+        builder.Services.AddHostedService<PolygonRestClient>();
+        Log.Warning("Alpaca not configured. Using PolygonRestClient as fallback (development mode).");
+    }
+}
+else
+{
+    Log.Information("Shadow mode active. AlpacaStreamClient hosting and PolygonRestClient are disabled.");
 }
 
 // Register order flow metrics and signal validation (IBKR Phase 3-4)

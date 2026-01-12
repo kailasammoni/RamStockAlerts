@@ -94,7 +94,13 @@ public sealed class IbkrReplayHostedService : BackgroundService
         long invalidBookCount = 0;
         long crossedBookCount = 0;
         long exceptionsCount = 0;
+        long validSeconds = 0;
+        long invalidSeconds = 0;
+        long crossedSeconds = 0;
+        long exceptionsSeconds = 0;
         long totalSecondsReplayed = 0;
+        bool tapePresentThisSecond = false;
+        bool exceptionThisSecond = false;
 
         await using var writer = new StreamWriter(
             new FileStream(summaryPath, FileMode.Create, FileAccess.Write, FileShare.Read),
@@ -102,6 +108,47 @@ public sealed class IbkrReplayHostedService : BackgroundService
         {
             AutoFlush = true
         };
+
+        void FinalizeSecond(long second)
+        {
+            var nowMs = (second * 1000) + 999;
+            var isValidThisSecond = orderBook.IsBookValid(out _, nowMs) && tapePresentThisSecond;
+
+            if (isValidThisSecond)
+            {
+                validSeconds++;
+            }
+            else
+            {
+                invalidSeconds++;
+            }
+
+            if (orderBook.BestBid > 0m && orderBook.BestAsk > 0m && orderBook.BestBid >= orderBook.BestAsk)
+            {
+                crossedSeconds++;
+            }
+
+            if (exceptionThisSecond)
+            {
+                exceptionsSeconds++;
+            }
+
+            EmitSummary(
+                second,
+                orderBook,
+                tapeVelocityTracker,
+                velocityWindow,
+                writer,
+                invalidBookCount,
+                crossedBookCount,
+                exceptionsCount,
+                validSeconds,
+                invalidSeconds,
+                crossedSeconds,
+                exceptionsSeconds);
+
+            totalSecondsReplayed++;
+        }
 
         foreach (var evt in ordered)
         {
@@ -111,9 +158,10 @@ public sealed class IbkrReplayHostedService : BackgroundService
 
             while (eventSecond > currentSecond)
             {
-                EmitSummary(currentSecond, orderBook, tapeVelocityTracker, velocityWindow, writer, invalidBookCount, crossedBookCount, exceptionsCount);
-                totalSecondsReplayed++;
+                FinalizeSecond(currentSecond);
                 currentSecond++;
+                tapePresentThisSecond = false;
+                exceptionThisSecond = false;
             }
 
             if (evt.Kind == ReplayEventKind.Depth)
@@ -164,6 +212,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
                 {
                     _logger.LogError(ex, "[Replay] Error applying depth update at {Timestamp}", evt.TimestampUtc);
                     exceptionsCount++;
+                    exceptionThisSecond = true;
                     // Continue with next event
                     continue;
                 }
@@ -207,6 +256,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
                 velocityWindow.Enqueue(tapePayload);
                 PruneVelocityWindow(velocityWindow, eventSecond, tapeVelocityTracker.Window);
                 lastTapeSecond = eventSecond;
+                tapePresentThisSecond = true;
             }
 
             // Check book validity after each event
@@ -225,16 +275,15 @@ public sealed class IbkrReplayHostedService : BackgroundService
             }
         }
 
-        EmitSummary(currentSecond, orderBook, tapeVelocityTracker, velocityWindow, writer, invalidBookCount, crossedBookCount, exceptionsCount);
-        totalSecondsReplayed++;
+        FinalizeSecond(currentSecond);
 
         // Emit final readiness checklist
-        var validBookPercent = totalSecondsReplayed > 0 
-            ? ((totalSecondsReplayed - invalidBookCount) / (decimal)totalSecondsReplayed) * 100m
+        var validBookPercent = totalSecondsReplayed > 0
+            ? (validSeconds / (decimal)totalSecondsReplayed) * 100m
             : 0m;
 
         var tapePresent = orderBook.RecentTrades.Count > 0;
-        var replayPass = crossedBookCount == 0 && exceptionsCount == 0 && validBookPercent >= 95m && tapePresent;
+        var replayPass = exceptionsSeconds == 0 && crossedSeconds == 0 && validBookPercent >= 95m;
 
         var readinessChecklist = new
         {
@@ -244,11 +293,15 @@ public sealed class IbkrReplayHostedService : BackgroundService
             validBookPercent = Math.Round(validBookPercent, 2),
             tapePresent = tapePresent,
             replayPass = replayPass,
+            validSeconds = validSeconds,
+            invalidSeconds = invalidSeconds,
+            crossedSeconds = crossedSeconds,
+            exceptionsSeconds = exceptionsSeconds,
             invalidBookCount = invalidBookCount,
             crossedBookCount = crossedBookCount,
             exceptionsCount = exceptionsCount,
             totalSecondsReplayed = totalSecondsReplayed,
-            recommendation = replayPass ? "Ready for shadow trading" : "Not ready—review failures above"
+            recommendation = replayPass ? "Ready for shadow trading" : "Not ready - review failures above"
         };
 
         var checklistLine = JsonSerializer.Serialize(readinessChecklist);
@@ -261,8 +314,8 @@ public sealed class IbkrReplayHostedService : BackgroundService
 
         if (!replayPass)
         {
-            _logger.LogError("Shadow trading not ready. ReplayPass=false. InvalidBooks={Invalid} CrossedBooks={Crossed} Exceptions={Exc}",
-                invalidBookCount, crossedBookCount, exceptionsCount);
+            _logger.LogError("Shadow trading not ready. ReplayPass=false. InvalidSeconds={Invalid} CrossedSeconds={Crossed} ExceptionsSeconds={Exc}",
+                invalidSeconds, crossedSeconds, exceptionsSeconds);
             Environment.ExitCode = 1;
         }
         else
@@ -271,7 +324,19 @@ public sealed class IbkrReplayHostedService : BackgroundService
         }
     }
 
-    private void EmitSummary(long second, OrderBookState book, TapeVelocityTracker tapeVelocityTracker, Queue<TradePrint> velocityWindow, StreamWriter writer, long invalidBookCount, long crossedBookCount, long exceptionsCount)
+    private void EmitSummary(
+        long second,
+        OrderBookState book,
+        TapeVelocityTracker tapeVelocityTracker,
+        Queue<TradePrint> velocityWindow,
+        StreamWriter writer,
+        long invalidBookCount,
+        long crossedBookCount,
+        long exceptionsCount,
+        long validSeconds,
+        long invalidSeconds,
+        long crossedSeconds,
+        long exceptionsSeconds)
     {
         var ts = DateTimeOffset.FromUnixTimeSeconds(second).ToUniversalTime();
         PruneVelocityWindow(velocityWindow, second, tapeVelocityTracker.Window);
@@ -287,6 +352,10 @@ public sealed class IbkrReplayHostedService : BackgroundService
             totalBidSizeTop5 = book.TotalBidSize(5),
             totalAskSizeTop5 = book.TotalAskSize(5),
             tapeVelocityTradesPerSec = velocityWindow.Count / (decimal)tapeVelocityTracker.Window.TotalSeconds,
+            validSeconds = validSeconds,
+            invalidSeconds = invalidSeconds,
+            crossedSeconds = crossedSeconds,
+            exceptionsSeconds = exceptionsSeconds,
             invalidBookCount = invalidBookCount,
             crossedBookCount = crossedBookCount,
             exceptionsCount = exceptionsCount

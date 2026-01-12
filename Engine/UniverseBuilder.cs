@@ -19,12 +19,12 @@ public enum MarketPhase
     AfterMarketClose  // After 4:00 PM ET
 }
 
-public class UniverseBuilder
+public class LegacyUniverseBuilder
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly IMemoryCache _cache;
-    private readonly ILogger<UniverseBuilder> _logger;
+    private readonly ILogger<LegacyUniverseBuilder> _logger;
     private readonly AlpacaStreamClient _alpacaClient;
     private readonly SemaphoreSlim _universeBuildLock = new(1, 1);
     private readonly SemaphoreSlim _persistLock = new(1, 1);
@@ -37,11 +37,11 @@ public class UniverseBuilder
 
     // TODO: Replace IMemoryCache with Redis for distributed caching with 5-minute TTL
 
-    public UniverseBuilder(
+    public LegacyUniverseBuilder(
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         IMemoryCache cache,
-        ILogger<UniverseBuilder> logger,
+        ILogger<LegacyUniverseBuilder> logger,
         AlpacaStreamClient alpacaClient)
     {
         _httpClientFactory = httpClientFactory;
