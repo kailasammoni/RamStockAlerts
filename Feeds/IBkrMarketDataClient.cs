@@ -28,6 +28,7 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly OrderFlowMetrics _metrics;
     private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
+    private readonly PreviewSignalEmitter _previewSignalEmitter;
     
     private EClientSocket? _eClientSocket;
     private EReaderSignal? _readerSignal;
@@ -45,7 +46,8 @@ public class IBkrMarketDataClient : BackgroundService
         UniverseService universeService,
         MarketDataSubscriptionManager subscriptionManager,
         OrderFlowMetrics metrics,
-        ShadowTradingCoordinator shadowTradingCoordinator)
+        ShadowTradingCoordinator shadowTradingCoordinator,
+        PreviewSignalEmitter previewSignalEmitter)
     {
         _logger = logger;
         _configuration = configuration;
@@ -53,6 +55,7 @@ public class IBkrMarketDataClient : BackgroundService
         _subscriptionManager = subscriptionManager;
         _metrics = metrics;
         _shadowTradingCoordinator = shadowTradingCoordinator;
+        _previewSignalEmitter = previewSignalEmitter;
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -68,6 +71,7 @@ public class IBkrMarketDataClient : BackgroundService
                 _orderBooks,
                 _metrics,
                 _shadowTradingCoordinator,
+                _previewSignalEmitter,
                 IsTickByTickActive,
                 _subscriptionManager.RecordActivity,
                 HandleIbkrError);
@@ -620,6 +624,7 @@ internal class IBkrWrapperImpl : EWrapper
     private readonly ConcurrentDictionary<string, OrderBookState> _orderBooks;
     private readonly OrderFlowMetrics _metrics;
     private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
+    private readonly PreviewSignalEmitter _previewSignalEmitter;
     private readonly Func<string, bool> _isTickByTickActive;
     private readonly Action<string>? _recordActivity;
     private readonly Action<int, int, string>? _errorHandler;
@@ -631,6 +636,7 @@ internal class IBkrWrapperImpl : EWrapper
         ConcurrentDictionary<string, OrderBookState> orderBooks,
         OrderFlowMetrics metrics,
         ShadowTradingCoordinator shadowTradingCoordinator,
+        PreviewSignalEmitter previewSignalEmitter,
         Func<string, bool> isTickByTickActive,
         Action<string>? recordActivity,
         Action<int, int, string>? errorHandler)
@@ -640,6 +646,7 @@ internal class IBkrWrapperImpl : EWrapper
         _orderBooks = orderBooks;
         _metrics = metrics;
         _shadowTradingCoordinator = shadowTradingCoordinator;
+        _previewSignalEmitter = previewSignalEmitter;
         _isTickByTickActive = isTickByTickActive;
         _recordActivity = recordActivity;
         _errorHandler = errorHandler;
@@ -702,6 +709,7 @@ internal class IBkrWrapperImpl : EWrapper
             {
                 _metrics.UpdateMetrics(book, nowMs);
                 _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
+                _ = _previewSignalEmitter.ProcessSnapshotAsync(book, nowMs);
             }
             else
             {
@@ -746,6 +754,7 @@ internal class IBkrWrapperImpl : EWrapper
             {
                 _metrics.UpdateMetrics(book, nowMs);
                 _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
+                _ = _previewSignalEmitter.ProcessSnapshotAsync(book, nowMs);
             }
             else
             {
@@ -777,6 +786,7 @@ internal class IBkrWrapperImpl : EWrapper
             {
                 _metrics.UpdateMetrics(book, tsMs);
                 _shadowTradingCoordinator.ProcessSnapshot(book, tsMs);
+                _ = _previewSignalEmitter.ProcessSnapshotAsync(book, tsMs);
             }
             else
             {
@@ -812,6 +822,7 @@ internal class IBkrWrapperImpl : EWrapper
         {
             _metrics.UpdateMetrics(book, nowMs);
             _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
+            _ = _previewSignalEmitter.ProcessSnapshotAsync(book, nowMs);
         }
         else
         {
