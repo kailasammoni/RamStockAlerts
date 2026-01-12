@@ -61,6 +61,72 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         var belowPrice = _configuration.GetValue("Universe:IbkrScanner:BelowPrice", 50d);
         var aboveVolume = _configuration.GetValue("Universe:IbkrScanner:AboveVolume", 500_000);
 
+        var maxRetries = Math.Max(1, _configuration.GetValue("Universe:Scanner:MaxRetries", 3));
+        var backoffs = new[] { TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5) };
+        Exception? lastException = null;
+
+        for (var attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            if (attempt > 1)
+            {
+                var delay = attempt - 1 < backoffs.Length ? backoffs[attempt - 1] : backoffs[^1];
+                if (delay > TimeSpan.Zero)
+                {
+                    await Task.Delay(delay, cancellationToken);
+                }
+            }
+
+            _logger.LogInformation("[IBKR Scanner] Attempt {Attempt}/{MaxRetries}", attempt, maxRetries);
+
+            try
+            {
+                var universe = await ExecuteScannerAttemptAsync(
+                    host,
+                    port,
+                    clientId,
+                    instrument,
+                    locationCode,
+                    scanCode,
+                    rows,
+                    abovePrice,
+                    belowPrice,
+                    aboveVolume,
+                    cancellationToken);
+
+                if (universe.Count > 0)
+                {
+                    lock (_cacheLock)
+                    {
+                        _lastUniverse = universe;
+                    }
+                }
+
+                LogUniverse(universe);
+                return universe;
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                lastException = ex;
+                _logger.LogWarning(ex, "[IBKR Scanner] Attempt {Attempt}/{MaxRetries} failed.", attempt, maxRetries);
+            }
+        }
+
+        throw lastException ?? new InvalidOperationException("IBKR scanner request failed.");
+    }
+
+    private async Task<IReadOnlyList<string>> ExecuteScannerAttemptAsync(
+        string host,
+        int port,
+        int clientId,
+        string instrument,
+        string locationCode,
+        string scanCode,
+        int rows,
+        double abovePrice,
+        double belowPrice,
+        int aboveVolume,
+        CancellationToken cancellationToken)
+    {
         var requestId = Interlocked.Increment(ref _nextRequestId);
         var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<ScannerCandidate>();
@@ -110,7 +176,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 NumberOfRows = rows,
                 AbovePrice = abovePrice,
                 BelowPrice = belowPrice,
-                AboveVolume = aboveVolume
+                AboveVolume = aboveVolume,
+                StockTypeFilter = "CS"
             };
 
             _logger.LogInformation(
@@ -141,33 +208,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 throw new TimeoutException("IBKR scanner request timed out.");
             }
 
-            var universe = await completion.Task;
-            if (universe.Count > 0)
-            {
-                lock (_cacheLock)
-                {
-                    _lastUniverse = universe;
-                }
-            }
-
-            LogUniverse(universe);
-            return universe;
-        }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            var fallback = GetCachedUniverse();
-            if (fallback.Count > 0)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "[IBKR Scanner] Scan failed. Using cached universe ({Count} symbols).",
-                    fallback.Count);
-                LogUniverse(fallback);
-                return fallback;
-            }
-
-            _logger.LogError(ex, "[IBKR Scanner] Scan failed and no cached universe available.");
-            return Array.Empty<string>();
+            return await completion.Task;
         }
         finally
         {

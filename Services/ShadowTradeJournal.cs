@@ -15,6 +15,7 @@ public sealed class ShadowTradeJournal : BackgroundService
     private readonly bool _enabled;
     private readonly Guid _sessionId = Guid.NewGuid();
     private StreamWriter? _writer;
+    private DateTimeOffset _lastWriteFailureLog = DateTimeOffset.MinValue;
 
     public ShadowTradeJournal(IConfiguration configuration, ILogger<ShadowTradeJournal> logger)
     {
@@ -70,7 +71,12 @@ public sealed class ShadowTradeJournal : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[Shadow] Failed to write journal entry for {Symbol}", entry.Symbol);
+                var now = DateTimeOffset.UtcNow;
+                if (now - _lastWriteFailureLog >= TimeSpan.FromMinutes(1))
+                {
+                    _lastWriteFailureLog = now;
+                    _logger.LogError(ex, "[ShadowJournal] Write failed: {Message}", ex.Message);
+                }
             }
         }
     }

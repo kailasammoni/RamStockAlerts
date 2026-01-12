@@ -17,6 +17,8 @@ public sealed record MarketDataSubscription(
     int? DepthRequestId,
     int? TickByTickRequestId);
 
+public sealed record SubscriptionStats(int TotalSubscriptions, int DepthEnabled, int TickByTickEnabled);
+
 public sealed class MarketDataSubscriptionManager
 {
     private static readonly TimeSpan DepthCooldown = TimeSpan.FromDays(1);
@@ -42,6 +44,46 @@ public sealed class MarketDataSubscriptionManager
             maxLines,
             tickByTickMaxSymbols,
             depthRows);
+    }
+
+    public SubscriptionStats GetSubscriptionStats()
+    {
+        var depth = 0;
+        var tick = 0;
+        foreach (var state in _active.Values)
+        {
+            if (state.DepthRequestId.HasValue)
+            {
+                depth++;
+            }
+
+            if (state.TickByTickRequestId.HasValue)
+            {
+                tick++;
+            }
+        }
+
+        return new SubscriptionStats(_active.Count, depth, tick);
+    }
+
+    public IReadOnlyList<string> GetTickByTickSymbols()
+    {
+        return _active.Values
+            .Where(state => state.TickByTickRequestId.HasValue)
+            .Select(state => state.Symbol)
+            .OrderBy(symbol => symbol)
+            .ToList();
+    }
+
+    public bool IsFocusSymbol(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        return _active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state)
+            && state.TickByTickRequestId.HasValue;
     }
 
     public void RecordActivity(string symbol)

@@ -6,6 +6,7 @@ public sealed class ShadowTradeJournalEntry
     public Guid DecisionId { get; set; }
     public Guid SessionId { get; set; }
     public string Source { get; set; } = "IBKR";
+    public string EntryType { get; set; } = "Signal";
 
     public DateTime TimestampUtc { get; set; }
     public string TradingMode { get; set; } = string.Empty;
@@ -42,7 +43,6 @@ public sealed class ShadowTradeJournalEntry
 
     public long? LastDepthUpdateAgeMs { get; set; }
     public long? LastTapeUpdateAgeMs { get; set; }
-
     public double? TickerCooldownRemainingSec { get; set; }
     public int AlertsLastHourCount { get; set; }
 
@@ -53,6 +53,13 @@ public sealed class ShadowTradeJournalEntry
     public bool Accepted { get; set; }
     public string Decision { get; set; } = string.Empty;
     public string? RejectionReason { get; set; }
+
+    public int UniverseCount { get; set; }
+    public int ActiveSubscriptionsCount { get; set; }
+    public int DepthEnabledCount { get; set; }
+    public int TickByTickEnabledCount { get; set; }
+    public bool? IsBookValidAny { get; set; }
+    public bool? TapeRecentAny { get; set; }
 
     public List<DepthLevelSnapshot> BidsTopN { get; set; } = new();
     public List<DepthLevelSnapshot> AsksTopN { get; set; } = new();

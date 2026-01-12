@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -14,12 +15,14 @@ public sealed class ShadowTradingCoordinator
     private readonly OrderFlowMetrics _metrics;
     private readonly OrderFlowSignalValidator _validator;
     private readonly ShadowTradeJournal _journal;
+    private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly ILogger<ShadowTradingCoordinator> _logger;
     private readonly bool _enabled;
     private readonly bool _recordBlueprints;
     private readonly string _tradingMode;
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly ScarcityController _scarcityController;
+    private readonly RejectionLogger _rejectionLogger = new();
     private readonly ConcurrentDictionary<string, long> _lastProcessedSnapshotMs = new();
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
 
@@ -29,11 +32,13 @@ public sealed class ShadowTradingCoordinator
         OrderFlowSignalValidator validator,
         ShadowTradeJournal journal,
         ScarcityController scarcityController,
+        MarketDataSubscriptionManager subscriptionManager,
         ILogger<ShadowTradingCoordinator> logger)
     {
         _metrics = metrics;
         _validator = validator;
         _journal = journal;
+        _subscriptionManager = subscriptionManager;
         _scarcityController = scarcityController;
         _logger = logger;
 
@@ -60,17 +65,20 @@ public sealed class ShadowTradingCoordinator
 
         if (!book.IsBookValid(out _, nowMs))
         {
+            TryLogGatingRejection(book.Symbol, "NotReady_BookInvalid");
             return;
         }
 
-        if (!HasRecentTape(book, nowMs))
+        if (!ShadowTradingHelpers.HasRecentTape(book, nowMs))
         {
+            TryLogGatingRejection(book.Symbol, "NotReady_TapeStale");
             return;
         }
 
         var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
         if (snapshot == null)
         {
+            TryLogGatingRejection(book.Symbol, "NotReady_NoDepth");
             return;
         }
 
@@ -263,6 +271,27 @@ public sealed class ShadowTradingCoordinator
         }
     }
 
+    private void TryLogGatingRejection(string symbol, string reason)
+    {
+        if (!_rejectionLogger.ShouldLog(symbol, _subscriptionManager.IsFocusSymbol(symbol)))
+        {
+            return;
+        }
+
+        var entry = new ShadowTradeJournalEntry
+        {
+            EntryType = "Rejection",
+            Decision = "Rejected",
+            Accepted = false,
+            RejectionReason = reason,
+            TimestampUtc = DateTime.UtcNow,
+            TradingMode = _tradingMode,
+            Symbol = symbol
+        };
+
+        EnqueueEntry(entry);
+    }
+
     private static string FormatRejectionReason(ScarcityDecision decision)
     {
         if (string.IsNullOrWhiteSpace(decision.ReasonDetail))
@@ -318,6 +347,35 @@ public sealed class ShadowTradingCoordinator
         }
 
         return new TapeStats(velocity, volume, lastPrice, vwap, lastTapeAgeMs);
+    }
+
+    private sealed class RejectionLogger
+    {
+        private static readonly TimeSpan Window = TimeSpan.FromMinutes(1);
+        private readonly Queue<DateTimeOffset> _timestamps = new();
+        private const int RateLimit = 5;
+
+        public bool ShouldLog(string symbol, bool isFocus)
+        {
+            if (isFocus)
+            {
+                return true;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            while (_timestamps.Count > 0 && now - _timestamps.Peek() >= Window)
+            {
+                _timestamps.Dequeue();
+            }
+
+            if (_timestamps.Count >= RateLimit)
+            {
+                return false;
+            }
+
+            _timestamps.Enqueue(now);
+            return true;
+        }
     }
 
     private sealed class DepthSnapshot
