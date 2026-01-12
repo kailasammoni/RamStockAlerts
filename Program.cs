@@ -195,6 +195,7 @@ builder.Services.AddSingleton<ShadowTradingCoordinator>();
 builder.Services.AddSingleton<StaticUniverseSource>();
 builder.Services.AddSingleton<IbkrScannerUniverseSource>();
 builder.Services.AddSingleton<UniverseService>();
+builder.Services.AddSingleton<MarketDataSubscriptionManager>();
 
 if (!isShadowMode && isLegacyUniverse)
 {
