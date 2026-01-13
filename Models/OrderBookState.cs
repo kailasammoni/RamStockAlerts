@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using RamStockAlerts.Models.Microstructure;
 
 namespace RamStockAlerts.Models;
 
@@ -83,6 +84,9 @@ public sealed class OrderBookState
     private readonly Queue<TradePrint> _recentTrades;
     private Action<string>? _logger;
     private Action<string, DepthSide, decimal, decimal, int, long>? _onBookReset;
+    private long _bestBidPriceLastChangedMs;
+    private long _bestAskPriceLastChangedMs;
+    private readonly DepthDeltaTracker _depthDeltaTracker = new();
 
     public OrderBookState(string symbol = "")
     {
@@ -137,6 +141,11 @@ public sealed class OrderBookState
     public IReadOnlyCollection<TradePrint> RecentTrades => _recentTrades;
 
     /// <summary>
+    /// Observational depth delta tracker (additive; does not affect decisions).
+    /// </summary>
+    public DepthDeltaTracker DepthDeltaTracker => _depthDeltaTracker;
+
+    /// <summary>
     /// Best bid price (0 when empty or invalid).
     /// </summary>
     public decimal BestBid => _bidLevels.Count > 0 && _bidLevels[0].Size > 0m ? _bidLevels[0].Price : 0m;
@@ -163,7 +172,7 @@ public sealed class OrderBookState
                 return long.MaxValue;
             }
 
-            return LastUpdateMs - _bidLevels[0].TimestampMs;
+            return LastUpdateMs - _bestBidPriceLastChangedMs;
         }
     }
 
@@ -179,7 +188,7 @@ public sealed class OrderBookState
                 return long.MaxValue;
             }
 
-            return LastUpdateMs - _askLevels[0].TimestampMs;
+            return LastUpdateMs - _bestAskPriceLastChangedMs;
         }
     }
 
@@ -304,6 +313,13 @@ public sealed class OrderBookState
         var levels = update.Side == DepthSide.Bid ? _bidLevels : _askLevels;
         var size = update.Size;
         var price = update.Price;
+        var previousBestPrice = GetBestPrice(levels);
+        var previousSizeAtPosition = update.Position >= 0 && update.Position < levels.Count
+            ? levels[update.Position].Size
+            : 0m;
+        var isShapeDelete = price == 0m && size == 0m;
+        var isDeleteOperation = update.Operation == DepthOperation.Delete;
+        var isDelete = isDeleteOperation || isShapeDelete;
 
         if (update.Position < 0 || update.Position > MaxDepthRows + PositionSlack)
         {
@@ -311,7 +327,7 @@ public sealed class OrderBookState
             return;
         }
 
-        if (price <= 0m)
+        if (price <= 0m && !isDelete)
         {
             _logger?.Invoke($"[{update.Side}] Invalid price {price}; skipping");
             return;
@@ -323,7 +339,7 @@ public sealed class OrderBookState
             return;
         }
 
-        if (update.Position == 0)
+        if (update.Position == 0 && !isDelete)
         {
             if (update.Side == DepthSide.Bid && BestAsk > 0m && price >= BestAsk)
             {
@@ -353,9 +369,6 @@ public sealed class OrderBookState
                 _onBookReset?.Invoke(update.Symbol, update.Side, currentBest, price, ResetCount, update.TimestampMs);
             }
         }
-
-        // Determine if this is a delete: either Delete operation or (price==0 && size==0).
-        bool isDelete = update.Operation == DepthOperation.Delete || (price == 0m && size == 0m);
 
         // Apply operation.
         if (isDelete)
@@ -432,6 +445,12 @@ public sealed class OrderBookState
 
         LastUpdateMs = Math.Max(LastUpdateMs, update.TimestampMs);
         LastDepthUpdateUtcMs = Math.Max(LastDepthUpdateUtcMs, update.TimestampMs);
+
+        var newBestPrice = GetBestPrice(levels);
+        TrackBestPriceChange(update.Side, previousBestPrice, newBestPrice, update.TimestampMs);
+
+        // Track depth deltas near touch without affecting book semantics.
+        _depthDeltaTracker.OnDepthUpdate(update.Side, update.Operation, update.Position, price, size, previousSizeAtPosition, update.TimestampMs);
     }
 
     /// <summary>
@@ -478,6 +497,27 @@ public sealed class OrderBookState
         while (_recentTrades.Count > DefaultMaxTrades)
         {
             _recentTrades.Dequeue();
+        }
+    }
+
+    private static decimal GetBestPrice(List<DepthLevel> levels) =>
+        levels.Count > 0 && levels[0].Size > 0m ? levels[0].Price : 0m;
+
+    private void TrackBestPriceChange(DepthSide side, decimal previousBestPrice, decimal newBestPrice, long timestampMs)
+    {
+        // Size-only updates keep persistence; only price changes (or a change of the level at position 0) reset the timer.
+        if (previousBestPrice == newBestPrice)
+        {
+            return;
+        }
+
+        if (side == DepthSide.Bid)
+        {
+            _bestBidPriceLastChangedMs = newBestPrice > 0m ? timestampMs : 0;
+        }
+        else
+        {
+            _bestAskPriceLastChangedMs = newBestPrice > 0m ? timestampMs : 0;
         }
     }
 
