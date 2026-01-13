@@ -184,6 +184,54 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        if (ShouldRejectForReplenishment(decision.Direction, depthDeltaSnapshot, snapshot, tapeStats))
+        {
+            var decisionResult = BuildDecisionResult(
+                snapshot,
+                depthSnapshot,
+                tapeStats,
+                depthDeltaSnapshot,
+                decision,
+                DecisionOutcome.Rejected,
+                new[] { HardRejectReason.ReplenishmentSuspected },
+                nowMs,
+                book.BestBid,
+                book.BestAsk,
+                book);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+            rejectedEntry.Decision = "Rejected";
+            rejectedEntry.Accepted = false;
+            rejectedEntry.RejectionReason = "ReplenishmentSuspected";
+            rejectedEntry.DecisionResult = decisionResult;
+
+            EnqueueEntry(rejectedEntry);
+            return;
+        }
+
+        if (ShouldRejectForAbsorption(decision.Direction, snapshot, tapeStats))
+        {
+            var decisionResult = BuildDecisionResult(
+                snapshot,
+                depthSnapshot,
+                tapeStats,
+                depthDeltaSnapshot,
+                decision,
+                DecisionOutcome.Rejected,
+                new[] { HardRejectReason.AbsorptionInsufficient },
+                nowMs,
+                book.BestBid,
+                book.BestAsk,
+                book);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+            rejectedEntry.Decision = "Rejected";
+            rejectedEntry.Accepted = false;
+            rejectedEntry.RejectionReason = "AbsorptionInsufficient";
+            rejectedEntry.DecisionResult = decisionResult;
+
+            EnqueueEntry(rejectedEntry);
+            return;
+        }
+
         var blueprintPlan = BuildBlueprintPlan(book, decision.Direction);
         if (_recordBlueprints && !blueprintPlan.Success)
         {
@@ -433,6 +481,25 @@ public sealed class ShadowTradingCoordinator
         return addHeavy && printsWeak && notSpoofLike;
     }
 
+    public static bool ShouldRejectForAbsorption(
+        string? direction,
+        OrderFlowMetrics.MetricSnapshot metrics,
+        TapeStats tapeStats)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            return false;
+        }
+
+        const int MinTrades = 2;
+        const decimal MinTapeVolume = 1m;
+
+        var hasTrades = metrics.TradesIn3Sec >= MinTrades;
+        var hasVolume = tapeStats.Volume >= MinTapeVolume;
+
+        return !(hasTrades && hasVolume);
+    }
+
     private StrategyDecisionResult? UpdateDecisionResult(
         StrategyDecisionResult? existing,
         DecisionOutcome outcome,
@@ -509,6 +576,7 @@ public sealed class ShadowTradingCoordinator
             "RejectedRankedOut" => HardRejectReason.ScarcityRankedOut,
             "SpoofSuspected" => HardRejectReason.SpoofSuspected,
             "ReplenishmentSuspected" => HardRejectReason.ReplenishmentSuspected,
+            "AbsorptionInsufficient" => HardRejectReason.AbsorptionInsufficient,
             _ => HardRejectReason.Unknown
         };
 

@@ -31,7 +31,8 @@ public enum HardRejectReason
     ScarcitySymbolCooldown,
     ScarcityRankedOut,
     SpoofSuspected,
-    ReplenishmentSuspected
+    ReplenishmentSuspected,
+    AbsorptionInsufficient
 }
 
 public sealed record FeatureDepthLevelSnapshot(int Level, decimal Price, decimal Size);
