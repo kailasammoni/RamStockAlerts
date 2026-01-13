@@ -63,6 +63,11 @@ public sealed class ShadowTradeJournalEntry
     public int ActiveSubscriptionsCount { get; set; }
     public int DepthEnabledCount { get; set; }
     public int TickByTickEnabledCount { get; set; }
+    public long DepthSubscribeAttempts { get; set; }
+    public long DepthSubscribeSuccess { get; set; }
+    public long DepthSubscribeFailures { get; set; }
+    public int? DepthSubscribeLastErrorCode { get; set; }
+    public string? DepthSubscribeLastErrorMessage { get; set; }
     public bool? IsBookValidAny { get; set; }
     public bool? TapeRecentAny { get; set; }
 

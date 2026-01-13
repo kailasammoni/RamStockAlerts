@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Threading;
 using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Services;
@@ -18,7 +19,15 @@ public sealed record MarketDataSubscription(
     int? DepthRequestId,
     int? TickByTickRequestId);
 
-public sealed record SubscriptionStats(int TotalSubscriptions, int DepthEnabled, int TickByTickEnabled);
+public sealed record SubscriptionStats(
+    int TotalSubscriptions,
+    int DepthEnabled,
+    int TickByTickEnabled,
+    long DepthSubscribeAttempts,
+    long DepthSubscribeSuccess,
+    long DepthSubscribeFailures,
+    int? LastDepthErrorCode,
+    string? LastDepthErrorMessage);
 
 public sealed class MarketDataSubscriptionManager
 {
@@ -34,6 +43,12 @@ public sealed class MarketDataSubscriptionManager
     private readonly ConcurrentDictionary<int, RequestMapping> _requestMap = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _depthDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _tickByTickDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _depthDiagnosticsLock = new();
+    private long _depthSubscribeAttempts;
+    private long _depthSubscribeSuccess;
+    private long _depthSubscribeFailures;
+    private int? _lastDepthErrorCode;
+    private string? _lastDepthErrorMessage;
 
     public MarketDataSubscriptionManager(
         IConfiguration configuration,
@@ -47,7 +62,7 @@ public sealed class MarketDataSubscriptionManager
         _depthEligibilityCache = depthEligibilityCache;
         var maxLines = _configuration.GetValue("MarketData:MaxLines", 95);
         var tickByTickMaxSymbols = _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10);
-        var depthRows = _configuration.GetValue("MarketData:DepthRows", 10);
+        var depthRows = _configuration.GetValue("MarketData:DepthRows", 5);
         _logger.LogInformation(
             "[MarketData] Caps maxLines={MaxLines} tickByTickMaxSymbols={TickByTickMaxSymbols} depthRows={DepthRows}",
             maxLines,
@@ -72,7 +87,18 @@ public sealed class MarketDataSubscriptionManager
             }
         }
 
-        return new SubscriptionStats(_active.Count, depth, tick);
+        var attempts = Interlocked.Read(ref _depthSubscribeAttempts);
+        var success = Interlocked.Read(ref _depthSubscribeSuccess);
+        var failures = Interlocked.Read(ref _depthSubscribeFailures);
+        int? lastCode;
+        string? lastMessage;
+        lock (_depthDiagnosticsLock)
+        {
+            lastCode = _lastDepthErrorCode;
+            lastMessage = _lastDepthErrorMessage;
+        }
+
+        return new SubscriptionStats(_active.Count, depth, tick, attempts, success, failures, lastCode, lastMessage);
     }
 
     public IReadOnlyList<string> GetTickByTickSymbols()
@@ -117,6 +143,12 @@ public sealed class MarketDataSubscriptionManager
         Func<string, CancellationToken, Task<bool>> disableDepthAsync,
         CancellationToken cancellationToken)
     {
+        var maxActiveSymbols = Math.Max(0, _configuration.GetValue("Universe:MaxActiveSymbols", 0));
+        if (maxActiveSymbols > 0 && universe.Count > maxActiveSymbols)
+        {
+            universe = universe.Take(maxActiveSymbols).ToList();
+        }
+
         var normalizedUniverse = NormalizeUniverse(universe);
         var universeSet = new HashSet<string>(normalizedUniverse, StringComparer.OrdinalIgnoreCase);
         var classifications = await _classificationService.GetClassificationsAsync(normalizedUniverse, cancellationToken);
@@ -297,6 +329,7 @@ public sealed class MarketDataSubscriptionManager
         var now = DateTimeOffset.UtcNow;
         if (errorCode == 10092 && mapping.Kind == MarketDataRequestKind.Depth)
         {
+            RecordDepthSubscribeFailure(errorCode, errorMessage);
             if (IsDepthDisabled(symbol, now))
             {
                 return;
@@ -757,4 +790,35 @@ public sealed class MarketDataSubscriptionManager
     }
 
     private sealed record RequestMapping(string Symbol, MarketDataRequestKind Kind);
+
+    public void RecordDepthSubscribeAttempt(string symbol)
+    {
+        Interlocked.Increment(ref _depthSubscribeAttempts);
+        _logger.LogInformation("[MarketData] Depth subscribe attempt symbol={Symbol}", symbol);
+    }
+
+    public void RecordDepthSubscribeSuccess(string symbol, int requestId)
+    {
+        Interlocked.Increment(ref _depthSubscribeSuccess);
+        _logger.LogInformation("[MarketData] Depth subscribe success symbol={Symbol} depthId={DepthId}", symbol, requestId);
+    }
+
+    public void RecordDepthSubscribeFailure(int? errorCode, string? errorMessage)
+    {
+        Interlocked.Increment(ref _depthSubscribeFailures);
+        lock (_depthDiagnosticsLock)
+        {
+            _lastDepthErrorCode = errorCode;
+            _lastDepthErrorMessage = errorMessage;
+        }
+
+        if (errorCode.HasValue)
+        {
+            _logger.LogWarning("[MarketData] Depth subscribe failure code={Code} msg={Msg}", errorCode, errorMessage);
+        }
+        else
+        {
+            _logger.LogWarning("[MarketData] Depth subscribe failure msg={Msg}", errorMessage);
+        }
+    }
 }

@@ -194,6 +194,7 @@ public class IBkrMarketDataClient : BackgroundService
             requestDepth = false;
         }
 
+        var depthAttempted = false;
         await _subscriptionLock.WaitAsync(cancellationToken);
         int? mktDataRequestId = null;
         int? depthRequestId = null;
@@ -221,10 +222,13 @@ public class IBkrMarketDataClient : BackgroundService
 
             if (requestDepth)
             {
-                var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 10), 1, 10);
+                _subscriptionManager.RecordDepthSubscribeAttempt(normalized);
+                depthAttempted = true;
+                var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
                 depthRequestId = Interlocked.Increment(ref _nextRequestId);
                 _eClientSocket.reqMarketDepth(depthRequestId.Value, contract, depthRows, false, null);
                 _tickerIdMap[depthRequestId.Value] = normalized;
+                _subscriptionManager.RecordDepthSubscribeSuccess(normalized, depthRequestId.Value);
             }
 
             if (mktDataRequestId is null && depthRequestId is null)
@@ -251,6 +255,10 @@ public class IBkrMarketDataClient : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "[IBKR] Error subscribing to {Symbol}", normalized);
+            if (depthAttempted)
+            {
+                _subscriptionManager.RecordDepthSubscribeFailure(null, ex.Message);
+            }
             if (_eClientSocket?.IsConnected() == true)
             {
                 if (mktDataRequestId.HasValue)
