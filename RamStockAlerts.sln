@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts", "RamStockA
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Tests", "RamStockAlerts.Tests\RamStockAlerts.Tests.csproj", "{E8730FCD-724E-41FA-99FB-258E6EEFA8A0}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ScannerDiagnostics", "ScannerDiagnostics\ScannerDiagnostics.csproj", "{24AA94B0-FF9D-4335-9155-A399D39A09FF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -41,6 +43,18 @@ Global
 		{E8730FCD-724E-41FA-99FB-258E6EEFA8A0}.Release|x64.Build.0 = Release|Any CPU
 		{E8730FCD-724E-41FA-99FB-258E6EEFA8A0}.Release|x86.ActiveCfg = Release|Any CPU
 		{E8730FCD-724E-41FA-99FB-258E6EEFA8A0}.Release|x86.Build.0 = Release|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Debug|x64.Build.0 = Debug|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Debug|x86.Build.0 = Debug|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Release|x64.ActiveCfg = Release|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Release|x64.Build.0 = Release|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Release|x86.ActiveCfg = Release|Any CPU
+		{24AA94B0-FF9D-4335-9155-A399D39A09FF}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
