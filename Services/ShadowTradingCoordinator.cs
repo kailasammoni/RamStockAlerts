@@ -102,7 +102,7 @@ public sealed class ShadowTradingCoordinator
         }
 
         var depthSnapshot = BuildDepthSnapshot(book);
-        var tapeStats = BuildTapeStats(book, nowMs);
+        var tapeStats = BuildTapeStats(book, nowMs, decision.Direction);
         var depthDeltaSnapshot = book.DepthDeltaTracker.GetSnapshot(nowMs);
         var candidateId = Guid.NewGuid();
 
@@ -719,8 +719,8 @@ public sealed class ShadowTradingCoordinator
         decimal? LastPrice,
         decimal? VwapPrice,
         long? LastTapeAgeMs,
-        decimal? CumulativeVwap,
-        bool VwapReclaimDetected);
+        decimal? CumulativeVwap = null,
+        bool VwapReclaimDetected = false);
 
     private sealed record PendingRankEntry(
         ShadowTradeJournalEntry Entry,
@@ -735,7 +735,7 @@ public sealed class ShadowTradingCoordinator
         decimal? Target,
         string? RejectionReason);
 
-    private static TapeStats BuildTapeStats(OrderBookState book, long nowMs)
+    private static TapeStats BuildTapeStats(OrderBookState book, long nowMs, string? direction)
     {
         var windowStart = nowMs - TapePresenceWindowMs;
         var trades = book.RecentTrades.Where(t => t.TimestampMs >= windowStart).ToList();
@@ -762,6 +762,7 @@ public sealed class ShadowTradingCoordinator
 
         var cumulativeVwap = book.VwapTracker.CurrentVwap;
         var vwapReclaimDetected = IsVwapReclaim(
+            direction,
             lastPrice,
             cumulativeVwap,
             vwap,

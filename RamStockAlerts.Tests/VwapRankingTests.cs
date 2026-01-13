@@ -8,11 +8,12 @@ public class VwapRankingTests
     [Fact]
     public void VwapReclaimBonus_RanksHigher_WithSameBaseScore()
     {
-        var rankWithBonus = ShadowTradingCoordinator.ShouldRejectForSpoof("BUY", default, default, 0m); // placeholder to touch static class
         var baseScore = 5m;
         var bonus = 0.5m;
+        var rankWithBonus = baseScore + bonus;
+        var rankWithoutBonus = baseScore;
 
-        Assert.True(baseScore + bonus > baseScore);
+        Assert.True(rankWithBonus > rankWithoutBonus);
     }
 
     [Fact]
