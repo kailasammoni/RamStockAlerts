@@ -215,11 +215,13 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 aboveVolume,
                 floatSharesBelow);
 
+            var filterOptions = BuildFilterOptions(scanCode, floatSharesBelow);
+
             client.reqScannerSubscription(
                 requestId,
                 subscription,
-                BuildScanOptions(scanCode, floatSharesBelow),
-                new List<TagValue>());
+                new List<TagValue>(),
+                filterOptions);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
@@ -233,7 +235,19 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 throw new TimeoutException("IBKR scanner request timed out.");
             }
 
-            return await completion.Task;
+            var universe = await completion.Task;
+
+            // Preload classifications so downstream filters have stock type + primary exchange.
+            try
+            {
+                await _classificationService.GetClassificationsAsync(universe, cancellationToken);
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "[IBKR Scanner] Prefetch classifications failed.");
+            }
+
+            return universe;
         }
         finally
         {
@@ -392,13 +406,42 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 CacheClassifications();
             }
 
+            var top = result.Take(10).ToArray();
+            var topDisplay = top.Length == 0 ? "n/a" : string.Join(", ", top);
+            _logger.LogInformation("[IBKR Scanner] Received {Count} symbols (top10={Top})", result.Count, topDisplay);
+
             _completion.TrySetResult(result);
         }
 
         public void connectionClosed()
         {
             _logger.LogWarning("[IBKR Scanner] Connection closed.");
-            _completion.TrySetException(new InvalidOperationException("IBKR scanner connection closed."));
+
+            if (!_completion.Task.IsCompleted)
+            {
+                List<string> result;
+                lock (_symbols)
+                {
+                    if (_candidates.Count == 0)
+                    {
+                        _completion.TrySetException(new InvalidOperationException("IBKR scanner connection closed."));
+                        return;
+                    }
+
+                    result = _candidates
+                        .OrderBy(candidate => candidate.Rank)
+                        .Select(candidate => candidate.Symbol)
+                        .ToList();
+
+                    CacheClassifications();
+                }
+
+                var top = result.Take(10).ToArray();
+                var topDisplay = top.Length == 0 ? "n/a" : string.Join(", ", top);
+                _logger.LogInformation("[IBKR Scanner] Connection closed after receiving {Count} symbols (top10={Top})", result.Count, topDisplay);
+
+                _completion.TrySetResult(result);
+            }
         }
 
         public void error(int id, int errorCode, string errorMsg)
@@ -406,6 +449,12 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
             {
                 _logger.LogDebug("[IBKR Scanner] Info: id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
+                return;
+            }
+
+            if (errorCode == 165)
+            {
+                _logger.LogWarning("[IBKR Scanner] Warning code={Code} msg={Msg} (ignoring)", errorCode, errorMsg);
                 return;
             }
 
@@ -594,7 +643,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         }
     }
 
-    private static List<TagValue> BuildScanOptions(
+    private static List<TagValue> BuildFilterOptions(
         string scanCode,
         double? floatSharesBelow)
     {
