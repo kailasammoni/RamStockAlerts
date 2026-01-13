@@ -29,7 +29,8 @@ public enum HardRejectReason
     ScarcitySymbolLimit,
     ScarcityGlobalCooldown,
     ScarcitySymbolCooldown,
-    ScarcityRankedOut
+    ScarcityRankedOut,
+    SpoofSuspected
 }
 
 public sealed record FeatureDepthLevelSnapshot(int Level, decimal Price, decimal Size);
@@ -69,6 +70,16 @@ public sealed record FeatureSnapshot
     public bool? TapeRecent { get; init; }
     public IReadOnlyList<FeatureDepthLevelSnapshot> BidsTopN { get; init; } = Array.Empty<FeatureDepthLevelSnapshot>();
     public IReadOnlyList<FeatureDepthLevelSnapshot> AsksTopN { get; init; } = Array.Empty<FeatureDepthLevelSnapshot>();
+    public decimal BidCancelToAddRatio1s { get; init; }
+    public decimal AskCancelToAddRatio1s { get; init; }
+    public decimal BidCancelToAddRatio3s { get; init; }
+    public decimal AskCancelToAddRatio3s { get; init; }
+    public int BidCancelCount1s { get; init; }
+    public int BidAddCount1s { get; init; }
+    public int AskCancelCount1s { get; init; }
+    public int AskAddCount1s { get; init; }
+    public decimal BidTotalCanceledSize1s { get; init; }
+    public decimal AskTotalCanceledSize1s { get; init; }
 }
 
 public sealed record StrategyDecisionResult

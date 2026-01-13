@@ -44,7 +44,17 @@ public static class StrategyDecisionResultBuilder
             IsBookValid = context.IsBookValid,
             TapeRecent = context.TapeRecent,
             BidsTopN = context.BidsTopN ?? Array.Empty<FeatureDepthLevelSnapshot>(),
-            AsksTopN = context.AsksTopN ?? Array.Empty<FeatureDepthLevelSnapshot>()
+            AsksTopN = context.AsksTopN ?? Array.Empty<FeatureDepthLevelSnapshot>(),
+            BidCancelToAddRatio1s = context.BidCancelToAddRatio1s,
+            AskCancelToAddRatio1s = context.AskCancelToAddRatio1s,
+            BidCancelToAddRatio3s = context.BidCancelToAddRatio3s,
+            AskCancelToAddRatio3s = context.AskCancelToAddRatio3s,
+            BidCancelCount1s = context.BidCancelCount1s,
+            BidAddCount1s = context.BidAddCount1s,
+            AskCancelCount1s = context.AskCancelCount1s,
+            AskAddCount1s = context.AskAddCount1s,
+            BidTotalCanceledSize1s = context.BidTotalCanceledSize1s,
+            AskTotalCanceledSize1s = context.AskTotalCanceledSize1s
         };
 
         return new StrategyDecisionResult
@@ -97,4 +107,14 @@ public sealed record StrategyDecisionBuildContext
     public bool? TapeRecent { get; init; }
     public IReadOnlyList<FeatureDepthLevelSnapshot>? BidsTopN { get; init; }
     public IReadOnlyList<FeatureDepthLevelSnapshot>? AsksTopN { get; init; }
+    public decimal BidCancelToAddRatio1s { get; init; }
+    public decimal AskCancelToAddRatio1s { get; init; }
+    public decimal BidCancelToAddRatio3s { get; init; }
+    public decimal AskCancelToAddRatio3s { get; init; }
+    public int BidCancelCount1s { get; init; }
+    public int BidAddCount1s { get; init; }
+    public int AskCancelCount1s { get; init; }
+    public int AskAddCount1s { get; init; }
+    public decimal BidTotalCanceledSize1s { get; init; }
+    public decimal AskTotalCanceledSize1s { get; init; }
 }

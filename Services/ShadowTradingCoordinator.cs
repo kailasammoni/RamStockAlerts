@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Decisions;
+using RamStockAlerts.Models.Microstructure;
 
 namespace RamStockAlerts.Services;
 
@@ -102,6 +103,7 @@ public sealed class ShadowTradingCoordinator
 
         var depthSnapshot = BuildDepthSnapshot(book);
         var tapeStats = BuildTapeStats(book, nowMs);
+        var depthDeltaSnapshot = book.DepthDeltaTracker.GetSnapshot(nowMs);
         var candidateId = Guid.NewGuid();
 
         if (!decision.Accepted)
@@ -111,6 +113,7 @@ public sealed class ShadowTradingCoordinator
                 snapshot,
                 depthSnapshot,
                 tapeStats,
+                depthDeltaSnapshot,
                 decision,
                 DecisionOutcome.Rejected,
                 BuildHardRejectReasons(rejectionReason),
@@ -131,6 +134,32 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        if (ShouldRejectForSpoof(decision.Direction, depthDeltaSnapshot, snapshot, tapeStats.Volume))
+        {
+            var decisionResult = BuildDecisionResult(
+                snapshot,
+                depthSnapshot,
+                tapeStats,
+                depthDeltaSnapshot,
+                decision,
+                DecisionOutcome.Rejected,
+                new[] { HardRejectReason.SpoofSuspected },
+                nowMs,
+                book.BestBid,
+                book.BestAsk,
+                book);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+            rejectedEntry.Decision = "Rejected";
+            rejectedEntry.Accepted = false;
+            rejectedEntry.RejectionReason = "SpoofSuspected";
+            rejectedEntry.DecisionResult = decisionResult;
+
+            EnqueueEntry(rejectedEntry);
+            _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
+                snapshot.Symbol, decision.Direction, "SpoofSuspected");
+            return;
+        }
+
         var blueprintPlan = BuildBlueprintPlan(book, decision.Direction);
         if (_recordBlueprints && !blueprintPlan.Success)
         {
@@ -139,6 +168,7 @@ public sealed class ShadowTradingCoordinator
                 snapshot,
                 depthSnapshot,
                 tapeStats,
+                depthDeltaSnapshot,
                 decision,
                 DecisionOutcome.Rejected,
                 BuildHardRejectReasons("BlueprintUnavailable"),
@@ -162,6 +192,7 @@ public sealed class ShadowTradingCoordinator
             snapshot,
             depthSnapshot,
             tapeStats,
+            depthDeltaSnapshot,
             decision,
             DecisionOutcome.Accepted,
             Array.Empty<HardRejectReason>(),
@@ -249,6 +280,7 @@ public sealed class ShadowTradingCoordinator
         OrderFlowMetrics.MetricSnapshot snapshot,
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats,
+        DepthDeltaSnapshot depthDeltaSnapshot,
         OrderFlowSignalValidator.OrderFlowSignalDecision decision,
         DecisionOutcome outcome,
         IReadOnlyList<HardRejectReason> reasons,
@@ -299,7 +331,17 @@ public sealed class ShadowTradingCoordinator
                 .ToList(),
             AsksTopN = depthSnapshot.AsksTopN
                 .Select(a => new FeatureDepthLevelSnapshot(a.Level, a.Price, a.Size))
-                .ToList()
+                .ToList(),
+            BidCancelToAddRatio1s = depthDeltaSnapshot.Bid1s.CancelToAddRatio,
+            AskCancelToAddRatio1s = depthDeltaSnapshot.Ask1s.CancelToAddRatio,
+            BidCancelToAddRatio3s = depthDeltaSnapshot.Bid3s.CancelToAddRatio,
+            AskCancelToAddRatio3s = depthDeltaSnapshot.Ask3s.CancelToAddRatio,
+            BidCancelCount1s = depthDeltaSnapshot.Bid1s.CancelCount,
+            BidAddCount1s = depthDeltaSnapshot.Bid1s.AddCount,
+            AskCancelCount1s = depthDeltaSnapshot.Ask1s.CancelCount,
+            AskAddCount1s = depthDeltaSnapshot.Ask1s.AddCount,
+            BidTotalCanceledSize1s = depthDeltaSnapshot.Bid1s.TotalCanceledSize,
+            AskTotalCanceledSize1s = depthDeltaSnapshot.Ask1s.TotalCanceledSize
         };
 
         return StrategyDecisionResultBuilder.Build(context);
@@ -311,6 +353,32 @@ public sealed class ShadowTradingCoordinator
             : string.Equals(direction, "SELL", StringComparison.OrdinalIgnoreCase)
                 ? TradeDirection.Sell
                 : null;
+
+    public static bool ShouldRejectForSpoof(
+        string? direction,
+        DepthDeltaSnapshot deltaSnapshot,
+        OrderFlowMetrics.MetricSnapshot snapshot,
+        decimal tapeVolume)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            return false;
+        }
+
+        var isBuy = string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase);
+        var window1 = isBuy ? deltaSnapshot.Bid1s : deltaSnapshot.Ask1s;
+        var window3 = isBuy ? deltaSnapshot.Bid3s : deltaSnapshot.Ask3s;
+
+        var cancelDominant = window1.CancelCount > 0 &&
+                             window1.CancelToAddRatio >= 2m &&
+                             window1.TotalCanceledSize >= window1.TotalAddedSize &&
+                             window3.CancelToAddRatio >= 2m &&
+                             window3.CancelCount > 0;
+
+        var noPrints = snapshot.TradesIn3Sec <= 1 && tapeVolume <= 0m;
+
+        return cancelDominant && noPrints;
+    }
 
     private StrategyDecisionResult? UpdateDecisionResult(
         StrategyDecisionResult? existing,
@@ -386,6 +454,7 @@ public sealed class ShadowTradingCoordinator
             "GlobalCooldown" => HardRejectReason.ScarcityGlobalCooldown,
             "SymbolCooldown" => HardRejectReason.ScarcitySymbolCooldown,
             "RejectedRankedOut" => HardRejectReason.ScarcityRankedOut,
+            "SpoofSuspected" => HardRejectReason.SpoofSuspected,
             _ => HardRejectReason.Unknown
         };
 

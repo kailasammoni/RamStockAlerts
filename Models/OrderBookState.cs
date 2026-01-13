@@ -450,7 +450,8 @@ public sealed class OrderBookState
         TrackBestPriceChange(update.Side, previousBestPrice, newBestPrice, update.TimestampMs);
 
         // Track depth deltas near touch without affecting book semantics.
-        _depthDeltaTracker.OnDepthUpdate(update.Side, update.Operation, update.Position, price, size, previousSizeAtPosition, update.TimestampMs);
+        var effectiveOperation = isDelete ? DepthOperation.Delete : update.Operation;
+        _depthDeltaTracker.OnDepthUpdate(update.Side, effectiveOperation, update.Position, price, size, previousSizeAtPosition, update.TimestampMs);
     }
 
     /// <summary>
