@@ -1,3 +1,4 @@
+using System;
 using IBApi;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,11 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private readonly bool _excludeEtfs;
     private readonly HashSet<string> _etfDenylist;
+    private readonly int _startHourEt;
+    private readonly int _startMinuteEt;
+    private readonly int _endHourEt;
+    private readonly int _endMinuteEt;
+    private readonly TimeZoneInfo _eastern;
 
     private static readonly string[] DefaultEtfDenylist =
     {
@@ -36,6 +42,12 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             _etfDenylist.Add(entry);
         }
 
+        _startHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartHour", 7), 0, 23);
+        _startMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartMinute", 0), 0, 59);
+        _endHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:EndHour", 16), 0, 23);
+        _endMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:EndMinute", 0), 0, 59);
+        _eastern = TryGetEasternTimeZone();
+
         _configuration = configuration;
         _logger = logger;
     }
@@ -43,6 +55,19 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (!IsWithinOperatingWindow())
+        {
+            var cached = GetCachedUniverse();
+            _logger.LogInformation(
+                "[IBKR Scanner] Skipping universe refresh outside window {StartHour:D2}:{StartMinute:D2}-{EndHour:D2}:{EndMinute:D2} ET. Returning cached count={Count}.",
+                _startHourEt,
+                _startMinuteEt,
+                _endHourEt,
+                _endMinuteEt,
+                cached.Count);
+            return cached;
+        }
 
         var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
         var port = _configuration.GetValue<int?>("IBKR:Port")
@@ -548,4 +573,26 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     }
 
     private sealed record ScannerCandidate(int Rank, string Symbol, ContractDetails? Details);
+
+    private bool IsWithinOperatingWindow()
+    {
+        var nowEastern = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _eastern);
+        var minuteOfDay = nowEastern.Hour * 60 + nowEastern.Minute;
+        var startMinute = _startHourEt * 60 + _startMinuteEt;
+        var endMinute = _endHourEt * 60 + _endMinuteEt;
+
+        return minuteOfDay >= startMinute && minuteOfDay < endMinute;
+    }
+
+    private static TimeZoneInfo TryGetEasternTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.Utc;
+        }
+    }
 }
