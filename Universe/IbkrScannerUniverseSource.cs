@@ -1,5 +1,6 @@
 using System;
 using IBApi;
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Services.Universe;
@@ -64,11 +65,14 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
         var instrument = _configuration["Universe:IbkrScanner:Instrument"] ?? "STK";
         var locationCode = _configuration["Universe:IbkrScanner:LocationCode"] ?? "STK.US.MAJOR";
-        var scanCode = _configuration["Universe:IbkrScanner:ScanCode"] ?? "MOST_ACTIVE";
-        var rows = Math.Clamp(_configuration.GetValue("Universe:IbkrScanner:Rows", 50), 1, 50);
-        var abovePrice = _configuration.GetValue("Universe:IbkrScanner:AbovePrice", 5d);
-        var belowPrice = _configuration.GetValue("Universe:IbkrScanner:BelowPrice", 50d);
-        var aboveVolume = _configuration.GetValue("Universe:IbkrScanner:AboveVolume", 500_000);
+        var scanCode = _configuration["Universe:IbkrScanner:ScanCode"] ?? "SCAN_floatShares_ASC";
+        var rows = Math.Clamp(_configuration.GetValue("Universe:IbkrScanner:Rows", 200), 1, 500);
+        var abovePrice = _configuration.GetValue<double?>("Universe:IbkrScanner:AbovePrice") ?? 5d;
+        var belowPrice = _configuration.GetValue<double?>("Universe:IbkrScanner:BelowPrice") ?? 20d;
+        var aboveVolume = _configuration.GetValue<int?>("Universe:IbkrScanner:AboveVolume") ?? 500_000;
+        var floatSharesBelow = _configuration.GetValue<double?>("Universe:IbkrScanner:FloatSharesBelow") ?? 150_000_000d;
+        var marketCapAbove = _configuration.GetValue<double?>("Universe:IbkrScanner:MarketCapAbove");
+        var marketCapBelow = _configuration.GetValue<double?>("Universe:IbkrScanner:MarketCapBelow");
 
         var maxRetries = Math.Max(1, _configuration.GetValue("Universe:Scanner:MaxRetries", 3));
         var backoffs = new[] { TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5) };
@@ -100,6 +104,9 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                     abovePrice,
                     belowPrice,
                     aboveVolume,
+                    floatSharesBelow,
+                    marketCapAbove,
+                    marketCapBelow,
                     cancellationToken);
 
                 if (universe.Count > 0)
@@ -134,6 +141,9 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         double abovePrice,
         double belowPrice,
         int aboveVolume,
+        double? floatSharesBelow,
+        double? marketCapAbove,
+        double? marketCapBelow,
         CancellationToken cancellationToken)
     {
         var requestId = Interlocked.Increment(ref _nextRequestId);
@@ -191,24 +201,24 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 NumberOfRows = rows,
                 AbovePrice = abovePrice,
                 BelowPrice = belowPrice,
-                AboveVolume = aboveVolume,
-                StockTypeFilter = "CS"
+                AboveVolume = aboveVolume
             };
 
             _logger.LogInformation(
-                "[IBKR Scanner] Requesting scan {ScanCode} {Instrument} {Location} rows={Rows} price={AbovePrice}-{BelowPrice} volume>={AboveVolume}",
+                "[IBKR Scanner] Requesting scan {ScanCode} {Instrument} {Location} rows={Rows} price={AbovePrice}-{BelowPrice} volume>={AboveVolume} float<{FloatBelow}",
                 scanCode,
                 instrument,
                 locationCode,
                 rows,
                 abovePrice,
                 belowPrice,
-                aboveVolume);
+                aboveVolume,
+                floatSharesBelow);
 
             client.reqScannerSubscription(
                 requestId,
                 subscription,
-                new List<TagValue>(),
+                BuildScanOptions(scanCode, floatSharesBelow),
                 new List<TagValue>());
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -550,12 +560,10 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 return details.StockType.Trim().ToUpperInvariant();
             }
 
-            var secType = details.Contract?.SecType;
-            if (!string.IsNullOrWhiteSpace(secType))
+            var secType = details.Contract?.SecType?.Trim();
+            if (!string.IsNullOrWhiteSpace(secType) && !secType.Equals("STK", StringComparison.OrdinalIgnoreCase))
             {
-                return secType.Trim().ToUpperInvariant() == "STK"
-                    ? "COMMON"
-                    : secType.Trim().ToUpperInvariant();
+                return secType.ToUpperInvariant();
             }
 
             return "UNKNOWN";
@@ -584,5 +592,19 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         {
             return TimeZoneInfo.Utc;
         }
+    }
+
+    private static List<TagValue> BuildScanOptions(
+        string scanCode,
+        double? floatSharesBelow)
+    {
+        var options = new List<TagValue>();
+
+        if (scanCode.Equals("SCAN_floatShares_ASC", StringComparison.OrdinalIgnoreCase) && floatSharesBelow.HasValue)
+        {
+            options.Add(new TagValue("floatSharesBelow", floatSharesBelow.Value.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        return options;
     }
 }

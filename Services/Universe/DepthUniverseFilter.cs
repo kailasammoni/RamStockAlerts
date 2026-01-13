@@ -8,7 +8,8 @@ public sealed class DepthUniverseFilter
     private readonly ContractClassificationService _classificationService;
     private readonly IConfiguration _configuration;
     private readonly ILogger<DepthUniverseFilter> _logger;
-    private readonly HashSet<string> _etfLogged = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _skipLogged = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> AllowedExchanges = new(StringComparer.OrdinalIgnoreCase) { "NYSE", "NASDAQ" };
 
     public DepthUniverseFilter(
         ContractClassificationService classificationService,
@@ -46,21 +47,14 @@ public sealed class DepthUniverseFilter
             var mapped = _classificationService.Classify(classification);
             counts.Increment(mapped);
 
-            if (mapped == ContractSecurityClassification.Etf)
+            var eligibility = EvaluateEligibility(normalized, classification, mapped, allowUnknown);
+            if (!eligibility.IsEligible)
             {
-                if (_etfLogged.Add(normalized))
-                {
-                    _logger.LogInformation("UniverseFilter exclude {Symbol} StockType=ETF", normalized);
-                }
-
+                LogOnce(normalized, eligibility.Reason);
                 continue;
             }
 
-            if (mapped == ContractSecurityClassification.CommonStock ||
-                (allowUnknown && mapped == ContractSecurityClassification.Unknown))
-            {
-                filtered.Add(normalized);
-            }
+            filtered.Add(normalized);
         }
 
         return new DepthUniverseFilterResult(
@@ -71,6 +65,47 @@ public sealed class DepthUniverseFilter
             counts.Etn,
             counts.Unknown,
             counts.Other);
+    }
+
+    private static (bool IsEligible, string Reason) EvaluateEligibility(
+        string symbol,
+        ContractClassification? classification,
+        ContractSecurityClassification mapped,
+        bool allowUnknownAsCommon)
+    {
+        if (classification is null)
+        {
+            return (false, "MissingClassification");
+        }
+
+        var treatedAsCommon = mapped == ContractSecurityClassification.CommonStock
+                              || (allowUnknownAsCommon && mapped == ContractSecurityClassification.Unknown);
+
+        if (!treatedAsCommon)
+        {
+            return (false, $"StockTypeNotCommon:{classification.StockType ?? "null"}");
+        }
+
+        if (string.IsNullOrWhiteSpace(classification.PrimaryExchange))
+        {
+            return (false, "MissingPrimaryExchange");
+        }
+
+        if (!AllowedExchanges.Contains(classification.PrimaryExchange.Trim().ToUpperInvariant()))
+        {
+            return (false, $"PrimaryExchangeNotAllowed:{classification.PrimaryExchange}");
+        }
+
+        return (true, string.Empty);
+    }
+
+    private void LogOnce(string symbol, string reason)
+    {
+        var key = $"{symbol}:{reason}";
+        if (_skipLogged.Add(key))
+        {
+            _logger.LogInformation("UniverseFilter exclude {Symbol} reason={Reason}", symbol, reason);
+        }
     }
 }
 

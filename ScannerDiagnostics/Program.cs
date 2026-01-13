@@ -8,9 +8,9 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        if (args.Length == 0 || (args[0] != "dump-params" && args[0] != "run-matrix" && args[0] != "run-most-active-major"))
+        if (args.Length == 0 || (args[0] != "dump-params" && args[0] != "run-matrix" && args[0] != "run-most-active-major" && args[0] != "run-float-low"))
         {
-            Console.WriteLine("Usage: dotnet run --project ScannerDiagnostics -- dump-params|run-matrix|run-most-active-major");
+            Console.WriteLine("Usage: dotnet run --project ScannerDiagnostics -- dump-params|run-matrix|run-most-active-major|run-float-low");
             return 1;
         }
 
@@ -53,6 +53,9 @@ internal static class Program
                     break;
                 case "run-most-active-major":
                     await RunMostActiveMajorAsync(client, artifactsDir, diag);
+                    break;
+                case "run-float-low":
+                    await RunFloatLowAsync(client, artifactsDir, diag);
                     break;
             }
         }
@@ -143,61 +146,74 @@ internal static class Program
             Name = "MostActiveMajor",
             Instrument = "STK",
             LocationCode = "STK.US.MAJOR",
-            ScanCode = "MOST_ACTIVE",
-            StockTypeFilter = "CS"
+            ScanCode = "MOST_ACTIVE"
         };
 
         var timeout = TimeSpan.FromMilliseconds(diag.RequestTimeoutMs);
         Console.WriteLine("Running MOST_ACTIVE STK.US.MAJOR...");
+        await RunAndSummarizeAsync(client, config, artifactsDir, diag, "scan-most-active-major.json");
+    }
+
+    private static async Task RunFloatLowAsync(ScannerClient client, string artifactsDir, DiagnosticsConfig diag)
+    {
+        var config = new ScanConfig
+        {
+            Name = "FloatLow",
+            Instrument = "STK",
+            LocationCode = "STK.US.MAJOR",
+            ScanCode = "SCAN_floatShares_ASC",
+            FloatSharesBelow = diag.FloatSharesBelow ?? 150_000_000m,
+            PriceAbove = diag.PriceAbove ?? 5m,
+            PriceBelow = diag.PriceBelow ?? 20m,
+            VolumeAbove = diag.VolumeAbove ?? 500_000m
+        };
+
+        var timeout = TimeSpan.FromMilliseconds(diag.RequestTimeoutMs);
+        Console.WriteLine($"Running SCAN_floatShares_ASC (price {config.PriceAbove}-{config.PriceBelow}, float<{config.FloatSharesBelow}, vol>{config.VolumeAbove})...");
+        await RunAndSummarizeAsync(client, config, artifactsDir, diag, "scan-float-low.json");
+    }
+
+    private static async Task RunAndSummarizeAsync(
+        ScannerClient client,
+        ScanConfig config,
+        string artifactsDir,
+        DiagnosticsConfig diag,
+        string fileName)
+    {
+        var timeout = TimeSpan.FromMilliseconds(diag.RequestTimeoutMs);
         var scanResult = await client.RunScanAsync(config, diag, timeout);
         var enriched = await EnrichAsync(client, scanResult.Rows, diag);
 
-        var rawSummary = BuildStockTypeSummary(enriched);
-        var filtered = enriched.Where(e => !IsEtfStockType(e.Details)).ToList();
+        var classified = enriched.Select(row =>
+        {
+            var classification = Classify(row.Details);
+            var exclusion = EvaluateExclusion(row, classification);
+            return new RowWithClassification(row, classification, exclusion);
+        }).ToList();
+
+        var rawSummary = BuildStockTypeSummary(classified);
+        var filtered = classified.Where(c => c.ExclusionReason is null).ToList();
         var filteredSummary = BuildStockTypeSummary(filtered);
 
-        var excluded = enriched
-            .Where(e => IsEtfStockType(e.Details))
-            .Select(e => new
-            {
-                e.Row.Symbol,
-                e.Details?.ConId,
-                e.Details?.PrimaryExchange,
-                StockType = e.Details?.StockType ?? "Unknown"
-            })
-            .OrderBy(x => x.Symbol)
-            .ToList();
+        var excludedGroups = classified
+            .Where(c => c.ExclusionReason is not null)
+            .GroupBy(c => c.ExclusionReason!)
+            .ToDictionary(g => g.Key, g => g.Count());
 
-        Console.WriteLine($"Raw: total={rawSummary.Total} etf={rawSummary.Etf} common={rawSummary.Common} unknown={rawSummary.Unknown}");
-        Console.WriteLine($"Filtered: total={filteredSummary.Total} etf={filteredSummary.Etf} common={filteredSummary.Common} unknown={filteredSummary.Unknown}");
-
-        if (excluded.Count > 0)
-        {
-            Console.WriteLine("Excluded ETFs:");
-            foreach (var ex in excluded.Take(20))
-            {
-                Console.WriteLine($"  {ex.Symbol} stockType={ex.StockType} conId={ex.ConId} primaryExch={ex.PrimaryExchange}");
-            }
-            if (excluded.Count > 20)
-            {
-                Console.WriteLine($"  ... {excluded.Count - 20} more");
-            }
-        }
+        Console.WriteLine($"Raw: total={rawSummary.Total} common={rawSummary.Common} etf={rawSummary.Etf} etn={rawSummary.Etn} unknown={rawSummary.Unknown} other={rawSummary.Other}");
+        Console.WriteLine($"Excluded by reason: {string.Join(", ", excludedGroups.Select(kv => $"{kv.Key}={kv.Value}"))}");
+        Console.WriteLine($"Final: total={filteredSummary.Total} top10={string.Join(", ", filtered.Take(10).Select(r => r.Row.Row.Symbol))}");
 
         var payload = new
         {
             Config = config,
             Raw = rawSummary,
-            Filtered = filteredSummary,
-            Excluded = excluded,
-            Results = new
-            {
-                Raw = enriched,
-                Filtered = filtered
-            }
+            Excluded = excludedGroups,
+            Final = filteredSummary,
+            Results = classified
         };
 
-        var outPath = Path.Combine(artifactsDir, "scan-most-active-major.json");
+        var outPath = Path.Combine(artifactsDir, fileName);
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
         {
             WriteIndented = true,
@@ -248,53 +264,62 @@ internal static class Program
             return "Unknown";
         }
 
-        var indicators = new[]
+        var stockType = details.StockType?.Trim();
+        if (!string.IsNullOrWhiteSpace(stockType))
         {
-            details.StockType,
-            details.Category,
-            details.Subcategory,
-            details.LongName,
-            details.DescAppend
-        };
-
-        if (indicators.Any(v => ContainsEtfIndicator(v)))
-        {
-            return "ETF";
-        }
-
-        if (string.Equals(details.SecType, "STK", StringComparison.OrdinalIgnoreCase))
-        {
-            return "CommonStock";
+            if (stockType.Equals("COMMON", StringComparison.OrdinalIgnoreCase))
+            {
+                return "CommonStock";
+            }
+            if (stockType.Equals("ETF", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Etf";
+            }
+            if (stockType.Equals("ETN", StringComparison.OrdinalIgnoreCase) || stockType.Equals("ETP", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Etn";
+            }
+            return "Other";
         }
 
         return "Unknown";
     }
 
-    private static bool ContainsEtfIndicator(string? value)
+    private static string? EvaluateExclusion(EnrichedRow row, string classification)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (row.Details is null)
         {
-            return false;
+            return "MissingClassification";
         }
 
-        return value.Contains("ETF", StringComparison.OrdinalIgnoreCase)
-               || value.Contains("ETN", StringComparison.OrdinalIgnoreCase)
-               || value.Contains("ETP", StringComparison.OrdinalIgnoreCase)
-               || value.Contains("FUND", StringComparison.OrdinalIgnoreCase);
+        if (!string.Equals(classification, "CommonStock", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"StockTypeNotCommon:{row.Details.StockType ?? "null"}";
+        }
+
+        if (string.IsNullOrWhiteSpace(row.Details.PrimaryExchange))
+        {
+            return "MissingPrimaryExchange";
+        }
+
+        var exch = row.Details.PrimaryExchange.Trim().ToUpperInvariant();
+        if (exch != "NYSE" && exch != "NASDAQ")
+        {
+            return $"PrimaryExchangeNotAllowed:{row.Details.PrimaryExchange}";
+        }
+
+        return null;
     }
 
-    private static bool IsEtfStockType(ContractDetailsInfo? details)
-    {
-        return details != null && string.Equals(details.StockType, "ETF", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static StockTypeSummary BuildStockTypeSummary(IReadOnlyCollection<EnrichedRow> rows)
+    private static StockTypeSummary BuildStockTypeSummary(IReadOnlyCollection<RowWithClassification> rows)
     {
         var total = rows.Count;
-        var etf = rows.Count(r => IsEtfStockType(r.Details));
-        var common = rows.Count(r => string.Equals(r.Details?.StockType, "COMMON", StringComparison.OrdinalIgnoreCase));
-        var unknown = total - etf - common;
-        return new StockTypeSummary(total, etf, common, unknown);
+        var etf = rows.Count(r => r.Classification == "Etf");
+        var etn = rows.Count(r => r.Classification == "Etn");
+        var common = rows.Count(r => r.Classification == "CommonStock");
+        var unknown = rows.Count(r => r.Classification == "Unknown");
+        var other = total - etf - etn - common - unknown;
+        return new StockTypeSummary(total, etf, common, etn, unknown, other);
     }
 
     private static ScanSummary BuildSummary(ScanConfig config, IReadOnlyList<EnrichedRow> rows)
@@ -329,6 +354,10 @@ public sealed record DiagnosticsConfig
     public int MaxRows { get; init; } = 20;
     public int ContractDetailsThrottleMs { get; init; } = 1000;
     public int RequestTimeoutMs { get; init; } = 10_000;
+    public decimal? FloatSharesBelow { get; init; } = 150_000_000m;
+    public decimal? PriceAbove { get; init; } = 5m;
+    public decimal? PriceBelow { get; init; } = 20m;
+    public decimal? VolumeAbove { get; init; } = 500_000m;
 }
 
 public sealed record ScanConfig
@@ -337,11 +366,17 @@ public sealed record ScanConfig
     public string Instrument { get; init; } = "STK";
     public string LocationCode { get; init; } = "STK.US.MAJOR";
     public string ScanCode { get; init; } = "MOST_ACTIVE";
-    public string? StockTypeFilter { get; init; }
+    public decimal? FloatSharesBelow { get; init; }
+    public decimal? PriceAbove { get; init; }
+    public decimal? PriceBelow { get; init; }
+    public decimal? VolumeAbove { get; init; }
+    public decimal? MarketCapAbove { get; init; }
+    public decimal? MarketCapBelow { get; init; }
 }
 
 public sealed record ScanSummary(string Name, int Total, int Etf, int Common, int Unknown);
-public sealed record StockTypeSummary(int Total, int Etf, int Common, int Unknown);
+public sealed record StockTypeSummary(int Total, int Etf, int Common, int Etn, int Unknown, int Other);
+public sealed record RowWithClassification(EnrichedRow Row, string Classification, string? ExclusionReason);
 
 public sealed record ScannerRow(string Symbol, string SecType, int Rank);
 

@@ -410,21 +410,21 @@ public sealed class ContractClassificationService
             now);
     }
 
-        private static string ResolveStockType(ContractDetails details)
+    private static string ResolveStockType(ContractDetails details)
+    {
+        if (!string.IsNullOrWhiteSpace(details.StockType))
         {
-            if (!string.IsNullOrWhiteSpace(details.StockType))
-            {
-                return details.StockType.Trim().ToUpperInvariant();
-            }
-
-            var secType = details.Contract?.SecType;
-            if (!string.IsNullOrWhiteSpace(secType))
-            {
-                return secType.Trim().ToUpperInvariant() == "STK" ? "COMMON" : secType.Trim().ToUpperInvariant();
-            }
-
-            return "UNKNOWN";
+            return details.StockType.Trim().ToUpperInvariant();
         }
+
+        var secType = details.Contract?.SecType?.Trim();
+        if (!string.IsNullOrWhiteSpace(secType) && !secType.Equals("STK", StringComparison.OrdinalIgnoreCase))
+        {
+            return secType.ToUpperInvariant();
+        }
+
+        return "UNKNOWN";
+    }
 
     private static void ProcessMessages(
         EClientSocket socket,

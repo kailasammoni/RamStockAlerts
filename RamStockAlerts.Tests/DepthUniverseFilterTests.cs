@@ -128,6 +128,32 @@ public class DepthUniverseFilterTests
     }
 
     [Fact]
+    public async Task DepthUniverseFilter_ExcludesNonCommonStockType()
+    {
+        var (filter, cache, _) = BuildFilter();
+        var now = DateTimeOffset.UtcNow;
+        await cache.PutAsync(new ContractClassification("TSLL", 2, "NASDAQ", "USD", "ETF", now), CancellationToken.None);
+
+        var result = await filter.FilterAsync(new[] { "TSLL" }, CancellationToken.None);
+
+        Assert.Empty(result.Filtered);
+        Assert.Equal(1, result.EtfCount);
+    }
+
+    [Fact]
+    public async Task DepthUniverseFilter_ExcludesMissingPrimaryExchange()
+    {
+        var (filter, cache, _) = BuildFilter();
+        var now = DateTimeOffset.UtcNow;
+        await cache.PutAsync(new ContractClassification("NOEX", 3, null, "USD", "COMMON", now), CancellationToken.None);
+
+        var result = await filter.FilterAsync(new[] { "NOEX" }, CancellationToken.None);
+
+        Assert.Empty(result.Filtered);
+        Assert.Equal(1, result.CommonCount);
+    }
+
+    [Fact]
     public void DepthEligibility_PersistsAndLoadsWithinTtl()
     {
         var path = Path.GetTempFileName();

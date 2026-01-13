@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text;
 using System.Xml;
 using IBApi;
@@ -103,12 +104,33 @@ internal sealed class ScannerClient : EWrapper, IDisposable
             NumberOfRows = diag.MaxRows
         };
 
-        if (!string.IsNullOrWhiteSpace(config.StockTypeFilter))
+        if (config.PriceAbove.HasValue)
         {
-            subscription.StockTypeFilter = config.StockTypeFilter;
+            subscription.AbovePrice = (double)config.PriceAbove.Value;
         }
 
-        _socket!.reqScannerSubscription(reqId, subscription, new List<TagValue>(), new List<TagValue>());
+        if (config.PriceBelow.HasValue)
+        {
+            subscription.BelowPrice = (double)config.PriceBelow.Value;
+        }
+
+        if (config.VolumeAbove.HasValue)
+        {
+            subscription.AboveVolume = (int)Math.Round(config.VolumeAbove.Value);
+        }
+
+        if (config.MarketCapAbove.HasValue)
+        {
+            subscription.MarketCapAbove = (double)config.MarketCapAbove.Value;
+        }
+
+        if (config.MarketCapBelow.HasValue)
+        {
+            subscription.MarketCapBelow = (double)config.MarketCapBelow.Value;
+        }
+
+        var filterOptions = BuildFilterOptions(config);
+        _socket!.reqScannerSubscription(reqId, subscription, new List<TagValue>(), filterOptions);
 
         IReadOnlyList<ScannerRow> rows;
         try
@@ -215,6 +237,18 @@ internal sealed class ScannerClient : EWrapper, IDisposable
         }
     }
 
+    private List<TagValue> BuildFilterOptions(ScanConfig config)
+    {
+        var options = new List<TagValue>();
+
+        if (config.FloatSharesBelow.HasValue)
+        {
+            options.Add(new TagValue("floatSharesBelow", config.FloatSharesBelow.Value.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        return options;
+    }
+
     public void contractDetails(int reqId, ContractDetails contractDetails)
     {
         lock (_sync)
@@ -255,6 +289,12 @@ internal sealed class ScannerClient : EWrapper, IDisposable
         if (errorCode is 2104 or 2106 or 2158)
         {
             // Informational market data farm connection messages; ignore.
+            return;
+        }
+
+        if (errorCode == 165)
+        {
+            Console.WriteLine($"[IBKR ScannerDiagnostics] Warning code={errorCode} msg={errorMsg} (ignoring)");
             return;
         }
 
