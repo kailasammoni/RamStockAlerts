@@ -121,7 +121,11 @@ public class ReplenishmentRejectTests
             BidAddCount1s = 2,
             AskAddCount1s = 3,
             BidTotalAddedSize1s = 15m,
-            AskTotalAddedSize1s = 25m
+            AskTotalAddedSize1s = 25m,
+            BidCancelToAddRatio1s = 0.5m,
+            AskCancelToAddRatio1s = 0.8m,
+            TapeVolume3Sec = 0m,
+            TradesIn3Sec = 0
         };
 
         var result = StrategyDecisionResultBuilder.Build(context);
@@ -129,5 +133,8 @@ public class ReplenishmentRejectTests
         Assert.Contains(HardRejectReason.ReplenishmentSuspected, result.HardRejectReasons);
         Assert.Equal(3, result.Snapshot?.AskAddCount1s);
         Assert.Equal(25m, result.Snapshot?.AskTotalAddedSize1s);
+        Assert.Equal(0.8m, result.Snapshot?.AskCancelToAddRatio1s);
+        Assert.Equal(0, result.Snapshot?.TradesIn3Sec);
+        Assert.Equal(0m, result.Snapshot?.TapeVolume3Sec);
     }
 }
