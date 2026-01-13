@@ -7,6 +7,9 @@ using RamStockAlerts.Models;
 
 namespace RamStockAlerts.Services;
 
+// NOTE: Offline ReplayShadow mode intentionally omitted.
+// Schema validated via live shadow trading only.
+
 public sealed class ShadowTradeJournal : BackgroundService
 {
     private readonly ILogger<ShadowTradeJournal> _logger;

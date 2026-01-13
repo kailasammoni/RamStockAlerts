@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
+using RamStockAlerts.Models.Decisions;
 
 namespace RamStockAlerts.Services;
 
@@ -65,20 +66,23 @@ public sealed class ShadowTradingCoordinator
 
         if (!book.IsBookValid(out _, nowMs))
         {
-            TryLogGatingRejection(book.Symbol, "NotReady_BookInvalid");
+            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyBookInvalid);
+            TryLogGatingRejection(book.Symbol, "NotReady_BookInvalid", decisionResult);
             return;
         }
 
         if (!ShadowTradingHelpers.HasRecentTape(book, nowMs))
         {
-            TryLogGatingRejection(book.Symbol, "NotReady_TapeStale");
+            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyTapeStale);
+            TryLogGatingRejection(book.Symbol, "NotReady_TapeStale", decisionResult);
             return;
         }
 
         var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
         if (snapshot == null)
         {
-            TryLogGatingRejection(book.Symbol, "NotReady_NoDepth");
+            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyNoDepth);
+            TryLogGatingRejection(book.Symbol, "NotReady_NoDepth", decisionResult);
             return;
         }
 
@@ -103,11 +107,23 @@ public sealed class ShadowTradingCoordinator
         if (!decision.Accepted)
         {
             var rejectionReason = decision.RejectionReason;
+            var decisionResult = BuildDecisionResult(
+                snapshot,
+                depthSnapshot,
+                tapeStats,
+                decision,
+                DecisionOutcome.Rejected,
+                BuildHardRejectReasons(rejectionReason),
+                nowMs,
+                book.BestBid,
+                book.BestAsk,
+                book);
 
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
             rejectedEntry.Decision = "Rejected";
             rejectedEntry.Accepted = false;
             rejectedEntry.RejectionReason = rejectionReason;
+            rejectedEntry.DecisionResult = decisionResult;
 
             EnqueueEntry(rejectedEntry);
             _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
@@ -119,10 +135,22 @@ public sealed class ShadowTradingCoordinator
         if (_recordBlueprints && !blueprintPlan.Success)
         {
             var rejectionReason = blueprintPlan.RejectionReason ?? "BlueprintUnavailable";
+            var decisionResult = BuildDecisionResult(
+                snapshot,
+                depthSnapshot,
+                tapeStats,
+                decision,
+                DecisionOutcome.Rejected,
+                BuildHardRejectReasons("BlueprintUnavailable"),
+                nowMs,
+                book.BestBid,
+                book.BestAsk,
+                book);
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
             rejectedEntry.Decision = "Rejected";
             rejectedEntry.Accepted = false;
             rejectedEntry.RejectionReason = rejectionReason;
+            rejectedEntry.DecisionResult = decisionResult;
 
             EnqueueEntry(rejectedEntry);
             _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
@@ -130,27 +158,24 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        var acceptedDecisionResult = BuildDecisionResult(
+            snapshot,
+            depthSnapshot,
+            tapeStats,
+            decision,
+            DecisionOutcome.Accepted,
+            Array.Empty<HardRejectReason>(),
+            nowMs,
+            book.BestBid,
+            book.BestAsk,
+            book);
+
         var pendingEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+        pendingEntry.DecisionResult = acceptedDecisionResult;
         _pendingRankedEntries[candidateId] = new PendingRankEntry(pendingEntry, blueprintPlan, nowMs);
 
         var resolved = _scarcityController.StageCandidate(candidateId, snapshot.Symbol, decision.Signal?.Confidence ?? 0m, nowMs);
         FinalizeRankedDecisions(resolved);
-    }
-
-    private static bool HasRecentTape(OrderBookState book, long nowMs)
-    {
-        if (book.RecentTrades.Count == 0)
-        {
-            return false;
-        }
-
-        var lastTrade = book.RecentTrades.LastOrDefault();
-        if (lastTrade.TimestampMs == 0)
-        {
-            return false;
-        }
-
-        return nowMs - lastTrade.TimestampMs <= TapePresenceWindowMs;
     }
 
     private BlueprintPlan BuildBlueprintPlan(OrderBookState book, string? direction)
@@ -220,6 +245,150 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
+    private StrategyDecisionResult BuildDecisionResult(
+        OrderFlowMetrics.MetricSnapshot snapshot,
+        DepthSnapshot depthSnapshot,
+        TapeStats tapeStats,
+        OrderFlowSignalValidator.OrderFlowSignalDecision decision,
+        DecisionOutcome outcome,
+        IReadOnlyList<HardRejectReason> reasons,
+        long nowMs,
+        decimal bestBidPrice,
+        decimal bestAskPrice,
+        OrderBookState book)
+    {
+        var context = new StrategyDecisionBuildContext
+        {
+            Outcome = outcome,
+            Direction = ParseDirection(decision.Direction),
+            Score = decision.Signal?.Confidence ?? 0m,
+            HardRejectReasons = reasons,
+            Symbol = snapshot.Symbol,
+            TimestampMs = snapshot.TimestampMs,
+            QueueImbalance = snapshot.QueueImbalance,
+            BidDepth4Level = snapshot.BidDepth4Level,
+            AskDepth4Level = snapshot.AskDepth4Level,
+            BidWallAgeMs = snapshot.BidWallAgeMs,
+            AskWallAgeMs = snapshot.AskWallAgeMs,
+            BidAbsorptionRate = snapshot.BidAbsorptionRate,
+            AskAbsorptionRate = snapshot.AskAbsorptionRate,
+            SpoofScore = snapshot.SpoofScore,
+            TapeAcceleration = snapshot.TapeAcceleration,
+            TradesIn3Sec = snapshot.TradesIn3Sec,
+            Spread = snapshot.Spread,
+            MidPrice = snapshot.MidPrice,
+            LastPrice = tapeStats.LastPrice,
+            VwapPrice = tapeStats.VwapPrice,
+            BestBidPrice = bestBidPrice,
+            BestBidSize = depthSnapshot.BestBidSize,
+            BestAskPrice = bestAskPrice,
+            BestAskSize = depthSnapshot.BestAskSize,
+            TotalBidSizeTopN = depthSnapshot.TotalBidSizeTopN,
+            TotalAskSizeTopN = depthSnapshot.TotalAskSizeTopN,
+            BidAskRatioTopN = depthSnapshot.BidAskRatioTopN,
+            TapeVelocity3Sec = tapeStats.Velocity,
+            TapeVolume3Sec = tapeStats.Volume,
+            LastDepthUpdateAgeMs = depthSnapshot.LastDepthUpdateAgeMs,
+            LastTapeUpdateAgeMs = tapeStats.LastTapeAgeMs,
+            TickerCooldownRemainingSec = _validator.GetCooldownRemainingSeconds(snapshot.Symbol, nowMs),
+            AlertsLastHourCount = _validator.GetAlertCountInLastHour(nowMs),
+            IsBookValid = true,
+            TapeRecent = ShadowTradingHelpers.HasRecentTape(book, nowMs),
+            BidsTopN = depthSnapshot.BidsTopN
+                .Select(b => new FeatureDepthLevelSnapshot(b.Level, b.Price, b.Size))
+                .ToList(),
+            AsksTopN = depthSnapshot.AsksTopN
+                .Select(a => new FeatureDepthLevelSnapshot(a.Level, a.Price, a.Size))
+                .ToList()
+        };
+
+        return StrategyDecisionResultBuilder.Build(context);
+    }
+
+    private static TradeDirection? ParseDirection(string? direction) =>
+        string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase)
+            ? TradeDirection.Buy
+            : string.Equals(direction, "SELL", StringComparison.OrdinalIgnoreCase)
+                ? TradeDirection.Sell
+                : null;
+
+    private StrategyDecisionResult? UpdateDecisionResult(
+        StrategyDecisionResult? existing,
+        DecisionOutcome outcome,
+        IReadOnlyList<HardRejectReason>? hardRejectReasons)
+    {
+        if (existing == null)
+        {
+            return null;
+        }
+
+        return existing with
+        {
+            Outcome = outcome,
+            HardRejectReasons = hardRejectReasons ?? existing.HardRejectReasons
+        };
+    }
+
+    private StrategyDecisionResult BuildNotReadyDecisionResult(
+        OrderBookState book,
+        long nowMs,
+        HardRejectReason reason)
+    {
+        var lastTrade = book.RecentTrades.LastOrDefault();
+        var lastTapeAge = lastTrade.TimestampMs > 0 ? nowMs - lastTrade.TimestampMs : (long?)null;
+
+        var context = new StrategyDecisionBuildContext
+        {
+            Outcome = DecisionOutcome.NotReady,
+            Direction = null,
+            Score = 0m,
+            HardRejectReasons = new[] { reason },
+            Symbol = book.Symbol,
+            TimestampMs = nowMs,
+            Spread = book.Spread,
+            BestBidPrice = book.BestBid,
+            BestAskPrice = book.BestAsk,
+            LastDepthUpdateAgeMs = book.LastDepthUpdateUtcMs > 0 ? nowMs - book.LastDepthUpdateUtcMs : null,
+            LastTapeUpdateAgeMs = lastTapeAge,
+            TapeRecent = ShadowTradingHelpers.HasRecentTape(book, nowMs),
+            IsBookValid = book.IsBookValid(out _, nowMs)
+        };
+
+        return StrategyDecisionResultBuilder.Build(context);
+    }
+
+    private static IReadOnlyList<HardRejectReason> BuildHardRejectReasons(string? reasonCode)
+    {
+        if (string.IsNullOrWhiteSpace(reasonCode))
+        {
+            return Array.Empty<HardRejectReason>();
+        }
+
+        return new[] { MapReason(reasonCode) };
+    }
+
+    private static IReadOnlyList<HardRejectReason> BuildHardRejectReasonsFromScarcity(ScarcityDecision decision)
+    {
+        return new[] { MapReason(decision.ReasonCode) };
+    }
+
+    private static HardRejectReason MapReason(string reasonCode) =>
+        reasonCode switch
+        {
+            "NotReady_BookInvalid" => HardRejectReason.NotReadyBookInvalid,
+            "NotReady_TapeStale" => HardRejectReason.NotReadyTapeStale,
+            "NotReady_NoDepth" => HardRejectReason.NotReadyNoDepth,
+            "CooldownActive" => HardRejectReason.CooldownActive,
+            "GlobalRateLimit" => HardRejectReason.GlobalRateLimit,
+            "BlueprintUnavailable" => HardRejectReason.BlueprintUnavailable,
+            "GlobalLimit" => HardRejectReason.ScarcityGlobalLimit,
+            "SymbolLimit" => HardRejectReason.ScarcitySymbolLimit,
+            "GlobalCooldown" => HardRejectReason.ScarcityGlobalCooldown,
+            "SymbolCooldown" => HardRejectReason.ScarcitySymbolCooldown,
+            "RejectedRankedOut" => HardRejectReason.ScarcityRankedOut,
+            _ => HardRejectReason.Unknown
+        };
+
     private void FinalizeRankedDecisions(IEnumerable<RankedScarcityDecision> decisions)
     {
         foreach (var ranked in decisions)
@@ -236,6 +405,7 @@ public sealed class ShadowTradingCoordinator
                 entry.Accepted = true;
                 entry.Decision = "Accepted";
                 entry.RejectionReason = null;
+                entry.DecisionResult = UpdateDecisionResult(entry.DecisionResult, DecisionOutcome.Accepted, null);
 
                 if (_recordBlueprints && pending.Blueprint.Success)
                 {
@@ -253,6 +423,10 @@ public sealed class ShadowTradingCoordinator
                 entry.Accepted = false;
                 entry.Decision = "ScarcityRejected";
                 entry.RejectionReason = FormatRejectionReason(ranked.Decision);
+                entry.DecisionResult = UpdateDecisionResult(
+                    entry.DecisionResult,
+                    DecisionOutcome.Rejected,
+                    BuildHardRejectReasonsFromScarcity(ranked.Decision));
 
                 _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
                     entry.Symbol, entry.Direction, entry.RejectionReason ?? "Unknown");
@@ -271,7 +445,7 @@ public sealed class ShadowTradingCoordinator
         }
     }
 
-    private void TryLogGatingRejection(string symbol, string reason)
+    private void TryLogGatingRejection(string symbol, string reason, StrategyDecisionResult? decisionResult = null)
     {
         if (!_rejectionLogger.ShouldLog(symbol, _subscriptionManager.IsFocusSymbol(symbol)))
         {
@@ -286,7 +460,8 @@ public sealed class ShadowTradingCoordinator
             RejectionReason = reason,
             TimestampUtc = DateTime.UtcNow,
             TradingMode = _tradingMode,
-            Symbol = symbol
+            Symbol = symbol,
+            DecisionResult = decisionResult
         };
 
         EnqueueEntry(entry);

@@ -1,3 +1,5 @@
+using RamStockAlerts.Models.Decisions;
+
 namespace RamStockAlerts.Models;
 
 public sealed class ShadowTradeJournalEntry
@@ -53,6 +55,7 @@ public sealed class ShadowTradeJournalEntry
     public bool Accepted { get; set; }
     public string Decision { get; set; } = string.Empty;
     public string? RejectionReason { get; set; }
+    public StrategyDecisionResult? DecisionResult { get; set; }
 
     public int UniverseCount { get; set; }
     public int ActiveSubscriptionsCount { get; set; }
