@@ -94,7 +94,23 @@ public sealed class UniverseService
 
             if (string.Equals(sourceKey, "ibkrscanner", StringComparison.OrdinalIgnoreCase))
             {
-                universe = await _depthFilter.FilterAsync(universe, cancellationToken);
+                var filtered = await _depthFilter.FilterAsync(universe, cancellationToken);
+                var topEligible = filtered.Filtered.Take(10).ToArray();
+                var topRaw = universe.Take(10).ToArray();
+                var topEligibleDisplay = topEligible.Length == 0 ? "n/a" : string.Join(", ", topEligible);
+                var topRawDisplay = topRaw.Length == 0 ? "n/a" : string.Join(", ", topRaw);
+                _logger.LogInformation(
+                    "Universe classified: raw={Raw} common={Common} etf={Etf} etn={Etn} unknown={Unknown} other={Other} eligible={Eligible} top10Eligible={TopEligible} top10Raw={TopRaw}",
+                    filtered.RawCount,
+                    filtered.CommonCount,
+                    filtered.EtfCount,
+                    filtered.EtnCount,
+                    filtered.UnknownCount,
+                    filtered.OtherCount,
+                    filtered.Filtered.Count,
+                    topEligibleDisplay,
+                    topRawDisplay);
+                universe = filtered.Filtered;
             }
 
             if (sourceKey == "ibkrscanner" && universe.Count == 0 && _lastUniverse.Count > 0)

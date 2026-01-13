@@ -15,6 +15,15 @@ public sealed record ContractClassification(
     string StockType,
     DateTimeOffset UpdatedAt);
 
+public enum ContractSecurityClassification
+{
+    Unknown = 0,
+    CommonStock = 1,
+    Etf = 2,
+    Etn = 3,
+    Other = 4
+}
+
 public sealed class ContractClassificationCache
 {
     private readonly ILogger<ContractClassificationCache> _logger;
@@ -94,6 +103,37 @@ public sealed class ContractClassificationCache
         {
             _sync.Release();
         }
+    }
+
+    public ContractSecurityClassification Classify(ContractClassification? classification)
+    {
+        if (classification is null || string.IsNullOrWhiteSpace(classification.StockType))
+        {
+            return ContractSecurityClassification.Unknown;
+        }
+
+        var stockType = classification.StockType.Trim().ToUpperInvariant();
+        if (stockType == "COMMON" || stockType == "CS" || stockType == "STK")
+        {
+            return ContractSecurityClassification.CommonStock;
+        }
+
+        if (stockType == "UNKNOWN")
+        {
+            return ContractSecurityClassification.Unknown;
+        }
+
+        if (stockType == "ETF")
+        {
+            return ContractSecurityClassification.Etf;
+        }
+
+        if (stockType == "ETN" || stockType == "ETP")
+        {
+            return ContractSecurityClassification.Etn;
+        }
+
+        return ContractSecurityClassification.Other;
     }
 
     private void LoadFromDisk()
@@ -204,6 +244,11 @@ public sealed class ContractClassificationService
         }
 
         return result;
+    }
+
+    public ContractSecurityClassification Classify(ContractClassification? classification)
+    {
+        return _cache.Classify(classification);
     }
 
     public ContractClassification? TryGetCached(string symbol)

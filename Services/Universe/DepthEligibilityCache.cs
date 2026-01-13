@@ -101,7 +101,7 @@ public sealed class DepthEligibilityCache
             symbol.Trim().ToUpperInvariant(),
             classification?.PrimaryExchange);
 
-        _ = PersistAsync(CancellationToken.None);
+        PersistAsync(CancellationToken.None).GetAwaiter().GetResult();
     }
 
     public void MarkIneligible(
@@ -126,7 +126,7 @@ public sealed class DepthEligibilityCache
             symbol.Trim().ToUpperInvariant(),
             classification?.PrimaryExchange);
 
-        _ = PersistAsync(CancellationToken.None);
+        PersistAsync(CancellationToken.None).GetAwaiter().GetResult();
     }
 
     public void LogSkipOnce(ContractClassification? classification, string symbol, DepthEligibilityState state)

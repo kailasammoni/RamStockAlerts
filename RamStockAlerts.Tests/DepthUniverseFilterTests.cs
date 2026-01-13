@@ -16,7 +16,7 @@ public class DepthUniverseFilterTests
         var cache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
         var service = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, cache);
         var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        var filter = new DepthUniverseFilter(service, NullLogger<DepthUniverseFilter>.Instance);
+        var filter = new DepthUniverseFilter(service, config, NullLogger<DepthUniverseFilter>.Instance);
         return (filter, cache, eligibility);
     }
 
@@ -28,10 +28,13 @@ public class DepthUniverseFilterTests
         await cache.PutAsync(new ContractClassification("AAA", 1, "NASDAQ", "USD", "COMMON", now), CancellationToken.None);
         await cache.PutAsync(new ContractClassification("ETF1", 2, "ARCA", "USD", "ETF", now), CancellationToken.None);
 
-        var filtered = await filter.FilterAsync(new[] { "AAA", "ETF1" }, CancellationToken.None);
+        var filteredResult = await filter.FilterAsync(new[] { "AAA", "ETF1" }, CancellationToken.None);
+        var filtered = filteredResult.Filtered;
 
         Assert.Contains("AAA", filtered);
         Assert.DoesNotContain("ETF1", filtered);
+        Assert.Equal(1, filteredResult.EtfCount);
+        Assert.Equal(2, filteredResult.RawCount);
     }
 
     [Fact]
@@ -43,9 +46,12 @@ public class DepthUniverseFilterTests
         await cache.PutAsync(classification, CancellationToken.None);
         eligibility.MarkIneligible(classification, "XYZ", "DepthUnsupported", now.AddMinutes(5));
 
-        var filtered = await filter.FilterAsync(new[] { "XYZ" }, CancellationToken.None);
+        var filteredResult = await filter.FilterAsync(new[] { "XYZ" }, CancellationToken.None);
+        var filtered = filteredResult.Filtered;
 
         Assert.Contains("XYZ", filtered);
+        Assert.Equal(0, filteredResult.EtfCount);
+        Assert.Equal(1, filteredResult.RawCount);
     }
 
     [Fact]
@@ -88,6 +94,37 @@ public class DepthUniverseFilterTests
         var state = eligibility.Get(classification, "ELIG", now);
         Assert.Equal(DepthEligibilityStatus.Eligible, state.Status);
         Assert.Null(state.CooldownUntil);
+    }
+
+    [Fact]
+    public async Task UnknownExcludedByDefaultIncludedWithOverride()
+    {
+        var configDefault = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>())
+            .Build();
+        var cache = new ContractClassificationCache(configDefault, NullLogger<ContractClassificationCache>.Instance);
+        var service = new ContractClassificationService(configDefault, NullLogger<ContractClassificationService>.Instance, cache);
+        var filterDefault = new DepthUniverseFilter(service, configDefault, NullLogger<DepthUniverseFilter>.Instance);
+
+        var now = DateTimeOffset.UtcNow;
+        await cache.PutAsync(new ContractClassification("UNK", 1, "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
+
+        var resultDefault = await filterDefault.FilterAsync(new[] { "UNK" }, CancellationToken.None);
+        Assert.Empty(resultDefault.Filtered);
+
+        var configOverride = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Universe:AllowUnknownAsCommon"] = "true"
+            })
+            .Build();
+        var cache2 = new ContractClassificationCache(configOverride, NullLogger<ContractClassificationCache>.Instance);
+        var service2 = new ContractClassificationService(configOverride, NullLogger<ContractClassificationService>.Instance, cache2);
+        await cache2.PutAsync(new ContractClassification("UNK", 1, "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
+        var filterOverride = new DepthUniverseFilter(service2, configOverride, NullLogger<DepthUniverseFilter>.Instance);
+
+        var resultOverride = await filterOverride.FilterAsync(new[] { "UNK" }, CancellationToken.None);
+        Assert.Contains("UNK", resultOverride.Filtered);
     }
 
     [Fact]
