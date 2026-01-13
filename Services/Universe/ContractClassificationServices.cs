@@ -149,6 +149,7 @@ public sealed class ContractClassificationService
     private readonly ContractClassificationCache _cache;
     private readonly TimeSpan _minInterval;
     private readonly SemaphoreSlim _throttle = new(1, 1);
+    private readonly SemaphoreSlim _connectionLock = new(1, 1);
     private DateTimeOffset _lastRequestAtUtc = DateTimeOffset.MinValue;
 
     public ContractClassificationService(
@@ -219,6 +220,7 @@ public sealed class ContractClassificationService
         List<string> symbols,
         CancellationToken cancellationToken)
     {
+        await _connectionLock.WaitAsync(cancellationToken);
         var classifications = new List<ContractClassification>();
         var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
         var port = _configuration.GetValue<int?>("IBKR:Port")
@@ -290,6 +292,7 @@ public sealed class ContractClassificationService
         }
         finally
         {
+            _connectionLock.Release();
             try
             {
                 linkedCts.Cancel();

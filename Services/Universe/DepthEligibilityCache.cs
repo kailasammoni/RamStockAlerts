@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -27,6 +28,8 @@ public sealed class DepthEligibilityCache
     private readonly TimeSpan _eligibleTtl;
     private readonly TimeSpan _ineligibleTtl;
     private readonly ILogger<DepthEligibilityCache> _logger;
+    private readonly string? _persistencePath;
+    private readonly SemaphoreSlim _sync = new(1, 1);
 
     public DepthEligibilityCache(IConfiguration configuration, ILogger<DepthEligibilityCache> logger)
     {
@@ -34,6 +37,8 @@ public sealed class DepthEligibilityCache
         var hours = Math.Max(1, configuration.GetValue("MarketData:DepthEligibilityTtlHours", 24));
         _eligibleTtl = TimeSpan.FromHours(hours);
         _ineligibleTtl = TimeSpan.FromHours(hours);
+        _persistencePath = configuration["MarketData:DepthEligibilityCacheFile"];
+        LoadFromDisk();
     }
 
     public DepthEligibilityState Get(
@@ -91,10 +96,12 @@ public sealed class DepthEligibilityCache
             DepthEligibilityStatus.Eligible,
             null,
             now,
-            now.Add(_eligibleTtl),
+            null,
             classification?.ConId,
             symbol.Trim().ToUpperInvariant(),
             classification?.PrimaryExchange);
+
+        _ = PersistAsync(CancellationToken.None);
     }
 
     public void MarkIneligible(
@@ -118,6 +125,8 @@ public sealed class DepthEligibilityCache
             classification?.ConId,
             symbol.Trim().ToUpperInvariant(),
             classification?.PrimaryExchange);
+
+        _ = PersistAsync(CancellationToken.None);
     }
 
     public void LogSkipOnce(ContractClassification? classification, string symbol, DepthEligibilityState state)
@@ -168,5 +177,78 @@ public sealed class DepthEligibilityCache
     {
         var ttl = state.Status == DepthEligibilityStatus.Eligible ? _eligibleTtl : _ineligibleTtl;
         return asOf - state.UpdatedAt > ttl;
+    }
+
+    private async Task PersistAsync(CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_persistencePath))
+        {
+            return;
+        }
+
+        await _sync.WaitAsync(cancellationToken);
+        try
+        {
+            var directory = Path.GetDirectoryName(_persistencePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var payload = JsonSerializer.Serialize(_states.Values.ToArray());
+            await File.WriteAllTextAsync(_persistencePath, payload, cancellationToken);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Failed to persist depth eligibility cache to {Path}", _persistencePath);
+        }
+        finally
+        {
+            _sync.Release();
+        }
+    }
+
+    private void LoadFromDisk()
+    {
+        if (string.IsNullOrWhiteSpace(_persistencePath) || !File.Exists(_persistencePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(_persistencePath);
+            var entries = JsonSerializer.Deserialize<List<DepthEligibilityState>>(json);
+            if (entries is null)
+            {
+                return;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            foreach (var entry in entries)
+            {
+                if (entry is null || IsExpired(entry, now))
+                {
+                    continue;
+                }
+
+                var key = entry.ConId is > 0
+                    ? $"conid:{entry.ConId}"
+                    : string.IsNullOrWhiteSpace(entry.Symbol)
+                        ? null
+                        : $"symbol:{entry.Symbol.Trim().ToUpperInvariant()}{(string.IsNullOrWhiteSpace(entry.PrimaryExchange) ? string.Empty : $"@{entry.PrimaryExchange}")}";
+
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                _states[key!] = entry;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load depth eligibility cache from {Path}", _persistencePath);
+        }
     }
 }

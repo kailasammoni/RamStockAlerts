@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Services.Universe;
+using System.IO;
 
 namespace RamStockAlerts.Tests;
 
@@ -20,7 +22,7 @@ public class DepthUniverseFilterTests
     }
 
     [Fact]
-    public async Task Filter_RemovesEtfClassifications()
+    public async Task DepthUniverseFilter_RemovesEtfStockType()
     {
         var (filter, cache, _) = BuildFilter();
         var now = DateTimeOffset.UtcNow;
@@ -70,5 +72,89 @@ public class DepthUniverseFilterTests
         var fallbackState = eligibility.Get(fallback, "DEF", now);
 
         Assert.Equal(DepthEligibilityStatus.Ineligible, fallbackState.Status);
+    }
+
+    [Fact]
+    public void Eligibility_MarksEligibleWithNullCooldown()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>())
+            .Build();
+        var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+        var now = DateTimeOffset.UtcNow;
+
+        var classification = new ContractClassification("ELIG", 0, null, "USD", "COMMON", now);
+        eligibility.MarkEligible(classification, "ELIG");
+
+        var state = eligibility.Get(classification, "ELIG", now);
+        Assert.Equal(DepthEligibilityStatus.Eligible, state.Status);
+        Assert.Null(state.CooldownUntil);
+    }
+
+    [Fact]
+    public void DepthEligibility_PersistsAndLoadsWithinTtl()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["MarketData:DepthEligibilityCacheFile"] = path,
+                    ["MarketData:DepthEligibilityTtlHours"] = "24"
+                })
+                .Build();
+
+            var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+            var now = DateTimeOffset.UtcNow;
+            var classification = new ContractClassification("PERSIST", 456, "NYSE", "USD", "COMMON", now);
+            eligibility.MarkIneligible(classification, "PERSIST", "DepthUnsupported", now.AddMinutes(5));
+
+            var reloaded = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+            var state = reloaded.Get(classification, "PERSIST", DateTimeOffset.UtcNow);
+
+            Assert.Equal(DepthEligibilityStatus.Ineligible, state.Status);
+            Assert.Equal(456, state.ConId);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void DepthEligibilityCache_CooldownBlocksRequests()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>())
+            .Build();
+        var logger = new ListLogger<DepthEligibilityCache>();
+        var eligibility = new DepthEligibilityCache(config, logger);
+        var now = DateTimeOffset.UtcNow;
+        var classification = new ContractClassification("COOLDOWN", 123, "NYSE", "USD", "COMMON", now);
+
+        eligibility.MarkIneligible(classification, "COOLDOWN", "DepthUnsupported", now.AddMinutes(10));
+
+        var canRequestDuring = eligibility.CanRequestDepth(classification, "COOLDOWN", now.AddMinutes(5), out var stateDuring);
+        Assert.False(canRequestDuring);
+        eligibility.LogSkipOnce(classification, "COOLDOWN", stateDuring);
+        eligibility.LogSkipOnce(classification, "COOLDOWN", stateDuring);
+        Assert.Equal(1, logger.Count);
+
+        var canRequestAfter = eligibility.CanRequestDepth(classification, "COOLDOWN", now.AddMinutes(11), out _);
+        Assert.True(canRequestAfter);
+    }
+
+    private sealed class ListLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _messages = new();
+        public int Count => _messages.Count;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            _messages.Add(formatter(state, exception));
+        }
     }
 }

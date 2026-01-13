@@ -649,6 +649,7 @@ internal class IBkrWrapperImpl : EWrapper
     private readonly Func<string, bool> _isTickByTickActive;
     private readonly Action<string>? _recordActivity;
     private readonly Action<int, int, string>? _errorHandler;
+    private readonly ConcurrentDictionary<string, byte> _depthEligibilityMarked = new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string>? _markDepthEligible;
     private readonly ConcurrentDictionary<int, LastTradeState> _lastTrades = new();
     
@@ -709,7 +710,6 @@ internal class IBkrWrapperImpl : EWrapper
             var px = (decimal)price;
             var sz = (decimal)size;
             var depthSide = side == 0 ? DepthSide.Ask : DepthSide.Bid;
-            _markDepthEligible?.Invoke(book.Symbol);
 
             // side: 0=ask, 1=bid (per IB API convention)
             // operation: 0=insert, 1=update, 2=delete
@@ -728,6 +728,7 @@ internal class IBkrWrapperImpl : EWrapper
                 position,
                 nowMs);
             book.ApplyDepthUpdate(depthUpdate);
+            MarkDepthEligibleOnce(book.Symbol);
 
             // Fix 3: Only update metrics if book is valid
             if (book.IsBookValid(out var validityReason, nowMs))
@@ -774,6 +775,7 @@ internal class IBkrWrapperImpl : EWrapper
                 position,
                 nowMs);
             book.ApplyDepthUpdate(depthUpdate);
+            MarkDepthEligibleOnce(book.Symbol);
             _markDepthEligible?.Invoke(book.Symbol);
 
             if (book.IsBookValid(out var validityReason, nowMs))
@@ -823,6 +825,14 @@ internal class IBkrWrapperImpl : EWrapper
         {
             // Fix 4: Log exception and return safely, do not propagate
             _logger.LogError(ex, "[IBKR Tape] Error processing tickByTickAllLast callback for reqId={ReqId}", reqId);
+        }
+    }
+
+    private void MarkDepthEligibleOnce(string symbol)
+    {
+        if (_depthEligibilityMarked.TryAdd(symbol, 0))
+        {
+            _markDepthEligible?.Invoke(symbol);
         }
     }
 

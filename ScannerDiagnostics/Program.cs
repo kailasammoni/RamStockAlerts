@@ -8,9 +8,9 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        if (args.Length == 0 || (args[0] != "dump-params" && args[0] != "run-matrix"))
+        if (args.Length == 0 || (args[0] != "dump-params" && args[0] != "run-matrix" && args[0] != "run-most-active-major"))
         {
-            Console.WriteLine("Usage: dotnet run --project ScannerDiagnostics -- dump-params|run-matrix");
+            Console.WriteLine("Usage: dotnet run --project ScannerDiagnostics -- dump-params|run-matrix|run-most-active-major");
             return 1;
         }
 
@@ -50,6 +50,9 @@ internal static class Program
                     }
 
                     await RunMatrixAsync(client, scanConfigs, artifactsDir, diag);
+                    break;
+                case "run-most-active-major":
+                    await RunMostActiveMajorAsync(client, artifactsDir, diag);
                     break;
             }
         }
@@ -133,6 +136,77 @@ internal static class Program
         }
     }
 
+    private static async Task RunMostActiveMajorAsync(ScannerClient client, string artifactsDir, DiagnosticsConfig diag)
+    {
+        var config = new ScanConfig
+        {
+            Name = "MostActiveMajor",
+            Instrument = "STK",
+            LocationCode = "STK.US.MAJOR",
+            ScanCode = "MOST_ACTIVE",
+            StockTypeFilter = "CS"
+        };
+
+        var timeout = TimeSpan.FromMilliseconds(diag.RequestTimeoutMs);
+        Console.WriteLine("Running MOST_ACTIVE STK.US.MAJOR...");
+        var scanResult = await client.RunScanAsync(config, diag, timeout);
+        var enriched = await EnrichAsync(client, scanResult.Rows, diag);
+
+        var rawSummary = BuildStockTypeSummary(enriched);
+        var filtered = enriched.Where(e => !IsEtfStockType(e.Details)).ToList();
+        var filteredSummary = BuildStockTypeSummary(filtered);
+
+        var excluded = enriched
+            .Where(e => IsEtfStockType(e.Details))
+            .Select(e => new
+            {
+                e.Row.Symbol,
+                e.Details?.ConId,
+                e.Details?.PrimaryExchange,
+                StockType = e.Details?.StockType ?? "Unknown"
+            })
+            .OrderBy(x => x.Symbol)
+            .ToList();
+
+        Console.WriteLine($"Raw: total={rawSummary.Total} etf={rawSummary.Etf} common={rawSummary.Common} unknown={rawSummary.Unknown}");
+        Console.WriteLine($"Filtered: total={filteredSummary.Total} etf={filteredSummary.Etf} common={filteredSummary.Common} unknown={filteredSummary.Unknown}");
+
+        if (excluded.Count > 0)
+        {
+            Console.WriteLine("Excluded ETFs:");
+            foreach (var ex in excluded.Take(20))
+            {
+                Console.WriteLine($"  {ex.Symbol} stockType={ex.StockType} conId={ex.ConId} primaryExch={ex.PrimaryExchange}");
+            }
+            if (excluded.Count > 20)
+            {
+                Console.WriteLine($"  ... {excluded.Count - 20} more");
+            }
+        }
+
+        var payload = new
+        {
+            Config = config,
+            Raw = rawSummary,
+            Filtered = filteredSummary,
+            Excluded = excluded,
+            Results = new
+            {
+                Raw = enriched,
+                Filtered = filtered
+            }
+        };
+
+        var outPath = Path.Combine(artifactsDir, "scan-most-active-major.json");
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        });
+        await File.WriteAllTextAsync(outPath, json);
+        Console.WriteLine($"Saved artifact -> {outPath}");
+    }
+
     private static async Task<List<EnrichedRow>> EnrichAsync(
         ScannerClient client,
         IReadOnlyList<ScannerRow> rows,
@@ -209,6 +283,20 @@ internal static class Program
                || value.Contains("FUND", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsEtfStockType(ContractDetailsInfo? details)
+    {
+        return details != null && string.Equals(details.StockType, "ETF", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static StockTypeSummary BuildStockTypeSummary(IReadOnlyCollection<EnrichedRow> rows)
+    {
+        var total = rows.Count;
+        var etf = rows.Count(r => IsEtfStockType(r.Details));
+        var common = rows.Count(r => string.Equals(r.Details?.StockType, "COMMON", StringComparison.OrdinalIgnoreCase));
+        var unknown = total - etf - common;
+        return new StockTypeSummary(total, etf, common, unknown);
+    }
+
     private static ScanSummary BuildSummary(ScanConfig config, IReadOnlyList<EnrichedRow> rows)
     {
         return new ScanSummary(
@@ -253,6 +341,7 @@ public sealed record ScanConfig
 }
 
 public sealed record ScanSummary(string Name, int Total, int Etf, int Common, int Unknown);
+public sealed record StockTypeSummary(int Total, int Etf, int Common, int Unknown);
 
 public sealed record ScannerRow(string Symbol, string SecType, int Rank);
 

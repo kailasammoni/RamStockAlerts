@@ -14,39 +14,17 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private static int _nextRequestId = 5000;
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
-    private readonly bool _excludeEtfs;
-    private readonly HashSet<string> _etfDenylist;
     private readonly int _startHourEt;
     private readonly int _startMinuteEt;
     private readonly int _endHourEt;
     private readonly int _endMinuteEt;
     private readonly TimeZoneInfo _eastern;
 
-    private static readonly string[] DefaultEtfDenylist =
-    {
-        "TZA", "DUST", "BITO", "TSLL", "TQQQ", "SQQQ", "SOXS", "SOXL", "LABD", "LABU", "ZSL", "SPXU", "TVIX", "UVXY", "BNDX"
-    };
-
     public IbkrScannerUniverseSource(
         IConfiguration configuration,
         ILogger<IbkrScannerUniverseSource> logger,
         ContractClassificationService classificationService)
     {
-        _excludeEtfs = configuration.GetValue("Universe:ExcludeEtfs", true);
-        var configured = configuration.GetSection("Universe:EtfDenylist").Get<string[]>() ?? Array.Empty<string>();
-        _etfDenylist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in configured)
-        {
-            if (!string.IsNullOrWhiteSpace(entry))
-            {
-                _etfDenylist.Add(entry.Trim().ToUpperInvariant());
-            }
-        }
-        foreach (var entry in DefaultEtfDenylist)
-        {
-            _etfDenylist.Add(entry);
-        }
-
         _startHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartHour", 7), 0, 23);
         _startMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartMinute", 0), 0, 59);
         _endHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:EndHour", 16), 0, 23);
@@ -168,9 +146,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             requestId,
             symbols,
             candidates,
-            completion,
-            _excludeEtfs,
-            _etfDenylist);
+            completion);
 
         var readerSignal = new EReaderMonitorSignal();
         var client = new EClientSocket(wrapper, readerSignal);
@@ -348,8 +324,6 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         private readonly HashSet<string> _symbols;
         private readonly List<ScannerCandidate> _candidates;
         private readonly TaskCompletionSource<IReadOnlyList<string>> _completion;
-        private readonly bool _excludeEtfs;
-        private readonly IReadOnlyCollection<string> _denylist;
 
         public ScannerWrapper(
             ILogger logger,
@@ -357,9 +331,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             int requestId,
             HashSet<string> symbols,
             List<ScannerCandidate> candidates,
-            TaskCompletionSource<IReadOnlyList<string>> completion,
-            bool excludeEtfs,
-            IReadOnlyCollection<string> denylist)
+            TaskCompletionSource<IReadOnlyList<string>> completion)
         {
             _logger = logger;
             _classificationService = classificationService;
@@ -367,8 +339,6 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             _symbols = symbols;
             _candidates = candidates;
             _completion = completion;
-            _excludeEtfs = excludeEtfs;
-            _denylist = denylist;
         }
 
         public void scannerData(int reqId, int rank, ContractDetails contractDetails, string distance, string benchmark, string projection, string legsStr)
@@ -406,15 +376,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             {
                 result = _candidates
                     .OrderBy(candidate => candidate.Rank)
-                    .Where(candidate => !ShouldExclude(candidate))
                     .Select(candidate => candidate.Symbol)
                     .ToList();
-
-                var excluded = _candidates.Count - result.Count;
-                if (excluded > 0)
-                {
-                    _logger.LogInformation("[IBKR Scanner] Filtered {Count} ETF/ETN candidates", excluded);
-                }
 
                 CacheClassifications();
             }
@@ -547,48 +510,6 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         public void tickByTick(int reqId, int tickType, long time, double price, int size, TickAttribLast tickAttribLast, string exchange, string specialConditions) { }
 
         public void userInfo(int reqId, string whiteBrandingId) { }
-
-        private bool ShouldExclude(ScannerCandidate candidate)
-        {
-            if (!_excludeEtfs)
-            {
-                return false;
-            }
-
-            if (_denylist.Contains(candidate.Symbol))
-            {
-                return true;
-            }
-
-            var details = candidate.Details;
-            if (details is null)
-            {
-                return false;
-            }
-
-            if (ContainsFundIndicator(details.StockType) ||
-                ContainsFundIndicator(details.Category) ||
-                ContainsFundIndicator(details.Industry) ||
-                ContainsFundIndicator(details.DescAppend) ||
-                ContainsFundIndicator(details.LongName))
-            {
-                return true;
-            }
-
-            return false;
-        }
-
-        private static bool ContainsFundIndicator(string? value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return false;
-            }
-
-            return value.IndexOf("ETF", StringComparison.OrdinalIgnoreCase) >= 0
-                || value.IndexOf("ETN", StringComparison.OrdinalIgnoreCase) >= 0
-                || value.IndexOf("ETP", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
 
         private void CacheClassifications()
         {
