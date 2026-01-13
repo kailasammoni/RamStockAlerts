@@ -395,7 +395,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         {
             if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
             {
-                _logger.LogInformation("[IBKR Scanner] Info: id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
+                _logger.LogDebug("[IBKR Scanner] Info: id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
                 return;
             }
 

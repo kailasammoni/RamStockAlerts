@@ -2,7 +2,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Services.Universe;
-using System.IO;
 
 namespace RamStockAlerts.Tests;
 
@@ -17,7 +16,7 @@ public class DepthUniverseFilterTests
         var cache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
         var service = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, cache);
         var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        var filter = new DepthUniverseFilter(service, eligibility, NullLogger<DepthUniverseFilter>.Instance);
+        var filter = new DepthUniverseFilter(service, NullLogger<DepthUniverseFilter>.Instance);
         return (filter, cache, eligibility);
     }
 
@@ -36,17 +35,17 @@ public class DepthUniverseFilterTests
     }
 
     [Fact]
-    public async Task Filter_SkipsIneligibleDuringCooldown()
+    public async Task DepthUniverseFilter_DoesNotRemoveDepthIneligible()
     {
         var (filter, cache, eligibility) = BuildFilter();
         var now = DateTimeOffset.UtcNow;
-        var classification = new ContractClassification("XYZ", 0, null, "USD", "COMMON", now);
+        var classification = new ContractClassification("XYZ", 10, "NYSE", "USD", "COMMON", now);
         await cache.PutAsync(classification, CancellationToken.None);
-        eligibility.MarkIneligible(classification, "XYZ", "DepthUnsupported", now.AddMinutes(10));
+        eligibility.MarkIneligible(classification, "XYZ", "DepthUnsupported", now.AddMinutes(5));
 
         var filtered = await filter.FilterAsync(new[] { "XYZ" }, CancellationToken.None);
 
-        Assert.Empty(filtered);
+        Assert.Contains("XYZ", filtered);
     }
 
     [Fact]
@@ -111,7 +110,7 @@ public class DepthUniverseFilterTests
             eligibility.MarkIneligible(classification, "PERSIST", "DepthUnsupported", now.AddMinutes(5));
 
             var reloaded = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-            var state = reloaded.Get(classification, "PERSIST", DateTimeOffset.UtcNow);
+            var state = reloaded.Get(classification, "PERSIST", DateTimeOffset.UtcNow.AddMinutes(1));
 
             Assert.Equal(DepthEligibilityStatus.Ineligible, state.Status);
             Assert.Equal(456, state.ConId);

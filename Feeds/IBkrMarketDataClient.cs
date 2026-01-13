@@ -882,6 +882,12 @@ internal class IBkrWrapperImpl : EWrapper
 
     public void error(int id, int errorCode, string errorMsg)
     {
+        if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
+        {
+            _logger.LogDebug("[IBKR Info {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
+            return;
+        }
+
         if (errorCode == 10092 || errorCode == 10190)
         {
             _errorHandler?.Invoke(id, errorCode, errorMsg);

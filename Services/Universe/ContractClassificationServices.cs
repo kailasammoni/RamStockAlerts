@@ -450,6 +450,12 @@ public sealed class ContractClassificationService
 
         public void error(int id, int errorCode, string errorMsg)
         {
+            if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
+            {
+                _logger.LogDebug("[IBKR ContractDetails] Info: id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
+                return;
+            }
+
             if (id <= 0)
             {
                 return;
