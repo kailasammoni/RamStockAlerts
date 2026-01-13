@@ -260,6 +260,8 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        var vwapBonus = tapeStats.VwapReclaimDetected ? 0.5m : 0m;
+
         var acceptedDecisionResult = BuildDecisionResult(
             snapshot,
             depthSnapshot,
@@ -275,9 +277,11 @@ public sealed class ShadowTradingCoordinator
 
         var pendingEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
         pendingEntry.DecisionResult = acceptedDecisionResult;
-        _pendingRankedEntries[candidateId] = new PendingRankEntry(pendingEntry, blueprintPlan, nowMs);
+        _pendingRankedEntries[candidateId] = new PendingRankEntry(pendingEntry, blueprintPlan, nowMs, vwapBonus);
 
-        var resolved = _scarcityController.StageCandidate(candidateId, snapshot.Symbol, decision.Signal?.Confidence ?? 0m, nowMs);
+        var baseScore = decision.Signal?.Confidence ?? 0m;
+        var rankScore = baseScore + vwapBonus;
+        var resolved = _scarcityController.StageCandidate(candidateId, snapshot.Symbol, rankScore, nowMs);
         FinalizeRankedDecisions(resolved);
     }
 
@@ -415,7 +419,16 @@ public sealed class ShadowTradingCoordinator
             BidTotalCanceledSize1s = depthDeltaSnapshot.Bid1s.TotalCanceledSize,
             AskTotalCanceledSize1s = depthDeltaSnapshot.Ask1s.TotalCanceledSize,
             BidTotalAddedSize1s = depthDeltaSnapshot.Bid1s.TotalAddedSize,
-            AskTotalAddedSize1s = depthDeltaSnapshot.Ask1s.TotalAddedSize
+            AskTotalAddedSize1s = depthDeltaSnapshot.Ask1s.TotalAddedSize,
+            CurrentVwap = tapeStats.CumulativeVwap ?? 0m,
+            PriceVsVwap = (tapeStats.LastPrice ?? 0m) - (tapeStats.CumulativeVwap ?? 0m),
+            VwapReclaimDetected = IsVwapReclaim(
+                decision.Direction,
+                tapeStats.LastPrice,
+                tapeStats.CumulativeVwap,
+                tapeStats.VwapPrice,
+                tapeStats.Volume),
+            VwapConfirmBonus = tapeStats.VwapReclaimDetected ? 0.5m : 0m
         };
 
         return StrategyDecisionResultBuilder.Build(context);
@@ -498,6 +511,38 @@ public sealed class ShadowTradingCoordinator
         var hasVolume = tapeStats.Volume >= MinTapeVolume;
 
         return !(hasTrades && hasVolume);
+    }
+
+    public static bool IsVwapReclaim(
+        string? direction,
+        decimal? lastPrice,
+        decimal? cumulativeVwap,
+        decimal? windowVwap,
+        decimal windowVolume)
+    {
+        if (string.IsNullOrWhiteSpace(direction) || lastPrice is null || cumulativeVwap is null)
+        {
+            return false;
+        }
+
+        const decimal MinWindowVolume = 1m;
+        var price = lastPrice.Value;
+        var vwap = cumulativeVwap.Value;
+        var recentBelow = windowVwap.HasValue ? windowVwap.Value < vwap : false;
+        var recentAbove = windowVwap.HasValue ? windowVwap.Value > vwap : false;
+        var hasVolume = windowVolume >= MinWindowVolume;
+
+        if (string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase))
+        {
+            return price > vwap && recentBelow && hasVolume;
+        }
+
+        if (string.Equals(direction, "SELL", StringComparison.OrdinalIgnoreCase))
+        {
+            return price < vwap && recentAbove && hasVolume;
+        }
+
+        return false;
     }
 
     private StrategyDecisionResult? UpdateDecisionResult(
@@ -673,12 +718,15 @@ public sealed class ShadowTradingCoordinator
         decimal Volume,
         decimal? LastPrice,
         decimal? VwapPrice,
-        long? LastTapeAgeMs);
+        long? LastTapeAgeMs,
+        decimal? CumulativeVwap,
+        bool VwapReclaimDetected);
 
     private sealed record PendingRankEntry(
         ShadowTradeJournalEntry Entry,
         BlueprintPlan Blueprint,
-        long TimestampMsUtc);
+        long TimestampMsUtc,
+        decimal VwapBonus);
 
     private sealed record BlueprintPlan(
         bool Success,
@@ -712,7 +760,14 @@ public sealed class ShadowTradingCoordinator
             vwap = weightedSum / totalSize;
         }
 
-        return new TapeStats(velocity, volume, lastPrice, vwap, lastTapeAgeMs);
+        var cumulativeVwap = book.VwapTracker.CurrentVwap;
+        var vwapReclaimDetected = IsVwapReclaim(
+            lastPrice,
+            cumulativeVwap,
+            vwap,
+            volume);
+
+        return new TapeStats(velocity, volume, lastPrice, vwap, lastTapeAgeMs, cumulativeVwap, vwapReclaimDetected);
     }
 
     private sealed class RejectionLogger

@@ -87,6 +87,7 @@ public sealed class OrderBookState
     private long _bestBidPriceLastChangedMs;
     private long _bestAskPriceLastChangedMs;
     private readonly DepthDeltaTracker _depthDeltaTracker = new();
+    private readonly VwapTracker _vwapTracker = new();
 
     public OrderBookState(string symbol = "")
     {
@@ -144,6 +145,11 @@ public sealed class OrderBookState
     /// Observational depth delta tracker (additive; does not affect decisions).
     /// </summary>
     public DepthDeltaTracker DepthDeltaTracker => _depthDeltaTracker;
+
+    /// <summary>
+    /// Observational VWAP tracker (cumulative).
+    /// </summary>
+    public VwapTracker VwapTracker => _vwapTracker;
 
     /// <summary>
     /// Best bid price (0 when empty or invalid).
@@ -478,6 +484,7 @@ public sealed class OrderBookState
     public void RecordTrade(long timestampMs, double price, decimal size)
     {
         _recentTrades.Enqueue(new TradePrint(timestampMs, price, size));
+        _vwapTracker.OnTrade(price, size, timestampMs);
         TrimTrades();
         LastUpdateMs = Math.Max(LastUpdateMs, timestampMs);
     }

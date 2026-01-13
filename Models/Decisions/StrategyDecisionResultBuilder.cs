@@ -56,7 +56,11 @@ public static class StrategyDecisionResultBuilder
             BidTotalCanceledSize1s = context.BidTotalCanceledSize1s,
             AskTotalCanceledSize1s = context.AskTotalCanceledSize1s,
             BidTotalAddedSize1s = context.BidTotalAddedSize1s,
-            AskTotalAddedSize1s = context.AskTotalAddedSize1s
+            AskTotalAddedSize1s = context.AskTotalAddedSize1s,
+            CurrentVwap = context.CurrentVwap,
+            PriceVsVwap = context.PriceVsVwap,
+            VwapReclaimDetected = context.VwapReclaimDetected,
+            VwapConfirmBonus = context.VwapConfirmBonus
         };
 
         return new StrategyDecisionResult
@@ -121,4 +125,8 @@ public sealed record StrategyDecisionBuildContext
     public decimal AskTotalCanceledSize1s { get; init; }
     public decimal BidTotalAddedSize1s { get; init; }
     public decimal AskTotalAddedSize1s { get; init; }
+    public decimal CurrentVwap { get; init; }
+    public decimal PriceVsVwap { get; init; }
+    public bool VwapReclaimDetected { get; init; }
+    public decimal VwapConfirmBonus { get; init; }
 }

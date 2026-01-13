@@ -84,6 +84,10 @@ public sealed record FeatureSnapshot
     public decimal AskTotalCanceledSize1s { get; init; }
     public decimal BidTotalAddedSize1s { get; init; }
     public decimal AskTotalAddedSize1s { get; init; }
+    public decimal CurrentVwap { get; init; }
+    public decimal PriceVsVwap { get; init; }
+    public bool VwapReclaimDetected { get; init; }
+    public decimal VwapConfirmBonus { get; init; }
 }
 
 public sealed record StrategyDecisionResult
