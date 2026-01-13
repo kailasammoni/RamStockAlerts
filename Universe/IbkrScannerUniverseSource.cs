@@ -403,7 +403,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                     .Select(candidate => candidate.Symbol)
                     .ToList();
 
-                CacheClassifications();
+                // Don't cache classifications from scanner data - they're incomplete (null StockType, PrimaryExch, etc.)
+                // Let GetClassificationsAsync() → FetchFromIbkrAsync() fetch proper contract details via reqContractDetails()
             }
 
             var top = result.Take(10).ToArray();

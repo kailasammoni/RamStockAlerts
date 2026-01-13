@@ -265,6 +265,8 @@ public sealed class ContractClassificationService
         List<string> symbols,
         CancellationToken cancellationToken)
     {
+        _logger.LogInformation("[IBKR ContractDetails] FetchFromIbkrAsync called for {Count} symbols", symbols.Count);
+        
         await _connectionLock.WaitAsync(cancellationToken);
         var classifications = new List<ContractClassification>();
         var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
