@@ -7,6 +7,7 @@ using RamStockAlerts.Models;
 using RamStockAlerts.Services;
 using RamStockAlerts.Universe;
 using System.Collections.Concurrent;
+using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Feeds;
 
@@ -29,6 +30,8 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly OrderFlowMetrics _metrics;
     private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
     private readonly PreviewSignalEmitter _previewSignalEmitter;
+    private readonly ContractClassificationService _classificationService;
+    private readonly DepthEligibilityCache _depthEligibilityCache;
     
     private EClientSocket? _eClientSocket;
     private EReaderSignal? _readerSignal;
@@ -47,7 +50,9 @@ public class IBkrMarketDataClient : BackgroundService
         MarketDataSubscriptionManager subscriptionManager,
         OrderFlowMetrics metrics,
         ShadowTradingCoordinator shadowTradingCoordinator,
-        PreviewSignalEmitter previewSignalEmitter)
+        PreviewSignalEmitter previewSignalEmitter,
+        ContractClassificationService classificationService,
+        DepthEligibilityCache depthEligibilityCache)
     {
         _logger = logger;
         _configuration = configuration;
@@ -56,6 +61,8 @@ public class IBkrMarketDataClient : BackgroundService
         _metrics = metrics;
         _shadowTradingCoordinator = shadowTradingCoordinator;
         _previewSignalEmitter = previewSignalEmitter;
+        _classificationService = classificationService;
+        _depthEligibilityCache = depthEligibilityCache;
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -74,7 +81,8 @@ public class IBkrMarketDataClient : BackgroundService
                 _previewSignalEmitter,
                 IsTickByTickActive,
                 _subscriptionManager.RecordActivity,
-                HandleIbkrError);
+                HandleIbkrError,
+                MarkDepthEligible);
             _readerSignal = new EReaderMonitorSignal();
             _eClientSocket = new EClientSocket(_wrapper, _readerSignal);
             
@@ -177,6 +185,13 @@ public class IBkrMarketDataClient : BackgroundService
         {
             _logger.LogWarning("[IBKR] Subscribe skipped for {Symbol}: depth/tape disabled.", normalized);
             return null;
+        }
+
+        var classification = _classificationService.TryGetCached(normalized);
+        if (requestDepth && !_depthEligibilityCache.CanRequestDepth(classification, normalized, DateTimeOffset.UtcNow, out var eligibilityState))
+        {
+            _depthEligibilityCache.LogSkipOnce(classification, normalized, eligibilityState);
+            requestDepth = false;
         }
 
         await _subscriptionLock.WaitAsync(cancellationToken);
@@ -542,6 +557,12 @@ public class IBkrMarketDataClient : BackgroundService
             DisableTickByTickAsync,
             CancellationToken.None);
     }
+
+    private void MarkDepthEligible(string symbol)
+    {
+        var classification = _classificationService.TryGetCached(symbol);
+        _depthEligibilityCache.MarkEligible(classification, symbol);
+    }
     
     private void ProcessMessages(EClientSocket socket, EReaderSignal readerSignal, CancellationToken stoppingToken)
     {
@@ -628,6 +649,7 @@ internal class IBkrWrapperImpl : EWrapper
     private readonly Func<string, bool> _isTickByTickActive;
     private readonly Action<string>? _recordActivity;
     private readonly Action<int, int, string>? _errorHandler;
+    private readonly Action<string>? _markDepthEligible;
     private readonly ConcurrentDictionary<int, LastTradeState> _lastTrades = new();
     
     public IBkrWrapperImpl(
@@ -639,7 +661,8 @@ internal class IBkrWrapperImpl : EWrapper
         PreviewSignalEmitter previewSignalEmitter,
         Func<string, bool> isTickByTickActive,
         Action<string>? recordActivity,
-        Action<int, int, string>? errorHandler)
+        Action<int, int, string>? errorHandler,
+        Action<string>? markDepthEligible)
     {
         _logger = logger;
         _tickerIdMap = tickerIdMap;
@@ -650,6 +673,7 @@ internal class IBkrWrapperImpl : EWrapper
         _isTickByTickActive = isTickByTickActive;
         _recordActivity = recordActivity;
         _errorHandler = errorHandler;
+        _markDepthEligible = markDepthEligible;
     }
 
     private bool TryGetBook(int tickerId, out OrderBookState book)
@@ -685,6 +709,7 @@ internal class IBkrWrapperImpl : EWrapper
             var px = (decimal)price;
             var sz = (decimal)size;
             var depthSide = side == 0 ? DepthSide.Ask : DepthSide.Bid;
+            _markDepthEligible?.Invoke(book.Symbol);
 
             // side: 0=ask, 1=bid (per IB API convention)
             // operation: 0=insert, 1=update, 2=delete
@@ -749,6 +774,7 @@ internal class IBkrWrapperImpl : EWrapper
                 position,
                 nowMs);
             book.ApplyDepthUpdate(depthUpdate);
+            _markDepthEligible?.Invoke(book.Symbol);
 
             if (book.IsBookValid(out var validityReason, nowMs))
             {

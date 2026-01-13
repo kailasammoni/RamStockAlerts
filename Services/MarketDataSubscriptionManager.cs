@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Services;
 
@@ -26,16 +27,24 @@ public sealed class MarketDataSubscriptionManager
 
     private readonly IConfiguration _configuration;
     private readonly ILogger<MarketDataSubscriptionManager> _logger;
+    private readonly ContractClassificationService _classificationService;
+    private readonly DepthEligibilityCache _depthEligibilityCache;
     private readonly SemaphoreSlim _sync = new(1, 1);
     private readonly ConcurrentDictionary<string, SubscriptionState> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<int, RequestMapping> _requestMap = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _depthDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _tickByTickDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
 
-    public MarketDataSubscriptionManager(IConfiguration configuration, ILogger<MarketDataSubscriptionManager> logger)
+    public MarketDataSubscriptionManager(
+        IConfiguration configuration,
+        ILogger<MarketDataSubscriptionManager> logger,
+        ContractClassificationService classificationService,
+        DepthEligibilityCache depthEligibilityCache)
     {
         _configuration = configuration;
         _logger = logger;
+        _classificationService = classificationService;
+        _depthEligibilityCache = depthEligibilityCache;
         var maxLines = _configuration.GetValue("MarketData:MaxLines", 95);
         var tickByTickMaxSymbols = _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10);
         var depthRows = _configuration.GetValue("MarketData:DepthRows", 10);
@@ -110,6 +119,7 @@ public sealed class MarketDataSubscriptionManager
     {
         var normalizedUniverse = NormalizeUniverse(universe);
         var universeSet = new HashSet<string>(normalizedUniverse, StringComparer.OrdinalIgnoreCase);
+        var classifications = await _classificationService.GetClassificationsAsync(normalizedUniverse, cancellationToken);
 
         var enableDepth = _configuration.GetValue("MarketData:EnableDepth", true);
         var enableTape = _configuration.GetValue("MarketData:EnableTape", true);
@@ -170,7 +180,14 @@ public sealed class MarketDataSubscriptionManager
                     continue;
                 }
 
+                classifications.TryGetValue(symbol, out var classification);
                 var requestDepth = enableDepth && !IsDepthDisabled(symbol, now);
+                if (requestDepth && !_depthEligibilityCache.CanRequestDepth(classification, symbol, now, out var eligibilityState))
+                {
+                    _depthEligibilityCache.LogSkipOnce(classification, symbol, eligibilityState);
+                    requestDepth = false;
+                }
+
                 var baseLines = (enableTape ? 1 : 0) + (requestDepth ? 1 : 0);
                 if (baseLines == 0)
                 {
@@ -286,6 +303,8 @@ public sealed class MarketDataSubscriptionManager
             }
 
             _depthDisabledUntil[symbol] = now.Add(DepthCooldown);
+            var classification = _classificationService.TryGetCached(symbol);
+            _depthEligibilityCache.MarkIneligible(classification, symbol, "DepthUnsupported", now.Add(DepthCooldown));
 
             if (state.DepthRequestId.HasValue)
             {

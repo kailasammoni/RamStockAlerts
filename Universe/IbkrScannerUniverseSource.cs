@@ -2,6 +2,7 @@ using System;
 using IBApi;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Universe;
 
@@ -9,6 +10,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<IbkrScannerUniverseSource> _logger;
+    private readonly ContractClassificationService _classificationService;
     private static int _nextRequestId = 5000;
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
@@ -25,7 +27,10 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         "TZA", "DUST", "BITO", "TSLL", "TQQQ", "SQQQ", "SOXS", "SOXL", "LABD", "LABU", "ZSL", "SPXU", "TVIX", "UVXY", "BNDX"
     };
 
-    public IbkrScannerUniverseSource(IConfiguration configuration, ILogger<IbkrScannerUniverseSource> logger)
+    public IbkrScannerUniverseSource(
+        IConfiguration configuration,
+        ILogger<IbkrScannerUniverseSource> logger,
+        ContractClassificationService classificationService)
     {
         _excludeEtfs = configuration.GetValue("Universe:ExcludeEtfs", true);
         var configured = configuration.GetSection("Universe:EtfDenylist").Get<string[]>() ?? Array.Empty<string>();
@@ -50,6 +55,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
         _configuration = configuration;
         _logger = logger;
+        _classificationService = classificationService ?? throw new ArgumentNullException(nameof(classificationService));
     }
 
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
@@ -156,7 +162,15 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<ScannerCandidate>();
         var completion = new TaskCompletionSource<IReadOnlyList<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var wrapper = new ScannerWrapper(_logger, requestId, symbols, candidates, completion, _excludeEtfs, _etfDenylist);
+        var wrapper = new ScannerWrapper(
+            _logger,
+            _classificationService,
+            requestId,
+            symbols,
+            candidates,
+            completion,
+            _excludeEtfs,
+            _etfDenylist);
 
         var readerSignal = new EReaderMonitorSignal();
         var client = new EClientSocket(wrapper, readerSignal);
@@ -329,6 +343,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private sealed class ScannerWrapper : EWrapper
     {
         private readonly ILogger _logger;
+        private readonly ContractClassificationService _classificationService;
         private readonly int _requestId;
         private readonly HashSet<string> _symbols;
         private readonly List<ScannerCandidate> _candidates;
@@ -338,6 +353,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
         public ScannerWrapper(
             ILogger logger,
+            ContractClassificationService classificationService,
             int requestId,
             HashSet<string> symbols,
             List<ScannerCandidate> candidates,
@@ -346,6 +362,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             IReadOnlyCollection<string> denylist)
         {
             _logger = logger;
+            _classificationService = classificationService;
             _requestId = requestId;
             _symbols = symbols;
             _candidates = candidates;
@@ -398,6 +415,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 {
                     _logger.LogInformation("[IBKR Scanner] Filtered {Count} ETF/ETN candidates", excluded);
                 }
+
+                CacheClassifications();
             }
 
             _completion.TrySetResult(result);
@@ -569,6 +588,56 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             return value.IndexOf("ETF", StringComparison.OrdinalIgnoreCase) >= 0
                 || value.IndexOf("ETN", StringComparison.OrdinalIgnoreCase) >= 0
                 || value.IndexOf("ETP", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void CacheClassifications()
+        {
+            var tasks = new List<Task>();
+            foreach (var candidate in _candidates)
+            {
+                if (candidate.Details is null)
+                {
+                    continue;
+                }
+
+                var classification = ToClassification(candidate.Details);
+                tasks.Add(_classificationService.CacheAsync(classification, CancellationToken.None));
+            }
+
+            if (tasks.Count > 0)
+            {
+                Task.WhenAll(tasks).GetAwaiter().GetResult();
+            }
+        }
+
+        private static ContractClassification ToClassification(ContractDetails details)
+        {
+            var now = DateTimeOffset.UtcNow;
+            return new ContractClassification(
+                details.Contract?.Symbol?.Trim().ToUpperInvariant() ?? string.Empty,
+                details.Contract?.ConId ?? 0,
+                details.Contract?.PrimaryExch,
+                details.Contract?.Currency,
+                ResolveStockType(details),
+                now);
+        }
+
+        private static string ResolveStockType(ContractDetails details)
+        {
+            if (!string.IsNullOrWhiteSpace(details.StockType))
+            {
+                return details.StockType.Trim().ToUpperInvariant();
+            }
+
+            var secType = details.Contract?.SecType;
+            if (!string.IsNullOrWhiteSpace(secType))
+            {
+                return secType.Trim().ToUpperInvariant() == "STK"
+                    ? "COMMON"
+                    : secType.Trim().ToUpperInvariant();
+            }
+
+            return "UNKNOWN";
         }
     }
 

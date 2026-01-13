@@ -9,6 +9,7 @@ using HealthChecks.UI.Client;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Universe;
+using RamStockAlerts.Services.Universe;
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
@@ -194,6 +195,10 @@ builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();
 builder.Services.AddSingleton<ShadowTradingCoordinator>();
 builder.Services.AddSingleton<PreviewSignalEmitter>();
+builder.Services.AddSingleton<ContractClassificationCache>();
+builder.Services.AddSingleton<ContractClassificationService>();
+builder.Services.AddSingleton<DepthEligibilityCache>();
+builder.Services.AddSingleton<DepthUniverseFilter>();
 builder.Services.AddSingleton<StaticUniverseSource>();
 builder.Services.AddSingleton<IbkrScannerUniverseSource>();
 builder.Services.AddSingleton<UniverseService>();

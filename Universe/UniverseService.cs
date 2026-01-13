@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Universe;
 
@@ -14,6 +15,7 @@ public sealed class UniverseService
     private readonly ILogger<UniverseService> _logger;
     private readonly StaticUniverseSource _staticSource;
     private readonly IbkrScannerUniverseSource _scannerSource;
+    private readonly DepthUniverseFilter _depthFilter;
     private readonly SemaphoreSlim _universeLock = new(1, 1);
 
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
@@ -24,13 +26,15 @@ public sealed class UniverseService
         IMemoryCache cache,
         ILogger<UniverseService> logger,
         StaticUniverseSource staticSource,
-        IbkrScannerUniverseSource scannerSource)
+        IbkrScannerUniverseSource scannerSource,
+        DepthUniverseFilter depthFilter)
     {
         _configuration = configuration;
         _cache = cache;
         _logger = logger;
         _staticSource = staticSource;
         _scannerSource = scannerSource;
+        _depthFilter = depthFilter;
     }
 
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
@@ -86,6 +90,11 @@ public sealed class UniverseService
                     _logger.LogError(ex, "Universe fetch failed for source {Source}.", sourceLabel);
                     universe = Array.Empty<string>();
                 }
+            }
+
+            if (string.Equals(sourceKey, "ibkrscanner", StringComparison.OrdinalIgnoreCase))
+            {
+                universe = await _depthFilter.FilterAsync(universe, cancellationToken);
             }
 
             if (sourceKey == "ibkrscanner" && universe.Count == 0 && _lastUniverse.Count > 0)
