@@ -16,6 +16,7 @@ public class OrderBookStateDepthDeltaTests
         var snapshot = book.DepthDeltaTracker.GetSnapshot(1_200);
 
         Assert.Equal(1, snapshot.Bid1s.CancelCount);
-        Assert.Equal(0, snapshot.Bid1s.AddCount);
+        Assert.Equal(0, snapshot.Bid1s.UpdateCount);
+        Assert.Equal(1, snapshot.Bid1s.AddCount);
     }
 }
