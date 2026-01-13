@@ -30,7 +30,8 @@ public enum HardRejectReason
     ScarcityGlobalCooldown,
     ScarcitySymbolCooldown,
     ScarcityRankedOut,
-    SpoofSuspected
+    SpoofSuspected,
+    ReplenishmentSuspected
 }
 
 public sealed record FeatureDepthLevelSnapshot(int Level, decimal Price, decimal Size);
@@ -80,6 +81,8 @@ public sealed record FeatureSnapshot
     public int AskAddCount1s { get; init; }
     public decimal BidTotalCanceledSize1s { get; init; }
     public decimal AskTotalCanceledSize1s { get; init; }
+    public decimal BidTotalAddedSize1s { get; init; }
+    public decimal AskTotalAddedSize1s { get; init; }
 }
 
 public sealed record StrategyDecisionResult

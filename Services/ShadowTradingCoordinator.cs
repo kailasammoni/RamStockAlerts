@@ -160,6 +160,30 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        if (ShouldRejectForReplenishment(decision.Direction, depthDeltaSnapshot, snapshot, tapeStats))
+        {
+            var decisionResult = BuildDecisionResult(
+                snapshot,
+                depthSnapshot,
+                tapeStats,
+                depthDeltaSnapshot,
+                decision,
+                DecisionOutcome.Rejected,
+                new[] { HardRejectReason.ReplenishmentSuspected },
+                nowMs,
+                book.BestBid,
+                book.BestAsk,
+                book);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+            rejectedEntry.Decision = "Rejected";
+            rejectedEntry.Accepted = false;
+            rejectedEntry.RejectionReason = "ReplenishmentSuspected";
+            rejectedEntry.DecisionResult = decisionResult;
+
+            EnqueueEntry(rejectedEntry);
+            return;
+        }
+
         var blueprintPlan = BuildBlueprintPlan(book, decision.Direction);
         if (_recordBlueprints && !blueprintPlan.Success)
         {
@@ -341,7 +365,9 @@ public sealed class ShadowTradingCoordinator
             AskCancelCount1s = depthDeltaSnapshot.Ask1s.CancelCount,
             AskAddCount1s = depthDeltaSnapshot.Ask1s.AddCount,
             BidTotalCanceledSize1s = depthDeltaSnapshot.Bid1s.TotalCanceledSize,
-            AskTotalCanceledSize1s = depthDeltaSnapshot.Ask1s.TotalCanceledSize
+            AskTotalCanceledSize1s = depthDeltaSnapshot.Ask1s.TotalCanceledSize,
+            BidTotalAddedSize1s = depthDeltaSnapshot.Bid1s.TotalAddedSize,
+            AskTotalAddedSize1s = depthDeltaSnapshot.Ask1s.TotalAddedSize
         };
 
         return StrategyDecisionResultBuilder.Build(context);
@@ -378,6 +404,33 @@ public sealed class ShadowTradingCoordinator
         var noPrints = snapshot.TradesIn3Sec <= 1 && tapeVolume <= 0m;
 
         return cancelDominant && noPrints;
+    }
+
+    public static bool ShouldRejectForReplenishment(
+        string? direction,
+        DepthDeltaSnapshot deltaSnapshot,
+        OrderFlowMetrics.MetricSnapshot metrics,
+        TapeStats tapeStats)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            return false;
+        }
+
+        const int MinAdds = 3;
+        const decimal MinAddedSize = 10m;
+        const int MaxTrades = 1;
+        const decimal MaxTapeVolume = 0m;
+        const decimal MaxCancelToAddRatio = 2m;
+
+        var isBuy = string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase);
+        var window1 = isBuy ? deltaSnapshot.Ask1s : deltaSnapshot.Bid1s;
+
+        var addHeavy = window1.AddCount >= MinAdds && window1.TotalAddedSize >= MinAddedSize;
+        var printsWeak = metrics.TradesIn3Sec <= MaxTrades && tapeStats.Volume <= MaxTapeVolume;
+        var notSpoofLike = window1.CancelToAddRatio < MaxCancelToAddRatio;
+
+        return addHeavy && printsWeak && notSpoofLike;
     }
 
     private StrategyDecisionResult? UpdateDecisionResult(
@@ -455,6 +508,7 @@ public sealed class ShadowTradingCoordinator
             "SymbolCooldown" => HardRejectReason.ScarcitySymbolCooldown,
             "RejectedRankedOut" => HardRejectReason.ScarcityRankedOut,
             "SpoofSuspected" => HardRejectReason.SpoofSuspected,
+            "ReplenishmentSuspected" => HardRejectReason.ReplenishmentSuspected,
             _ => HardRejectReason.Unknown
         };
 
@@ -546,7 +600,7 @@ public sealed class ShadowTradingCoordinator
         return $"{decision.ReasonCode}:{decision.ReasonDetail}";
     }
 
-    private readonly record struct TapeStats(
+    public readonly record struct TapeStats(
         decimal Velocity,
         decimal Volume,
         decimal? LastPrice,

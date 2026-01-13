@@ -54,7 +54,9 @@ public static class StrategyDecisionResultBuilder
             AskCancelCount1s = context.AskCancelCount1s,
             AskAddCount1s = context.AskAddCount1s,
             BidTotalCanceledSize1s = context.BidTotalCanceledSize1s,
-            AskTotalCanceledSize1s = context.AskTotalCanceledSize1s
+            AskTotalCanceledSize1s = context.AskTotalCanceledSize1s,
+            BidTotalAddedSize1s = context.BidTotalAddedSize1s,
+            AskTotalAddedSize1s = context.AskTotalAddedSize1s
         };
 
         return new StrategyDecisionResult
@@ -117,4 +119,6 @@ public sealed record StrategyDecisionBuildContext
     public int AskAddCount1s { get; init; }
     public decimal BidTotalCanceledSize1s { get; init; }
     public decimal AskTotalCanceledSize1s { get; init; }
+    public decimal BidTotalAddedSize1s { get; init; }
+    public decimal AskTotalAddedSize1s { get; init; }
 }
