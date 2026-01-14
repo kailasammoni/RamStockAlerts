@@ -278,7 +278,7 @@ public sealed class ShadowTradingCoordinator
         var pendingEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
         pendingEntry.DecisionResult = acceptedDecisionResult;
         pendingEntry.DecisionOutcome = "Pending";
-        pendingEntry.DecisionTrace = BuildDecisionTraceForAcceptance();
+        pendingEntry.DecisionTrace = BuildDecisionTraceForPending();
         _pendingRankedEntries[candidateId] = new PendingRankEntry(pendingEntry, blueprintPlan, nowMs, vwapBonus);
 
         var baseScore = decision.Signal?.Confidence ?? 0m;
@@ -685,6 +685,19 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
+    private static List<string> BuildDecisionTraceForPending()
+    {
+        return new List<string>
+        {
+            "ValidatorPass",
+            "SpoofCheckPass",
+            "ReplenishmentCheckPass",
+            "AbsorptionCheckPass",
+            "BlueprintReady",
+            "AwaitingScarcityRanking"
+        };
+    }
+
     private static List<string> BuildDecisionTraceForScarcityAccepted(List<string>? existing)
     {
         var trace = existing is null || existing.Count == 0 ? BuildDecisionTraceForAcceptance() : new List<string>(existing);
@@ -739,12 +752,16 @@ public sealed class ShadowTradingCoordinator
             flags.Add($"BookInvalid:{reason}");
         }
 
+        // Canonical tape staleness check: TapeStale indicates tape data is stale
         if (!ShadowTradingHelpers.HasRecentTape(book, nowMs))
         {
             flags.Add("TapeStale");
         }
 
-        if (depthSnapshot.BidsTopN.Count < 5 || depthSnapshot.AsksTopN.Count < 5)
+        // PartialBook: less than expected configured depth levels were available
+        // Expected depth is determined at snapshot creation time (typically 5 levels)
+        if (depthSnapshot.BidsTopN.Count < depthSnapshot.ExpectedDepthLevels || 
+            depthSnapshot.AsksTopN.Count < depthSnapshot.ExpectedDepthLevels)
         {
             flags.Add("PartialBook");
         }
@@ -754,9 +771,10 @@ public sealed class ShadowTradingCoordinator
             flags.Add("StaleDepth");
         }
 
+        // Additional staleness detail: TapeStale:ageMs for analytics
         if (tapeStats.LastTapeAgeMs.HasValue && tapeStats.LastTapeAgeMs.Value > TapePresenceWindowMs)
         {
-            flags.Add("StaleTape");
+            flags.Add($"TapeStale:ageMs={tapeStats.LastTapeAgeMs.Value}");
         }
 
         return flags;
@@ -910,7 +928,8 @@ public sealed class ShadowTradingCoordinator
                     BidsTopN = depthSnapshot.BidsTopN,
                     AsksTopN = depthSnapshot.AsksTopN
                 },
-            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot(),
+            // Gate rejection: no decision inputs computed since signal never reached scoring/ranking
+            DecisionInputs = null,
             DecisionResult = decisionResult
         };
 
@@ -1024,6 +1043,7 @@ public sealed class ShadowTradingCoordinator
         public List<ShadowTradeJournalEntry.DepthLevelSnapshot> BidsTopN { get; init; } = new();
         public List<ShadowTradeJournalEntry.DepthLevelSnapshot> AsksTopN { get; init; } = new();
         public long? LastDepthUpdateAgeMs { get; init; }
+        public int ExpectedDepthLevels { get; init; }
     }
 
     private static DepthSnapshot BuildDepthSnapshot(OrderBookState book, int depthLevels = 5)
@@ -1062,7 +1082,8 @@ public sealed class ShadowTradingCoordinator
             BidAskRatioTopN = ratio,
             BidsTopN = bids,
             AsksTopN = asks,
-            LastDepthUpdateAgeMs = depthAge
+            LastDepthUpdateAgeMs = depthAge,
+            ExpectedDepthLevels = depthLevels
         };
     }
 

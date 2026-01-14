@@ -58,6 +58,44 @@ public class ShadowTradeJournalEntryTests
     }
 
     [Fact]
+    public void JournalEntry_MissingContextReject_HasNullDecisionInputs_AndFlagsMissingContext()
+    {
+        var entry = BuildMissingContextRejectionEntry();
+
+        Assert.Equal("Rejected", entry.DecisionOutcome);
+        Assert.Equal("MissingBookContext", entry.RejectionReason);
+        
+        // Missing context rejection: ObservedMetrics and DecisionInputs are null
+        Assert.Null(entry.ObservedMetrics);
+        Assert.Null(entry.DecisionInputs);
+        
+        Assert.NotNull(entry.DecisionTrace);
+        Assert.Contains("GateReject:MissingBookContext", entry.DecisionTrace);
+        
+        Assert.NotNull(entry.DataQualityFlags);
+        Assert.Contains("MissingBookContext", entry.DataQualityFlags);
+    }
+
+    [Fact]
+    public async Task JournalEntry_MissingContextReject_WritesAndDeserializesSuccessfully()
+    {
+        var entry = BuildMissingContextRejectionEntry();
+
+        var line = await WriteEntryAsync(entry);
+        var parsed = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(line);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("Rejected", parsed!.DecisionOutcome);
+        Assert.Equal("MissingBookContext", parsed.RejectionReason);
+        Assert.Null(parsed.ObservedMetrics);
+        Assert.Null(parsed.DecisionInputs);
+        Assert.Contains("MissingBookContext", parsed.DataQualityFlags ?? new List<string>());
+        
+        // Verify JSON contains explicit null for DecisionInputs
+        Assert.Contains("\"DecisionInputs\":null", line);
+    }
+
+    [Fact]
     public async Task JournalSchemaVersion_Bumps_WhenModelChanges()
     {
         var entry = BuildAcceptedEntry();
@@ -213,6 +251,29 @@ public class ShadowTradeJournalEntryTests
         entry.DecisionTrace = new List<string> { "GateReject:TapeStale" };
         entry.DataQualityFlags = new List<string> { "TapeStale" };
         return entry;
+    }
+
+    private static ShadowTradeJournalEntry BuildMissingContextRejectionEntry()
+    {
+        return new ShadowTradeJournalEntry
+        {
+            SchemaVersion = ShadowTradeJournal.CurrentSchemaVersion,
+            DecisionId = Guid.NewGuid(),
+            SessionId = Guid.NewGuid(),
+            Source = "IBKR",
+            EntryType = "Rejection",
+            MarketTimestampUtc = DateTimeOffset.UtcNow,
+            DecisionTimestampUtc = DateTimeOffset.UtcNow,
+            TradingMode = "Shadow",
+            Symbol = "TEST",
+            DecisionOutcome = "Rejected",
+            RejectionReason = "MissingBookContext",
+            DecisionTrace = new List<string> { "GateReject:MissingBookContext" },
+            DataQualityFlags = new List<string> { "MissingBookContext" },
+            // Missing context: no metrics or decision inputs were computed
+            ObservedMetrics = null,
+            DecisionInputs = null
+        };
     }
 
     private static async Task<string> WriteEntryAsync(ShadowTradeJournalEntry entry)

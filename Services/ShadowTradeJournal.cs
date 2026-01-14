@@ -77,8 +77,9 @@ public sealed class ShadowTradeJournal : BackgroundService
                 var line = JsonSerializer.Serialize(entry);
                 await _writer.WriteLineAsync(line);
                 _logger.LogInformation(
-                    "JournalWrite: type={Type} schema={Schema} ticker={Ticker} score={Score} reason={Reason}",
-                    entry.DecisionOutcome ?? entry.EntryType ?? "Unknown",
+                    "JournalWrite: type={Type} outcome={Outcome} schema={Schema} ticker={Ticker} score={Score} reason={Reason}",
+                    entry.EntryType ?? "Unknown",
+                    entry.DecisionOutcome ?? "Unknown",
                     entry.SchemaVersion,
                     entry.Symbol ?? string.Empty,
                     entry.DecisionInputs?.Score,
