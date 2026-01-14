@@ -583,27 +583,9 @@ public class IBkrMarketDataClient : BackgroundService
             errorMessage,
             DisableDepthAsync,
             DisableTickByTickAsync,
+            EnableTickByTickAsync,
             CancellationToken.None);
-
-        if (errorCode != 10092)
-        {
-            return;
-        }
-
-        var retryPlan = await _subscriptionManager.TryGetDepthRetryPlanAsync(requestId, CancellationToken.None);
-        if (retryPlan is null)
-        {
-            if (_subscriptionManager.TryGetRequestMapping(requestId, out var symbol, out var kind)
-                && kind == MarketDataRequestKind.Depth)
-            {
-                _subscriptionManager.MarkDepthUnsupported(symbol, "DepthUnsupported", DateTimeOffset.UtcNow);
-                await DisableDepthAsync(symbol, CancellationToken.None);
-                _subscriptionManager.ClearDepthRequest(symbol, requestId);
-            }
-            return;
-        }
-
-        await RetryDepthAsync(requestId, retryPlan);
+        return;
     }
 
     private async Task RetryDepthAsync(int failedRequestId, DepthRetryPlan plan)

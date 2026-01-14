@@ -1,10 +1,15 @@
+using System;
+using System.Linq;
 using RamStockAlerts.Models;
 
 namespace RamStockAlerts.Services;
 
 internal static class ShadowTradingHelpers
 {
-    private const int TapePresenceWindowMs = 3000;
+    internal readonly record struct TapeGateConfig(int WarmupMinTrades, int WarmupWindowMs, int StaleWindowMs)
+    {
+        public static TapeGateConfig Default { get; } = new(1, 15000, 30000);
+    }
 
     internal enum TapeStatusKind
     {
@@ -21,19 +26,18 @@ internal static class ShadowTradingHelpers
 
     public static bool HasRecentTape(OrderBookState book, long nowMs)
     {
-        return GetTapeStatus(book, nowMs, isTapeEnabled: true).IsReady;
+        return GetTapeStatus(book, nowMs, isTapeEnabled: true, TapeGateConfig.Default).IsReady;
     }
 
-    public static TapeStatus GetTapeStatus(OrderBookState book, long nowMs, bool isTapeEnabled)
+    public static TapeStatus GetTapeStatus(
+        OrderBookState book,
+        long nowMs,
+        bool isTapeEnabled,
+        TapeGateConfig config)
     {
         if (!isTapeEnabled)
         {
             return new TapeStatus(TapeStatusKind.MissingSubscription, null);
-        }
-
-        if (book.RecentTrades.Count == 0)
-        {
-            return new TapeStatus(TapeStatusKind.NotWarmedUp, null);
         }
 
         var lastTrade = book.RecentTrades.LastOrDefault();
@@ -43,7 +47,15 @@ internal static class ShadowTradingHelpers
         }
 
         var ageMs = nowMs - lastTrade.TimestampMs;
-        if (ageMs > TapePresenceWindowMs)
+
+        var warmupStart = nowMs - Math.Max(0, config.WarmupWindowMs);
+        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.TimestampMs >= warmupStart);
+        if (tradesInWarmupWindow < Math.Max(0, config.WarmupMinTrades))
+        {
+            return new TapeStatus(TapeStatusKind.NotWarmedUp, ageMs);
+        }
+
+        if (ageMs > Math.Max(0, config.StaleWindowMs))
         {
             return new TapeStatus(TapeStatusKind.Stale, ageMs);
         }

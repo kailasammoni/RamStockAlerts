@@ -63,6 +63,11 @@ public sealed class MarketDataSubscriptionManager
     private string? _lastDepthErrorMessage;
     private IReadOnlyList<string> _lastTapeEnabledLog = Array.Empty<string>();
     private IReadOnlyList<string> _lastEligibleLog = Array.Empty<string>();
+    private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
+    private int _lastMaxLines;
+    private int _lastTickByTickMaxSymbols;
+    private ShadowTradingHelpers.TapeGateConfig? _lastTapeGateConfig;
+    private readonly ConcurrentDictionary<string, byte> _depthIneligibleLogged = new(StringComparer.OrdinalIgnoreCase);
 
     public MarketDataSubscriptionManager(
         IConfiguration configuration,
@@ -233,6 +238,10 @@ public sealed class MarketDataSubscriptionManager
         await _sync.WaitAsync(cancellationToken);
         try
         {
+            _lastUniverse = normalizedUniverse;
+            _lastMaxLines = maxLines;
+            _lastTickByTickMaxSymbols = tickByTickMaxSymbols;
+
             foreach (var symbol in normalizedUniverse)
             {
                 if (_active.TryGetValue(symbol, out var state))
@@ -359,6 +368,7 @@ public sealed class MarketDataSubscriptionManager
                 now,
                 cancellationToken);
             LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
+            LogTapeGateConfigIfChanged();
         }
         finally
         {
@@ -372,6 +382,7 @@ public sealed class MarketDataSubscriptionManager
         string errorMessage,
         Func<string, CancellationToken, Task<bool>> disableDepthAsync,
         Func<string, CancellationToken, Task<bool>> disableTickByTickAsync,
+        Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
         CancellationToken cancellationToken)
     {
         if (!_requestMap.TryGetValue(requestId, out var mapping))
@@ -393,6 +404,15 @@ public sealed class MarketDataSubscriptionManager
 
         if (errorCode == 10092 && mapping.Kind == MarketDataRequestKind.Depth)
         {
+            await HandleDepthIneligibleAsync(
+                state,
+                errorCode,
+                errorMessage,
+                disableDepthAsync,
+                disableTickByTickAsync,
+                enableTickByTickAsync,
+                now,
+                cancellationToken);
             return;
         }
 
@@ -439,6 +459,64 @@ public sealed class MarketDataSubscriptionManager
                     state.DepthRequestId = null;
                 }
             }
+        }
+    }
+
+    private async Task HandleDepthIneligibleAsync(
+        SubscriptionState state,
+        int errorCode,
+        string errorMessage,
+        Func<string, CancellationToken, Task<bool>> disableDepthAsync,
+        Func<string, CancellationToken, Task<bool>> disableTickByTickAsync,
+        Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await _sync.WaitAsync(cancellationToken);
+        try
+        {
+            var symbol = state.Symbol;
+            if (_depthIneligibleLogged.TryAdd(symbol, 0))
+            {
+                _logger.LogWarning(
+                    "DepthIneligible: symbol={Symbol} code={Code} msg={Msg} -> removing from depth eligibility and rebalancing",
+                    symbol,
+                    errorCode,
+                    errorMessage);
+            }
+
+            MarkDepthUnsupported(symbol, $"DepthUnsupported:{errorCode}", now);
+
+            if (state.DepthRequestId.HasValue && await disableDepthAsync(symbol, cancellationToken))
+            {
+                UntrackRequest(state.DepthRequestId.Value);
+                state.DepthRequestId = null;
+            }
+
+            if (state.TickByTickRequestId.HasValue && await disableTickByTickAsync(symbol, cancellationToken))
+            {
+                UntrackRequest(state.TickByTickRequestId.Value);
+                state.TickByTickRequestId = null;
+            }
+
+            if (_lastUniverse.Count > 0 && _lastTickByTickMaxSymbols > 0)
+            {
+                var focusSet = SelectFocusSet(_lastUniverse, _lastTickByTickMaxSymbols, now);
+                await ApplyTickByTickAsync(
+                    focusSet,
+                    _lastTickByTickMaxSymbols,
+                    _lastMaxLines,
+                    enableTickByTickAsync,
+                    disableTickByTickAsync,
+                    now,
+                    cancellationToken);
+            }
+
+            LogTapeDepthPairingIfChanged(_lastTickByTickMaxSymbols);
+        }
+        finally
+        {
+            _sync.Release();
         }
     }
 
@@ -529,6 +607,36 @@ public sealed class MarketDataSubscriptionManager
             tickByTickMaxSymbols,
             string.Join(",", tapeEnabled),
             string.Join(",", eligible));
+    }
+
+    private void LogTapeGateConfigIfChanged()
+    {
+        var config = GetTapeGateConfig();
+        if (_lastTapeGateConfig.HasValue && _lastTapeGateConfig.Value.Equals(config))
+        {
+            return;
+        }
+
+        _lastTapeGateConfig = config;
+
+        _logger.LogInformation(
+            "TapeGateConfig: warmupMinTrades={WarmupMinTrades} warmupWindowMs={WarmupWindowMs} staleWindowMs={StaleWindowMs}",
+            config.WarmupMinTrades,
+            config.WarmupWindowMs,
+            config.StaleWindowMs);
+    }
+
+    private ShadowTradingHelpers.TapeGateConfig GetTapeGateConfig()
+    {
+        var defaults = ShadowTradingHelpers.TapeGateConfig.Default;
+        var warmupMinTrades = _configuration.GetValue("MarketData:TapeWarmupMinTrades", defaults.WarmupMinTrades);
+        var warmupWindowMs = _configuration.GetValue("MarketData:TapeWarmupWindowMs", defaults.WarmupWindowMs);
+        var staleWindowMs = _configuration.GetValue("MarketData:TapeStaleWindowMs", defaults.StaleWindowMs);
+
+        return new ShadowTradingHelpers.TapeGateConfig(
+            Math.Max(0, warmupMinTrades),
+            Math.Max(0, warmupWindowMs),
+            Math.Max(0, staleWindowMs));
     }
 
     private int GetTotalLines()

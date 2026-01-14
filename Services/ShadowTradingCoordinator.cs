@@ -27,6 +27,7 @@ public sealed class ShadowTradingCoordinator
     private readonly RejectionLogger _rejectionLogger = new();
     private readonly ConcurrentDictionary<string, long> _lastProcessedSnapshotMs = new();
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
+    private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
 
     public ShadowTradingCoordinator(
         IConfiguration configuration,
@@ -48,6 +49,7 @@ public sealed class ShadowTradingCoordinator
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
         _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
+        _tapeGateConfig = ReadTapeGateConfig(configuration);
 
         if (_enabled)
         {
@@ -70,7 +72,8 @@ public sealed class ShadowTradingCoordinator
             var tapeStatus = ShadowTradingHelpers.GetTapeStatus(
                 book,
                 nowMs,
-                _subscriptionManager.IsTapeEnabled(book.Symbol));
+                _subscriptionManager.IsTapeEnabled(book.Symbol),
+                _tapeGateConfig);
             var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyBookInvalid, tapeStatus);
             TryLogGatingRejection(book.Symbol, "NotReady_BookInvalid", decisionResult, tapeStatus);
             return;
@@ -80,7 +83,7 @@ public sealed class ShadowTradingCoordinator
         var tapeEnabled = _subscriptionManager.IsTapeEnabled(book.Symbol);
         if (!depthEnabled || !tapeEnabled)
         {
-            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, tapeEnabled);
+            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, tapeEnabled, _tapeGateConfig);
             var reason = tapeEnabled ? "NotReady_NoDepth" : "NotReady_TapeMissingSubscription";
             var hardReason = tapeEnabled ? HardRejectReason.NotReadyNoDepth : HardRejectReason.NotReadyTapeMissingSubscription;
             var decisionResult = BuildNotReadyDecisionResult(book, nowMs, hardReason, tapeStatus);
@@ -88,7 +91,7 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
-        var tapeStatusReadyCheck = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true);
+        var tapeStatusReadyCheck = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, _tapeGateConfig);
         var tapeRejectionReason = GetTapeRejectionReason(tapeStatusReadyCheck);
         if (tapeRejectionReason != null)
         {
@@ -783,6 +786,19 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
+    private static ShadowTradingHelpers.TapeGateConfig ReadTapeGateConfig(IConfiguration configuration)
+    {
+        var defaults = ShadowTradingHelpers.TapeGateConfig.Default;
+        var warmupMinTrades = configuration.GetValue("MarketData:TapeWarmupMinTrades", defaults.WarmupMinTrades);
+        var warmupWindowMs = configuration.GetValue("MarketData:TapeWarmupWindowMs", defaults.WarmupWindowMs);
+        var staleWindowMs = configuration.GetValue("MarketData:TapeStaleWindowMs", defaults.StaleWindowMs);
+
+        return new ShadowTradingHelpers.TapeGateConfig(
+            Math.Max(0, warmupMinTrades),
+            Math.Max(0, warmupWindowMs),
+            Math.Max(0, staleWindowMs));
+    }
+
     private static List<string> BuildDataQualityFlags(
         OrderBookState book,
         DepthSnapshot depthSnapshot,
@@ -946,7 +962,7 @@ public sealed class ShadowTradingCoordinator
         TapeStats? tapeStats = book is null ? null : BuildTapeStats(book, nowMs, null);
         var resolvedTapeStatus = tapeStatus ?? (book is null
             ? default
-            : ShadowTradingHelpers.GetTapeStatus(book, nowMs, _subscriptionManager.IsTapeEnabled(symbol)));
+            : ShadowTradingHelpers.GetTapeStatus(book, nowMs, _subscriptionManager.IsTapeEnabled(symbol), _tapeGateConfig));
 
         var entry = new ShadowTradeJournalEntry
         {
