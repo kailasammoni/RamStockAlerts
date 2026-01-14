@@ -597,6 +597,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             return new ContractClassification(
                 details.Contract?.Symbol?.Trim().ToUpperInvariant() ?? string.Empty,
                 details.Contract?.ConId ?? 0,
+                details.Contract?.SecType,
                 details.Contract?.PrimaryExch,
                 details.Contract?.Currency,
                 ResolveStockType(details),

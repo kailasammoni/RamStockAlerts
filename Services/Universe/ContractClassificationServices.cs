@@ -10,6 +10,7 @@ namespace RamStockAlerts.Services.Universe;
 public sealed record ContractClassification(
     string Symbol,
     int ConId,
+    string? SecType,
     string? PrimaryExchange,
     string? Currency,
     string StockType,
@@ -406,6 +407,7 @@ public sealed class ContractClassificationService
         return new ContractClassification(
             symbol.Trim().ToUpperInvariant(),
             details.Contract?.ConId ?? 0,
+            details.Contract?.SecType,
             details.Contract?.PrimaryExch,
             details.Contract?.Currency,
             stockType,

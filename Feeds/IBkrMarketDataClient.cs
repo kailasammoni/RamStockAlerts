@@ -82,7 +82,8 @@ public class IBkrMarketDataClient : BackgroundService
                 IsTickByTickActive,
                 _subscriptionManager.RecordActivity,
                 HandleIbkrError,
-                MarkDepthEligible);
+                MarkDepthEligible,
+                _subscriptionManager.RecordDepthSubscribeUpdateReceived);
             _readerSignal = new EReaderMonitorSignal();
             _eClientSocket = new EClientSocket(_wrapper, _readerSignal);
             
@@ -187,7 +188,25 @@ public class IBkrMarketDataClient : BackgroundService
             return null;
         }
 
-        var classification = _classificationService.TryGetCached(normalized);
+        ContractClassification? classification = null;
+        if (requestDepth)
+        {
+            var fetched = await _classificationService.GetClassificationsAsync(new[] { normalized }, cancellationToken);
+            fetched.TryGetValue(normalized, out classification);
+        }
+        else
+        {
+            classification = _classificationService.TryGetCached(normalized);
+        }
+
+        if (requestDepth && (classification is null || classification.ConId <= 0 || string.IsNullOrWhiteSpace(classification.PrimaryExchange)))
+        {
+            _logger.LogWarning(
+                "[IBKR] Depth skipped for {Symbol}: missing contract details (conId/primaryExch).",
+                normalized);
+            requestDepth = false;
+        }
+
         if (requestDepth && !_depthEligibilityCache.CanRequestDepth(classification, normalized, DateTimeOffset.UtcNow, out var eligibilityState))
         {
             _depthEligibilityCache.LogSkipOnce(classification, normalized, eligibilityState);
@@ -205,18 +224,18 @@ public class IBkrMarketDataClient : BackgroundService
                 return existing;
             }
 
-            var contract = new Contract
+            var baseContract = new Contract
             {
                 Symbol = normalized,
-                SecType = "STK",
+                SecType = classification?.SecType ?? "STK",
                 Exchange = "SMART",
-                Currency = "USD"
+                Currency = classification?.Currency ?? "USD"
             };
 
             if (enableTape)
             {
                 mktDataRequestId = Interlocked.Increment(ref _nextRequestId);
-                _eClientSocket.reqMktData(mktDataRequestId.Value, contract, string.Empty, false, false, null);
+                _eClientSocket.reqMktData(mktDataRequestId.Value, baseContract, string.Empty, false, false, null);
                 _tickerIdMap[mktDataRequestId.Value] = normalized;
             }
 
@@ -226,9 +245,10 @@ public class IBkrMarketDataClient : BackgroundService
                 depthAttempted = true;
                 var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
                 depthRequestId = Interlocked.Increment(ref _nextRequestId);
-                _eClientSocket.reqMarketDepth(depthRequestId.Value, contract, depthRows, false, null);
+                var depthExchange = "SMART";
+                var depthContract = BuildDepthContract(normalized, classification, depthExchange);
+                _eClientSocket.reqMarketDepth(depthRequestId.Value, depthContract, depthRows, false, null);
                 _tickerIdMap[depthRequestId.Value] = normalized;
-                _subscriptionManager.RecordDepthSubscribeSuccess(normalized, depthRequestId.Value);
             }
 
             if (mktDataRequestId is null && depthRequestId is null)
@@ -241,7 +261,7 @@ public class IBkrMarketDataClient : BackgroundService
                 _ => new OrderBookState { Symbol = normalized },
                 (_, existingBook) => existingBook);
 
-            var subscription = new MarketDataSubscription(normalized, mktDataRequestId, depthRequestId, null);
+            var subscription = new MarketDataSubscription(normalized, mktDataRequestId, depthRequestId, null, requestDepth ? "SMART" : null);
             _activeSubscriptions[normalized] = subscription;
 
             _logger.LogInformation(
@@ -552,18 +572,138 @@ public class IBkrMarketDataClient : BackgroundService
 
     private void HandleIbkrError(int requestId, int errorCode, string errorMessage)
     {
-        if (errorCode != 10092 && errorCode != 10190)
-        {
-            return;
-        }
+        _ = HandleIbkrErrorAsync(requestId, errorCode, errorMessage);
+    }
 
-        _ = _subscriptionManager.HandleIbkrErrorAsync(
+    private async Task HandleIbkrErrorAsync(int requestId, int errorCode, string errorMessage)
+    {
+        await _subscriptionManager.HandleIbkrErrorAsync(
             requestId,
             errorCode,
             errorMessage,
             DisableDepthAsync,
             DisableTickByTickAsync,
             CancellationToken.None);
+
+        if (errorCode != 10092)
+        {
+            return;
+        }
+
+        var retryPlan = await _subscriptionManager.TryGetDepthRetryPlanAsync(requestId, CancellationToken.None);
+        if (retryPlan is null)
+        {
+            if (_subscriptionManager.TryGetRequestMapping(requestId, out var symbol, out var kind)
+                && kind == MarketDataRequestKind.Depth)
+            {
+                _subscriptionManager.MarkDepthUnsupported(symbol, "DepthUnsupported", DateTimeOffset.UtcNow);
+                await DisableDepthAsync(symbol, CancellationToken.None);
+                _subscriptionManager.ClearDepthRequest(symbol, requestId);
+            }
+            return;
+        }
+
+        await RetryDepthAsync(requestId, retryPlan);
+    }
+
+    private async Task RetryDepthAsync(int failedRequestId, DepthRetryPlan plan)
+    {
+        if (_eClientSocket?.IsConnected() != true)
+        {
+            return;
+        }
+
+        if (!_activeSubscriptions.TryGetValue(plan.Symbol, out var existing))
+        {
+            return;
+        }
+
+        if (existing.DepthRequestId != failedRequestId)
+        {
+            _subscriptionManager.ClearDepthRequest(plan.Symbol, failedRequestId);
+            return;
+        }
+
+        try
+        {
+            _eClientSocket.cancelMktDepth(failedRequestId, false);
+        }
+        catch
+        {
+        }
+
+        _tickerIdMap.TryRemove(failedRequestId, out _);
+        _subscriptionManager.ClearDepthRequest(plan.Symbol, failedRequestId);
+
+        var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
+        var depthRequestId = Interlocked.Increment(ref _nextRequestId);
+        var exchange = plan.PrimaryExchange ?? "SMART";
+        var retryContract = BuildDepthContract(plan.Symbol, plan, exchange);
+
+        try
+        {
+            _subscriptionManager.RecordDepthSubscribeAttempt(plan.Symbol);
+            _eClientSocket.reqMarketDepth(depthRequestId, retryContract, depthRows, false, null);
+            _tickerIdMap[depthRequestId] = plan.Symbol;
+
+            _activeSubscriptions[plan.Symbol] = existing with { DepthRequestId = depthRequestId, DepthExchange = exchange };
+            _subscriptionManager.UpdateDepthRequest(plan.Symbol, depthRequestId, exchange);
+
+            _logger.LogInformation(
+                "[IBKR] Retrying depth subscription symbol={Symbol} exchange={Exchange} depthId={DepthId}",
+                plan.Symbol,
+                exchange,
+                depthRequestId);
+        }
+        catch (Exception ex)
+        {
+            _subscriptionManager.RecordDepthSubscribeFailure(null, ex.Message);
+            _subscriptionManager.MarkDepthUnsupported(plan.Symbol, "DepthUnsupported", DateTimeOffset.UtcNow);
+            await DisableDepthAsync(plan.Symbol, CancellationToken.None);
+            _logger.LogWarning(ex, "[IBKR] Depth retry failed symbol={Symbol}", plan.Symbol);
+        }
+    }
+
+    private static Contract BuildDepthContract(string symbol, ContractClassification? classification, string exchange)
+    {
+        var contract = new Contract
+        {
+            Symbol = symbol,
+            SecType = classification?.SecType ?? "STK",
+            Exchange = exchange,
+            Currency = classification?.Currency ?? "USD"
+        };
+
+        if (classification?.ConId is > 0)
+        {
+            contract.ConId = classification.ConId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(classification?.PrimaryExchange))
+        {
+            contract.PrimaryExch = classification.PrimaryExchange;
+        }
+
+        return contract;
+    }
+
+    private static Contract BuildDepthContract(string symbol, DepthRetryPlan plan, string exchange)
+    {
+        var contract = new Contract
+        {
+            Symbol = symbol,
+            SecType = string.IsNullOrWhiteSpace(plan.SecType) ? "STK" : plan.SecType,
+            Exchange = exchange,
+            Currency = plan.Currency ?? "USD",
+            ConId = plan.ConId
+        };
+
+        if (!string.IsNullOrWhiteSpace(plan.PrimaryExchange))
+        {
+            contract.PrimaryExch = plan.PrimaryExchange;
+        }
+
+        return contract;
     }
 
     private void MarkDepthEligible(string symbol)
@@ -659,6 +799,7 @@ internal class IBkrWrapperImpl : EWrapper
     private readonly Action<int, int, string>? _errorHandler;
     private readonly ConcurrentDictionary<string, byte> _depthEligibilityMarked = new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string>? _markDepthEligible;
+    private readonly Action<int>? _recordDepthUpdate;
     private readonly ConcurrentDictionary<int, LastTradeState> _lastTrades = new();
     
     public IBkrWrapperImpl(
@@ -671,7 +812,8 @@ internal class IBkrWrapperImpl : EWrapper
         Func<string, bool> isTickByTickActive,
         Action<string>? recordActivity,
         Action<int, int, string>? errorHandler,
-        Action<string>? markDepthEligible)
+        Action<string>? markDepthEligible,
+        Action<int>? recordDepthUpdate)
     {
         _logger = logger;
         _tickerIdMap = tickerIdMap;
@@ -683,6 +825,7 @@ internal class IBkrWrapperImpl : EWrapper
         _recordActivity = recordActivity;
         _errorHandler = errorHandler;
         _markDepthEligible = markDepthEligible;
+        _recordDepthUpdate = recordDepthUpdate;
     }
 
     private bool TryGetBook(int tickerId, out OrderBookState book)
@@ -713,6 +856,8 @@ internal class IBkrWrapperImpl : EWrapper
             {
                 return;
             }
+
+            _recordDepthUpdate?.Invoke(tickerId);
 
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var px = (decimal)price;
@@ -765,6 +910,8 @@ internal class IBkrWrapperImpl : EWrapper
             {
                 return;
             }
+
+            _recordDepthUpdate?.Invoke(tickerId);
 
             if (!Enum.IsDefined(typeof(DepthOperation), operation))
             {
@@ -895,11 +1042,9 @@ internal class IBkrWrapperImpl : EWrapper
             _logger.LogDebug("[IBKR Info {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
             return;
         }
-
-        if (errorCode == 10092 || errorCode == 10190)
+        if (id > 0)
         {
             _errorHandler?.Invoke(id, errorCode, errorMsg);
-            return;
         }
 
         _logger.LogError("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);

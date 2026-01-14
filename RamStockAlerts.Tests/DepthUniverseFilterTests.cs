@@ -25,8 +25,8 @@ public class DepthUniverseFilterTests
     {
         var (filter, cache, _) = BuildFilter();
         var now = DateTimeOffset.UtcNow;
-        await cache.PutAsync(new ContractClassification("AAA", 1, "NASDAQ", "USD", "COMMON", now), CancellationToken.None);
-        await cache.PutAsync(new ContractClassification("ETF1", 2, "ARCA", "USD", "ETF", now), CancellationToken.None);
+        await cache.PutAsync(new ContractClassification("AAA", 1, "STK", "NASDAQ", "USD", "COMMON", now), CancellationToken.None);
+        await cache.PutAsync(new ContractClassification("ETF1", 2, "STK", "ARCA", "USD", "ETF", now), CancellationToken.None);
 
         var filteredResult = await filter.FilterAsync(new[] { "AAA", "ETF1" }, CancellationToken.None);
         var filtered = filteredResult.Filtered;
@@ -42,7 +42,7 @@ public class DepthUniverseFilterTests
     {
         var (filter, cache, eligibility) = BuildFilter();
         var now = DateTimeOffset.UtcNow;
-        var classification = new ContractClassification("XYZ", 10, "NYSE", "USD", "COMMON", now);
+        var classification = new ContractClassification("XYZ", 10, "STK", "NYSE", "USD", "COMMON", now);
         await cache.PutAsync(classification, CancellationToken.None);
         eligibility.MarkIneligible(classification, "XYZ", "DepthUnsupported", now.AddMinutes(5));
 
@@ -63,16 +63,16 @@ public class DepthUniverseFilterTests
         var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var now = DateTimeOffset.UtcNow;
 
-        var classification = new ContractClassification("ABC", 123, "NASDAQ", "USD", "COMMON", now);
+        var classification = new ContractClassification("ABC", 123, "STK", "NASDAQ", "USD", "COMMON", now);
         eligibility.MarkIneligible(classification, "ABC", "DepthUnsupported", now.AddHours(1));
 
-        var lookup = new ContractClassification("ABC", 123, "NYSE", "USD", "COMMON", now);
+        var lookup = new ContractClassification("ABC", 123, "STK", "NYSE", "USD", "COMMON", now);
         var state = eligibility.Get(lookup, "ABC", now);
 
         Assert.Equal(DepthEligibilityStatus.Ineligible, state.Status);
         Assert.Equal(123, state.ConId);
 
-        var fallback = new ContractClassification("DEF", 0, "NYSE", "USD", "COMMON", now);
+        var fallback = new ContractClassification("DEF", 0, "STK", "NYSE", "USD", "COMMON", now);
         eligibility.MarkIneligible(fallback, "DEF", "DepthUnsupported", now.AddHours(1));
         var fallbackState = eligibility.Get(fallback, "DEF", now);
 
@@ -88,7 +88,7 @@ public class DepthUniverseFilterTests
         var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var now = DateTimeOffset.UtcNow;
 
-        var classification = new ContractClassification("ELIG", 0, null, "USD", "COMMON", now);
+        var classification = new ContractClassification("ELIG", 0, "STK", null, "USD", "COMMON", now);
         eligibility.MarkEligible(classification, "ELIG");
 
         var state = eligibility.Get(classification, "ELIG", now);
@@ -107,7 +107,7 @@ public class DepthUniverseFilterTests
         var filterDefault = new DepthUniverseFilter(service, configDefault, NullLogger<DepthUniverseFilter>.Instance);
 
         var now = DateTimeOffset.UtcNow;
-        await cache.PutAsync(new ContractClassification("UNK", 1, "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
+        await cache.PutAsync(new ContractClassification("UNK", 1, "STK", "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
 
         var resultDefault = await filterDefault.FilterAsync(new[] { "UNK" }, CancellationToken.None);
         Assert.Empty(resultDefault.Filtered);
@@ -120,7 +120,7 @@ public class DepthUniverseFilterTests
             .Build();
         var cache2 = new ContractClassificationCache(configOverride, NullLogger<ContractClassificationCache>.Instance);
         var service2 = new ContractClassificationService(configOverride, NullLogger<ContractClassificationService>.Instance, cache2);
-        await cache2.PutAsync(new ContractClassification("UNK", 1, "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
+        await cache2.PutAsync(new ContractClassification("UNK", 1, "STK", "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
         var filterOverride = new DepthUniverseFilter(service2, configOverride, NullLogger<DepthUniverseFilter>.Instance);
 
         var resultOverride = await filterOverride.FilterAsync(new[] { "UNK" }, CancellationToken.None);
@@ -132,7 +132,7 @@ public class DepthUniverseFilterTests
     {
         var (filter, cache, _) = BuildFilter();
         var now = DateTimeOffset.UtcNow;
-        await cache.PutAsync(new ContractClassification("TSLL", 2, "NASDAQ", "USD", "ETF", now), CancellationToken.None);
+        await cache.PutAsync(new ContractClassification("TSLL", 2, "STK", "NASDAQ", "USD", "ETF", now), CancellationToken.None);
 
         var result = await filter.FilterAsync(new[] { "TSLL" }, CancellationToken.None);
 
@@ -145,7 +145,7 @@ public class DepthUniverseFilterTests
     {
         var (filter, cache, _) = BuildFilter();
         var now = DateTimeOffset.UtcNow;
-        await cache.PutAsync(new ContractClassification("NOEX", 3, null, "USD", "COMMON", now), CancellationToken.None);
+        await cache.PutAsync(new ContractClassification("NOEX", 3, "STK", null, "USD", "COMMON", now), CancellationToken.None);
 
         var result = await filter.FilterAsync(new[] { "NOEX" }, CancellationToken.None);
 
@@ -169,7 +169,7 @@ public class DepthUniverseFilterTests
 
             var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
             var now = DateTimeOffset.UtcNow;
-            var classification = new ContractClassification("PERSIST", 456, "NYSE", "USD", "COMMON", now);
+            var classification = new ContractClassification("PERSIST", 456, "STK", "NYSE", "USD", "COMMON", now);
             eligibility.MarkIneligible(classification, "PERSIST", "DepthUnsupported", now.AddMinutes(5));
 
             var reloaded = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
@@ -193,7 +193,7 @@ public class DepthUniverseFilterTests
         var logger = new ListLogger<DepthEligibilityCache>();
         var eligibility = new DepthEligibilityCache(config, logger);
         var now = DateTimeOffset.UtcNow;
-        var classification = new ContractClassification("COOLDOWN", 123, "NYSE", "USD", "COMMON", now);
+        var classification = new ContractClassification("COOLDOWN", 123, "STK", "NYSE", "USD", "COMMON", now);
 
         eligibility.MarkIneligible(classification, "COOLDOWN", "DepthUnsupported", now.AddMinutes(10));
 

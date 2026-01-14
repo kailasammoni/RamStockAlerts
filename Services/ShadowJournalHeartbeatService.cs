@@ -2,6 +2,7 @@ using System.Threading;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
@@ -77,8 +78,11 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
                 DepthEnabledCount = stats.DepthEnabled,
                 TickByTickEnabledCount = stats.TickByTickEnabled,
                 DepthSubscribeAttempts = stats.DepthSubscribeAttempts,
-                DepthSubscribeSuccess = stats.DepthSubscribeSuccess,
-                DepthSubscribeFailures = stats.DepthSubscribeFailures,
+                DepthSubscribeSuccess = stats.DepthSubscribeUpdateReceived,
+                DepthSubscribeFailures = stats.DepthSubscribeErrors,
+                DepthSubscribeUpdateReceived = stats.DepthSubscribeUpdateReceived,
+                DepthSubscribeErrors = stats.DepthSubscribeErrors,
+                DepthSubscribeErrorsByCode = stats.DepthSubscribeErrorsByCode.ToDictionary(pair => pair.Key, pair => pair.Value),
                 DepthSubscribeLastErrorCode = stats.LastDepthErrorCode,
                 DepthSubscribeLastErrorMessage = stats.LastDepthErrorMessage,
                 LastDepthUpdateAgeMs = depthAge,

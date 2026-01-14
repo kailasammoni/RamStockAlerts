@@ -66,6 +66,9 @@ public sealed class ShadowTradeJournalEntry
     public long DepthSubscribeAttempts { get; set; }
     public long DepthSubscribeSuccess { get; set; }
     public long DepthSubscribeFailures { get; set; }
+    public long DepthSubscribeUpdateReceived { get; set; }
+    public long DepthSubscribeErrors { get; set; }
+    public Dictionary<int, int> DepthSubscribeErrorsByCode { get; set; } = new();
     public int? DepthSubscribeLastErrorCode { get; set; }
     public string? DepthSubscribeLastErrorMessage { get; set; }
     public bool? IsBookValidAny { get; set; }

@@ -22,8 +22,8 @@ public class MarketDataSubscriptionManagerTests
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        await classificationCache.PutAsync(new ContractClassification("XYZ", 1, "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-        eligibilityCache.MarkIneligible(new ContractClassification("XYZ", 1, "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), "XYZ", "DepthUnsupported", DateTimeOffset.UtcNow.AddMinutes(5));
+        await classificationCache.PutAsync(new ContractClassification("XYZ", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
+        eligibilityCache.MarkIneligible(new ContractClassification("XYZ", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), "XYZ", "DepthUnsupported", DateTimeOffset.UtcNow.AddMinutes(5));
 
         var manager = new MarketDataSubscriptionManager(
             config,
@@ -35,7 +35,7 @@ public class MarketDataSubscriptionManagerTests
         Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
         {
             requestedDepth.Add(requestDepth);
-            return Task.FromResult<MarketDataSubscription?>(new MarketDataSubscription(symbol, 1, requestDepth ? 2 : null, null));
+            return Task.FromResult<MarketDataSubscription?>(new MarketDataSubscription(symbol, 1, requestDepth ? 2 : null, null, requestDepth ? "SMART" : null));
         }
 
         Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);

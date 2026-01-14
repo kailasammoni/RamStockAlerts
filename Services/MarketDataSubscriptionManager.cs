@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading;
 using RamStockAlerts.Services.Universe;
 
@@ -17,17 +18,27 @@ public sealed record MarketDataSubscription(
     string Symbol,
     int? MktDataRequestId,
     int? DepthRequestId,
-    int? TickByTickRequestId);
+    int? TickByTickRequestId,
+    string? DepthExchange);
 
 public sealed record SubscriptionStats(
     int TotalSubscriptions,
     int DepthEnabled,
     int TickByTickEnabled,
     long DepthSubscribeAttempts,
-    long DepthSubscribeSuccess,
-    long DepthSubscribeFailures,
+    long DepthSubscribeUpdateReceived,
+    long DepthSubscribeErrors,
+    IReadOnlyDictionary<int, int> DepthSubscribeErrorsByCode,
     int? LastDepthErrorCode,
     string? LastDepthErrorMessage);
+
+public sealed record DepthRetryPlan(
+    string Symbol,
+    int ConId,
+    string SecType,
+    string? PrimaryExchange,
+    string? Currency,
+    string PreviousExchange);
 
 public sealed class MarketDataSubscriptionManager
 {
@@ -45,8 +56,9 @@ public sealed class MarketDataSubscriptionManager
     private readonly ConcurrentDictionary<string, DateTimeOffset> _tickByTickDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _depthDiagnosticsLock = new();
     private long _depthSubscribeAttempts;
-    private long _depthSubscribeSuccess;
-    private long _depthSubscribeFailures;
+    private long _depthSubscribeUpdateReceived;
+    private long _depthSubscribeErrors;
+    private readonly ConcurrentDictionary<int, int> _depthSubscribeErrorsByCode = new();
     private int? _lastDepthErrorCode;
     private string? _lastDepthErrorMessage;
 
@@ -88,8 +100,8 @@ public sealed class MarketDataSubscriptionManager
         }
 
         var attempts = Interlocked.Read(ref _depthSubscribeAttempts);
-        var success = Interlocked.Read(ref _depthSubscribeSuccess);
-        var failures = Interlocked.Read(ref _depthSubscribeFailures);
+        var updateReceived = Interlocked.Read(ref _depthSubscribeUpdateReceived);
+        var errors = Interlocked.Read(ref _depthSubscribeErrors);
         int? lastCode;
         string? lastMessage;
         lock (_depthDiagnosticsLock)
@@ -98,7 +110,8 @@ public sealed class MarketDataSubscriptionManager
             lastMessage = _lastDepthErrorMessage;
         }
 
-        return new SubscriptionStats(_active.Count, depth, tick, attempts, success, failures, lastCode, lastMessage);
+        var errorsByCode = _depthSubscribeErrorsByCode.ToDictionary(pair => pair.Key, pair => pair.Value);
+        return new SubscriptionStats(_active.Count, depth, tick, attempts, updateReceived, errors, errorsByCode, lastCode, lastMessage);
     }
 
     public IReadOnlyList<string> GetTickByTickSymbols()
@@ -274,6 +287,7 @@ public sealed class MarketDataSubscriptionManager
                     subscription.TickByTickRequestId,
                     now,
                     now);
+                state.DepthExchange = subscription.DepthExchange;
                 _active[subscription.Symbol] = state;
                 TrackRequests(state);
 
@@ -310,11 +324,6 @@ public sealed class MarketDataSubscriptionManager
         Func<string, CancellationToken, Task<bool>> disableTickByTickAsync,
         CancellationToken cancellationToken)
     {
-        if (errorCode != 10092 && errorCode != 10190)
-        {
-            return;
-        }
-
         if (!_requestMap.TryGetValue(requestId, out var mapping))
         {
             return;
@@ -327,28 +336,13 @@ public sealed class MarketDataSubscriptionManager
         }
 
         var now = DateTimeOffset.UtcNow;
-        if (errorCode == 10092 && mapping.Kind == MarketDataRequestKind.Depth)
+        if (mapping.Kind == MarketDataRequestKind.Depth)
         {
             RecordDepthSubscribeFailure(errorCode, errorMessage);
-            if (IsDepthDisabled(symbol, now))
-            {
-                return;
-            }
+        }
 
-            _depthDisabledUntil[symbol] = now.Add(DepthCooldown);
-            var classification = _classificationService.TryGetCached(symbol);
-            _depthEligibilityCache.MarkIneligible(classification, symbol, "DepthUnsupported", now.Add(DepthCooldown));
-
-            if (state.DepthRequestId.HasValue)
-            {
-                await disableDepthAsync(symbol, cancellationToken);
-                UntrackRequest(state.DepthRequestId.Value);
-                state.DepthRequestId = null;
-            }
-
-            _logger.LogInformation(
-                "DisableDepth symbol={Symbol} reason=DepthUnsupported",
-                symbol);
+        if (errorCode == 10092 && mapping.Kind == MarketDataRequestKind.Depth)
+        {
             return;
         }
 
@@ -784,6 +778,9 @@ public sealed class MarketDataSubscriptionManager
         public int? MktDataRequestId { get; set; }
         public int? DepthRequestId { get; set; }
         public int? TickByTickRequestId { get; set; }
+        public bool DepthUpdateReceived { get; set; }
+        public bool DepthRetryAttempted { get; set; }
+        public string? DepthExchange { get; set; }
         public DateTimeOffset SubscribedAtUtc { get; }
         public DateTimeOffset LastSeenUtc { get; set; }
         public DateTimeOffset LastActivityUtc { get; set; }
@@ -797,15 +794,35 @@ public sealed class MarketDataSubscriptionManager
         _logger.LogInformation("[MarketData] Depth subscribe attempt symbol={Symbol}", symbol);
     }
 
-    public void RecordDepthSubscribeSuccess(string symbol, int requestId)
+    public void RecordDepthSubscribeUpdateReceived(int requestId)
     {
-        Interlocked.Increment(ref _depthSubscribeSuccess);
-        _logger.LogInformation("[MarketData] Depth subscribe success symbol={Symbol} depthId={DepthId}", symbol, requestId);
+        if (!_requestMap.TryGetValue(requestId, out var mapping) || mapping.Kind != MarketDataRequestKind.Depth)
+        {
+            return;
+        }
+
+        if (!_active.TryGetValue(mapping.Symbol, out var state))
+        {
+            return;
+        }
+
+        if (state.DepthUpdateReceived)
+        {
+            return;
+        }
+
+        state.DepthUpdateReceived = true;
+        Interlocked.Increment(ref _depthSubscribeUpdateReceived);
+        _logger.LogInformation("[MarketData] Depth update received symbol={Symbol} depthId={DepthId}", mapping.Symbol, requestId);
     }
 
     public void RecordDepthSubscribeFailure(int? errorCode, string? errorMessage)
     {
-        Interlocked.Increment(ref _depthSubscribeFailures);
+        Interlocked.Increment(ref _depthSubscribeErrors);
+        if (errorCode.HasValue)
+        {
+            _depthSubscribeErrorsByCode.AddOrUpdate(errorCode.Value, 1, (_, count) => count + 1);
+        }
         lock (_depthDiagnosticsLock)
         {
             _lastDepthErrorCode = errorCode;
@@ -820,5 +837,107 @@ public sealed class MarketDataSubscriptionManager
         {
             _logger.LogWarning("[MarketData] Depth subscribe failure msg={Msg}", errorMessage);
         }
+    }
+
+    public bool TryGetRequestMapping(int requestId, out string symbol, out MarketDataRequestKind kind)
+    {
+        if (_requestMap.TryGetValue(requestId, out var mapping))
+        {
+            symbol = mapping.Symbol;
+            kind = mapping.Kind;
+            return true;
+        }
+
+        symbol = string.Empty;
+        kind = MarketDataRequestKind.MktData;
+        return false;
+    }
+
+    public void RecordDepthRequestMetadata(string symbol, int requestId, string exchange)
+    {
+        if (!_active.TryGetValue(symbol, out var state))
+        {
+            return;
+        }
+
+        state.DepthRequestId = requestId;
+        state.DepthUpdateReceived = false;
+        state.DepthExchange = exchange;
+        TrackRequest(requestId, symbol, MarketDataRequestKind.Depth);
+    }
+
+    public void ClearDepthRequest(string symbol, int requestId)
+    {
+        if (!_active.TryGetValue(symbol, out var state))
+        {
+            return;
+        }
+
+        if (state.DepthRequestId == requestId)
+        {
+            state.DepthRequestId = null;
+            state.DepthUpdateReceived = false;
+        }
+
+        UntrackRequest(requestId);
+    }
+
+    public void UpdateDepthRequest(string symbol, int requestId, string exchange)
+    {
+        if (!_active.TryGetValue(symbol, out var state))
+        {
+            return;
+        }
+
+        state.DepthRequestId = requestId;
+        state.DepthUpdateReceived = false;
+        state.DepthExchange = exchange;
+        TrackRequest(requestId, symbol, MarketDataRequestKind.Depth);
+    }
+
+    public async Task<DepthRetryPlan?> TryGetDepthRetryPlanAsync(int requestId, CancellationToken cancellationToken)
+    {
+        if (!_requestMap.TryGetValue(requestId, out var mapping) || mapping.Kind != MarketDataRequestKind.Depth)
+        {
+            return null;
+        }
+
+        if (!_active.TryGetValue(mapping.Symbol, out var state))
+        {
+            return null;
+        }
+
+        if (state.DepthRetryAttempted)
+        {
+            return null;
+        }
+
+        if (!string.Equals(state.DepthExchange, "SMART", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var classifications = await _classificationService.GetClassificationsAsync(new[] { mapping.Symbol }, cancellationToken);
+        classifications.TryGetValue(mapping.Symbol, out var classification);
+        if (classification is null || classification.ConId <= 0 || string.IsNullOrWhiteSpace(classification.PrimaryExchange))
+        {
+            return null;
+        }
+
+        state.DepthRetryAttempted = true;
+        return new DepthRetryPlan(
+            mapping.Symbol,
+            classification.ConId,
+            classification.SecType ?? "STK",
+            classification.PrimaryExchange,
+            classification.Currency,
+            state.DepthExchange ?? "SMART");
+    }
+
+    public void MarkDepthUnsupported(string symbol, string reason, DateTimeOffset now)
+    {
+        _depthDisabledUntil[symbol] = now.Add(DepthCooldown);
+        var classification = _classificationService.TryGetCached(symbol);
+        _depthEligibilityCache.MarkIneligible(classification, symbol, reason, now.Add(DepthCooldown));
     }
 }

@@ -13,7 +13,7 @@ public class ContractClassificationServiceTests
         var cache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
         var service = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, cache);
 
-        var classification = new ContractClassification("ABC", 1, "NASDAQ", "USD", "", DateTimeOffset.UtcNow);
+        var classification = new ContractClassification("ABC", 1, "STK", "NASDAQ", "USD", "", DateTimeOffset.UtcNow);
         var mapped = service.Classify(classification);
 
         Assert.Equal(ContractSecurityClassification.Unknown, mapped);
