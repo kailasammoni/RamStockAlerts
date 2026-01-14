@@ -11,10 +11,28 @@ public sealed record ContractClassification(
     string Symbol,
     int ConId,
     string? SecType,
+    string? Exchange,
     string? PrimaryExchange,
     string? Currency,
+    string? LocalSymbol,
+    string? TradingClass,
+    string? LastTradeDateOrContractMonth,
+    string? Multiplier,
     string StockType,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public ContractClassification(
+        string symbol,
+        int conId,
+        string? secType,
+        string? primaryExchange,
+        string? currency,
+        string stockType,
+        DateTimeOffset updatedAt)
+        : this(symbol, conId, secType, null, primaryExchange, currency, null, null, null, null, stockType, updatedAt)
+    {
+    }
+}
 
 public enum ContractSecurityClassification
 {
@@ -408,8 +426,13 @@ public sealed class ContractClassificationService
             symbol.Trim().ToUpperInvariant(),
             details.Contract?.ConId ?? 0,
             details.Contract?.SecType,
+            details.Contract?.Exchange,
             details.Contract?.PrimaryExch,
             details.Contract?.Currency,
+            details.Contract?.LocalSymbol,
+            details.Contract?.TradingClass,
+            details.Contract?.LastTradeDateOrContractMonth,
+            details.Contract?.Multiplier,
             stockType,
             now);
     }

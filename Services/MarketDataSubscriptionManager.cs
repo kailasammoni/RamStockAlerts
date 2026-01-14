@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using RamStockAlerts.Services.Universe;
@@ -68,6 +69,12 @@ public sealed class MarketDataSubscriptionManager
     private int _lastTickByTickMaxSymbols;
     private ShadowTradingHelpers.TapeGateConfig? _lastTapeGateConfig;
     private readonly ConcurrentDictionary<string, byte> _depthIneligibleLogged = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _lastDepthIneligibleSymbols = new();
+    private const int LastDepthIneligibleSymbolsLimit = 5;
+    private readonly ConcurrentDictionary<int, DateTimeOffset> _pendingTickByTickCancels = new();
+    private static readonly TimeSpan PendingCancelTtl = TimeSpan.FromMinutes(2);
+    private bool _skipTickByTickEnableThisCycle;
+    private bool _tickByTickCapLogged;
 
     public MarketDataSubscriptionManager(
         IConfiguration configuration,
@@ -232,12 +239,14 @@ public sealed class MarketDataSubscriptionManager
         var minHoldMinutes = _configuration.GetValue("MarketData:MinHoldMinutes", 5);
         var minHold = TimeSpan.FromMinutes(Math.Max(0, minHoldMinutes));
         var tickByTickMaxSymbols = Math.Max(0, _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10));
+        var minDepthEligibleSymbols = GetMinDepthEligibleSymbols(tickByTickMaxSymbols);
 
         var now = DateTimeOffset.UtcNow;
 
         await _sync.WaitAsync(cancellationToken);
         try
         {
+            _skipTickByTickEnableThisCycle = false;
             _lastUniverse = normalizedUniverse;
             _lastMaxLines = maxLines;
             _lastTickByTickMaxSymbols = tickByTickMaxSymbols;
@@ -289,6 +298,14 @@ public sealed class MarketDataSubscriptionManager
                 {
                     _depthEligibilityCache.LogSkipOnce(classification, symbol, eligibilityState);
                     requestDepth = false;
+                }
+
+                if (!requestDepth && enableDepth && ShouldPreferDepth(minDepthEligibleSymbols))
+                {
+                    if (_depthEligibilityCache.CanRequestDepth(classification, symbol, now, out var preferredEligibilityState))
+                    {
+                        requestDepth = true;
+                    }
                 }
 
                 var baseLines = (enableTape ? 1 : 0) + (requestDepth ? 1 : 0);
@@ -369,6 +386,7 @@ public sealed class MarketDataSubscriptionManager
                 cancellationToken);
             LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
             LogTapeGateConfigIfChanged();
+            LogDepthEligibilitySummary(normalizedUniverse, classifications, now);
         }
         finally
         {
@@ -385,6 +403,11 @@ public sealed class MarketDataSubscriptionManager
         Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
         CancellationToken cancellationToken)
     {
+        if (errorCode == 300 && _pendingTickByTickCancels.ContainsKey(requestId))
+        {
+            return;
+        }
+
         if (!_requestMap.TryGetValue(requestId, out var mapping))
         {
             return;
@@ -418,6 +441,13 @@ public sealed class MarketDataSubscriptionManager
 
         if (errorCode == 10190 && mapping.Kind == MarketDataRequestKind.TickByTick)
         {
+            if (!_tickByTickCapLogged)
+            {
+                _tickByTickCapLogged = true;
+                _logger.LogWarning("TickByTickCapHit: disabling further tick-by-tick enables until next refresh");
+            }
+
+            _skipTickByTickEnableThisCycle = true;
             if (IsTickByTickDisabled(symbol, now))
             {
                 return;
@@ -428,7 +458,7 @@ public sealed class MarketDataSubscriptionManager
             if (state.TickByTickRequestId.HasValue)
             {
                 await disableTickByTickAsync(symbol, cancellationToken);
-                UntrackRequest(state.TickByTickRequestId.Value);
+                MarkPendingCancel(state.TickByTickRequestId.Value, now);
                 state.TickByTickRequestId = null;
             }
 
@@ -485,6 +515,8 @@ public sealed class MarketDataSubscriptionManager
                     errorMessage);
             }
 
+            EnqueueDepthIneligibleSymbol(symbol);
+
             MarkDepthUnsupported(symbol, $"DepthUnsupported:{errorCode}", now);
 
             if (state.DepthRequestId.HasValue && await disableDepthAsync(symbol, cancellationToken))
@@ -495,7 +527,7 @@ public sealed class MarketDataSubscriptionManager
 
             if (state.TickByTickRequestId.HasValue && await disableTickByTickAsync(symbol, cancellationToken))
             {
-                UntrackRequest(state.TickByTickRequestId.Value);
+                MarkPendingCancel(state.TickByTickRequestId.Value, now);
                 state.TickByTickRequestId = null;
             }
 
@@ -520,6 +552,26 @@ public sealed class MarketDataSubscriptionManager
         }
     }
 
+    private void EnqueueDepthIneligibleSymbol(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return;
+        }
+
+        var normalized = symbol.Trim().ToUpperInvariant();
+        if (_lastDepthIneligibleSymbols.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _lastDepthIneligibleSymbols.Enqueue(normalized);
+        while (_lastDepthIneligibleSymbols.Count > LastDepthIneligibleSymbolsLimit)
+        {
+            _lastDepthIneligibleSymbols.Dequeue();
+        }
+    }
+
     private async Task<int> ApplyTickByTickAsync(
         List<string> focusSet,
         int tickByTickMaxSymbols,
@@ -529,6 +581,17 @@ public sealed class MarketDataSubscriptionManager
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        CleanupPendingCancels(now);
+        if (tickByTickMaxSymbols <= 0)
+        {
+            return 0;
+        }
+
+        if (focusSet.Count > tickByTickMaxSymbols)
+        {
+            focusSet = focusSet.Take(tickByTickMaxSymbols).ToList();
+        }
+
         var focus = new HashSet<string>(focusSet, StringComparer.OrdinalIgnoreCase);
 
         foreach (var state in _active.Values)
@@ -542,13 +605,18 @@ public sealed class MarketDataSubscriptionManager
             {
                 if (await disableTickByTickAsync(state.Symbol, cancellationToken))
                 {
-                    UntrackRequest(state.TickByTickRequestId.Value);
+                    MarkPendingCancel(state.TickByTickRequestId.Value, now);
                     state.TickByTickRequestId = null;
                 }
             }
         }
 
         var activeTickByTick = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
+        if (_skipTickByTickEnableThisCycle)
+        {
+            return activeTickByTick;
+        }
+
         foreach (var symbol in focusSet)
         {
             if (activeTickByTick >= tickByTickMaxSymbols)
@@ -584,6 +652,68 @@ public sealed class MarketDataSubscriptionManager
         }
 
         return activeTickByTick;
+    }
+
+    private void MarkPendingCancel(int requestId, DateTimeOffset now)
+    {
+        _pendingTickByTickCancels[requestId] = now;
+    }
+
+    private void CleanupPendingCancels(DateTimeOffset now)
+    {
+        foreach (var entry in _pendingTickByTickCancels)
+        {
+            if (now - entry.Value <= PendingCancelTtl)
+            {
+                continue;
+            }
+
+            if (_pendingTickByTickCancels.TryRemove(entry.Key, out _))
+            {
+                UntrackRequest(entry.Key);
+            }
+        }
+    }
+
+    private int GetMinDepthEligibleSymbols(int tickByTickMaxSymbols)
+    {
+        var defaultMin = Math.Min(3, tickByTickMaxSymbols);
+        return Math.Max(0, _configuration.GetValue("MarketData:MinDepthEligibleSymbols", defaultMin));
+    }
+
+    private bool ShouldPreferDepth(int minDepthEligibleSymbols)
+    {
+        if (minDepthEligibleSymbols <= 0)
+        {
+            return false;
+        }
+
+        return GetDepthEnabledSymbols().Count < minDepthEligibleSymbols;
+    }
+
+    private void LogDepthEligibilitySummary(
+        IReadOnlyList<string> universe,
+        IReadOnlyDictionary<string, ContractClassification> classifications,
+        DateTimeOffset now)
+    {
+        var depthEnabled = GetDepthEnabledSymbols().Count;
+        var depthUnsupported = 0;
+        foreach (var symbol in universe)
+        {
+            classifications.TryGetValue(symbol, out var classification);
+            var state = _depthEligibilityCache.Get(classification, symbol, now);
+            if (state.Status == DepthEligibilityStatus.Ineligible)
+            {
+                depthUnsupported++;
+            }
+        }
+
+        _logger.LogInformation(
+            "DepthEligibilitySummary: universe={UniverseCount} depthEnabled={DepthEnabled} depthUnsupported={DepthUnsupported} last10092Symbols=[{LastSymbols}]",
+            universe.Count,
+            depthEnabled,
+            depthUnsupported,
+            string.Join(",", _lastDepthIneligibleSymbols));
     }
 
     private void LogTapeDepthPairingIfChanged(int tickByTickMaxSymbols)

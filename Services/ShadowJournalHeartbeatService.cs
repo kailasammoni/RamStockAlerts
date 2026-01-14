@@ -20,6 +20,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
     private readonly OrderFlowMetrics _metrics;
     private readonly ILogger<ShadowJournalHeartbeatService> _logger;
     private readonly bool _enabled;
+    private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
 
     public ShadowJournalHeartbeatService(
         IConfiguration configuration,
@@ -34,6 +35,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         _universeService = universeService;
         _metrics = metrics;
         _logger = logger;
+        _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
 
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
@@ -144,7 +146,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
                 minTapeAge = minTapeAge.HasValue ? Math.Min(minTapeAge.Value, tapeAge) : tapeAge;
             }
 
-            if (ShadowTradingHelpers.HasRecentTape(book, nowMs))
+            if (ShadowTradingHelpers.HasRecentTape(book, nowMs, _tapeGateConfig))
             {
                 tapeRecentAny = true;
             }

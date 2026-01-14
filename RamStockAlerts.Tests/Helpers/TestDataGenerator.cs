@@ -1,6 +1,7 @@
+using System;
 using RamStockAlerts.Models;
 
-namespace RamStockAlerts.Engine;
+namespace RamStockAlerts.Tests.Helpers;
 
 /// <summary>
 /// Generates test data for development and testing.

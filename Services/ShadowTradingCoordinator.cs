@@ -24,7 +24,7 @@ public sealed class ShadowTradingCoordinator
     private readonly string _tradingMode;
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly ScarcityController _scarcityController;
-    private readonly RejectionLogger _rejectionLogger = new();
+    private readonly RejectionLogger _rejectionLogger;
     private readonly ConcurrentDictionary<string, long> _lastProcessedSnapshotMs = new();
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
@@ -49,7 +49,9 @@ public sealed class ShadowTradingCoordinator
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
         _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
-        _tapeGateConfig = ReadTapeGateConfig(configuration);
+        _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
+        var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
+        _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
 
         if (_enabled)
         {
@@ -786,18 +788,6 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
-    private static ShadowTradingHelpers.TapeGateConfig ReadTapeGateConfig(IConfiguration configuration)
-    {
-        var defaults = ShadowTradingHelpers.TapeGateConfig.Default;
-        var warmupMinTrades = configuration.GetValue("MarketData:TapeWarmupMinTrades", defaults.WarmupMinTrades);
-        var warmupWindowMs = configuration.GetValue("MarketData:TapeWarmupWindowMs", defaults.WarmupWindowMs);
-        var staleWindowMs = configuration.GetValue("MarketData:TapeStaleWindowMs", defaults.StaleWindowMs);
-
-        return new ShadowTradingHelpers.TapeGateConfig(
-            Math.Max(0, warmupMinTrades),
-            Math.Max(0, warmupWindowMs),
-            Math.Max(0, staleWindowMs));
-    }
 
     private static List<string> BuildDataQualityFlags(
         OrderBookState book,
@@ -819,6 +809,13 @@ public sealed class ShadowTradingCoordinator
                 break;
             case ShadowTradingHelpers.TapeStatusKind.NotWarmedUp:
                 flags.Add("TapeNotWarmedUp");
+                flags.Add($"TapeNotWarmedUp:tradesInWindow={tapeStatus.TradesInWarmupWindow}");
+                flags.Add($"TapeNotWarmedUp:warmupMinTrades={tapeStatus.WarmupMinTrades}");
+                flags.Add($"TapeNotWarmedUp:warmupWindowMs={tapeStatus.WarmupWindowMs}");
+                if (tapeStatus.AgeMs.HasValue)
+                {
+                    flags.Add($"TapeLastAgeMs={tapeStatus.AgeMs.Value}");
+                }
                 break;
             case ShadowTradingHelpers.TapeStatusKind.Stale:
                 flags.Add("TapeStale");
@@ -950,7 +947,11 @@ public sealed class ShadowTradingCoordinator
         StrategyDecisionResult? decisionResult = null,
         ShadowTradingHelpers.TapeStatus? tapeStatus = null)
     {
-        if (!_rejectionLogger.ShouldLog(symbol, _subscriptionManager.IsFocusSymbol(symbol)))
+        if (!_rejectionLogger.ShouldLog(
+                symbol,
+                _subscriptionManager.IsFocusSymbol(symbol),
+                reason,
+                tapeStatus?.Kind))
         {
             return;
         }
@@ -1082,28 +1083,63 @@ public sealed class ShadowTradingCoordinator
     {
         private static readonly TimeSpan Window = TimeSpan.FromMinutes(1);
         private readonly Queue<DateTimeOffset> _timestamps = new();
+        private readonly ConcurrentDictionary<string, GateRejectState> _lastGateReject = new(StringComparer.OrdinalIgnoreCase);
+        private TimeSpan _minInterval = TimeSpan.Zero;
         private const int RateLimit = 5;
 
-        public bool ShouldLog(string symbol, bool isFocus)
+        public RejectionLogger()
         {
-            if (isFocus)
-            {
-                return true;
-            }
+        }
 
+        public RejectionLogger(TimeSpan minInterval)
+        {
+            _minInterval = minInterval;
+        }
+
+        public bool ShouldLog(
+            string symbol,
+            bool isFocus,
+            string reason,
+            ShadowTradingHelpers.TapeStatusKind? tapeStatusKind)
+        {
             var now = DateTimeOffset.UtcNow;
-            while (_timestamps.Count > 0 && now - _timestamps.Peek() >= Window)
+            if (_lastGateReject.TryGetValue(symbol, out var state))
             {
-                _timestamps.Dequeue();
+                if (state.IsSame(reason, tapeStatusKind) && now - state.LastLoggedAt < _minInterval)
+                {
+                    return false;
+                }
             }
 
-            if (_timestamps.Count >= RateLimit)
+            if (!isFocus)
             {
-                return false;
+                while (_timestamps.Count > 0 && now - _timestamps.Peek() >= Window)
+                {
+                    _timestamps.Dequeue();
+                }
+
+                if (_timestamps.Count >= RateLimit)
+                {
+                    return false;
+                }
+
+                _timestamps.Enqueue(now);
             }
 
-            _timestamps.Enqueue(now);
+            _lastGateReject[symbol] = new GateRejectState(now, reason, tapeStatusKind);
             return true;
+        }
+
+        private readonly record struct GateRejectState(
+            DateTimeOffset LastLoggedAt,
+            string Reason,
+            ShadowTradingHelpers.TapeStatusKind? TapeStatusKind)
+        {
+            public bool IsSame(string reason, ShadowTradingHelpers.TapeStatusKind? tapeStatusKind)
+            {
+                return string.Equals(Reason, reason, StringComparison.OrdinalIgnoreCase)
+                       && TapeStatusKind == tapeStatusKind;
+            }
         }
     }
 

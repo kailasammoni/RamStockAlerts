@@ -598,8 +598,13 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 details.Contract?.Symbol?.Trim().ToUpperInvariant() ?? string.Empty,
                 details.Contract?.ConId ?? 0,
                 details.Contract?.SecType,
+                details.Contract?.Exchange,
                 details.Contract?.PrimaryExch,
                 details.Contract?.Currency,
+                details.Contract?.LocalSymbol,
+                details.Contract?.TradingClass,
+                details.Contract?.LastTradeDateOrContractMonth,
+                details.Contract?.Multiplier,
                 ResolveStockType(details),
                 now);
         }

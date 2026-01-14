@@ -16,12 +16,13 @@ public class ShadowTradingHelpersTapeStatusTests
         var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         Assert.Equal(ShadowTradingHelpers.TapeStatusKind.NotWarmedUp, status.Kind);
+        Assert.Null(status.AgeMs);
     }
 
     [Fact]
     public void TapeEnabled_OldTradeBeyondStale_IsStale()
     {
-        var config = new ShadowTradingHelpers.TapeGateConfig(warmupMinTrades: 1, warmupWindowMs: 60000, staleWindowMs: 30000);
+        var config = new ShadowTradingHelpers.TapeGateConfig(WarmupMinTrades: 1, WarmupWindowMs: 60000, StaleWindowMs: 30000);
         var nowMs = 100_000L;
         var book = new OrderBookState("TEST");
         book.RecordTrade(nowMs - 40_000, 100.10, 1m);

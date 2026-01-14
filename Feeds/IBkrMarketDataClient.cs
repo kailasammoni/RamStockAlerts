@@ -8,6 +8,7 @@ using RamStockAlerts.Services;
 using RamStockAlerts.Universe;
 using System.Collections.Concurrent;
 using RamStockAlerts.Services.Universe;
+using System.Threading;
 
 namespace RamStockAlerts.Feeds;
 
@@ -245,8 +246,8 @@ public class IBkrMarketDataClient : BackgroundService
                 depthAttempted = true;
                 var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
                 depthRequestId = Interlocked.Increment(ref _nextRequestId);
-                var depthExchange = "SMART";
-                var depthContract = BuildDepthContract(normalized, classification, depthExchange);
+                var depthContract = BuildDepthContractForDepth(normalized, classification);
+                LogDepthRequest(depthContract, classification, depthRows, isSmart: false);
                 _eClientSocket.reqMarketDepth(depthRequestId.Value, depthContract, depthRows, false, null);
                 _tickerIdMap[depthRequestId.Value] = normalized;
             }
@@ -261,7 +262,12 @@ public class IBkrMarketDataClient : BackgroundService
                 _ => new OrderBookState { Symbol = normalized },
                 (_, existingBook) => existingBook);
 
-            var subscription = new MarketDataSubscription(normalized, mktDataRequestId, depthRequestId, null, requestDepth ? "SMART" : null);
+            var subscription = new MarketDataSubscription(
+                normalized,
+                mktDataRequestId,
+                depthRequestId,
+                null,
+                requestDepth ? ResolveDepthExchange(classification) : null);
             _activeSubscriptions[normalized] = subscription;
 
             _logger.LogInformation(
@@ -577,6 +583,11 @@ public class IBkrMarketDataClient : BackgroundService
 
     private async Task HandleIbkrErrorAsync(int requestId, int errorCode, string errorMessage)
     {
+        if (errorCode == 10092 && _tickerIdMap.TryGetValue(requestId, out var symbol))
+        {
+            LogDepthIneligible(symbol, errorCode, errorMessage);
+        }
+
         await _subscriptionManager.HandleIbkrErrorAsync(
             requestId,
             errorCode,
@@ -625,6 +636,7 @@ public class IBkrMarketDataClient : BackgroundService
         try
         {
             _subscriptionManager.RecordDepthSubscribeAttempt(plan.Symbol);
+            LogDepthRequest(retryContract, plan, depthRows, isSmart: false);
             _eClientSocket.reqMarketDepth(depthRequestId, retryContract, depthRows, false, null);
             _tickerIdMap[depthRequestId] = plan.Symbol;
 
@@ -653,7 +665,11 @@ public class IBkrMarketDataClient : BackgroundService
             Symbol = symbol,
             SecType = classification?.SecType ?? "STK",
             Exchange = exchange,
-            Currency = classification?.Currency ?? "USD"
+            Currency = classification?.Currency ?? "USD",
+            LocalSymbol = classification?.LocalSymbol,
+            TradingClass = classification?.TradingClass,
+            LastTradeDateOrContractMonth = classification?.LastTradeDateOrContractMonth,
+            Multiplier = classification?.Multiplier
         };
 
         if (classification?.ConId is > 0)
@@ -693,6 +709,126 @@ public class IBkrMarketDataClient : BackgroundService
         var classification = _classificationService.TryGetCached(symbol);
         _depthEligibilityCache.MarkEligible(classification, symbol);
     }
+
+    internal static string ResolveDepthExchange(ContractClassification? classification)
+    {
+        if (!string.IsNullOrWhiteSpace(classification?.PrimaryExchange))
+        {
+            return classification.PrimaryExchange!;
+        }
+
+        if (!string.IsNullOrWhiteSpace(classification?.Exchange))
+        {
+            return classification.Exchange!;
+        }
+
+        return "SMART";
+    }
+
+    internal static Contract BuildDepthContractForDepth(string symbol, ContractClassification? classification)
+    {
+        var exchange = ResolveDepthExchange(classification);
+        return BuildDepthContract(symbol, classification, exchange);
+    }
+
+
+    internal static DepthRequestLogFields BuildDepthRequestLogFields(
+        Contract contract,
+        string? primaryExchange,
+        int depthRows,
+        bool isSmart)
+    {
+        return new DepthRequestLogFields(
+            contract.Symbol,
+            contract.ConId,
+            contract.SecType,
+            contract.Exchange,
+            primaryExchange ?? contract.PrimaryExch,
+            contract.Currency,
+            contract.LocalSymbol,
+            contract.TradingClass,
+            contract.LastTradeDateOrContractMonth,
+            contract.Multiplier,
+            depthRows,
+            isSmart);
+    }
+
+    private void LogDepthRequest(Contract contract, ContractClassification? classification, int depthRows, bool isSmart)
+    {
+        var fields = BuildDepthRequestLogFields(contract, classification?.PrimaryExchange, depthRows, isSmart);
+        _logger.LogInformation(
+            "DepthRequest: symbol={Symbol} conId={ConId} secType={SecType} exch={Exchange} primaryExch={PrimaryExchange} cur={Currency} localSymbol={LocalSymbol} tradingClass={TradingClass} lastTradeDateOrContractMonth={LastTradeDateOrContractMonth} multiplier={Multiplier} depthRows={DepthRows} isSmart={IsSmart}",
+            fields.Symbol,
+            fields.ConId,
+            fields.SecType,
+            fields.Exchange,
+            fields.PrimaryExchange,
+            fields.Currency,
+            fields.LocalSymbol ?? string.Empty,
+            fields.TradingClass ?? string.Empty,
+            fields.LastTradeDateOrContractMonth ?? string.Empty,
+            fields.Multiplier ?? string.Empty,
+            fields.DepthRows,
+            fields.IsSmart);
+    }
+
+    private void LogDepthRequest(Contract contract, DepthRetryPlan plan, int depthRows, bool isSmart)
+    {
+        var fields = BuildDepthRequestLogFields(contract, plan.PrimaryExchange, depthRows, isSmart);
+        _logger.LogInformation(
+            "DepthRequest: symbol={Symbol} conId={ConId} secType={SecType} exch={Exchange} primaryExch={PrimaryExchange} cur={Currency} localSymbol={LocalSymbol} tradingClass={TradingClass} lastTradeDateOrContractMonth={LastTradeDateOrContractMonth} multiplier={Multiplier} depthRows={DepthRows} isSmart={IsSmart}",
+            fields.Symbol,
+            fields.ConId,
+            fields.SecType,
+            fields.Exchange,
+            fields.PrimaryExchange,
+            fields.Currency,
+            fields.LocalSymbol ?? string.Empty,
+            fields.TradingClass ?? string.Empty,
+            fields.LastTradeDateOrContractMonth ?? string.Empty,
+            fields.Multiplier ?? string.Empty,
+            fields.DepthRows,
+            fields.IsSmart);
+    }
+
+    private void LogDepthIneligible(string symbol, int errorCode, string errorMessage)
+    {
+        var classification = _classificationService.TryGetCached(symbol);
+        var secType = classification?.SecType ?? "STK";
+        var conId = classification?.ConId ?? 0;
+        var exchange = _activeSubscriptions.TryGetValue(symbol, out var subscription)
+            ? subscription.DepthExchange
+            : null;
+        var primaryExchange = classification?.PrimaryExchange;
+
+        _logger.LogWarning(
+            "DepthIneligible: symbol={Symbol} conId={ConId} exch={Exchange} primaryExch={PrimaryExchange} secType={SecType} localSymbol={LocalSymbol} tradingClass={TradingClass} lastTradeDateOrContractMonth={LastTradeDateOrContractMonth} multiplier={Multiplier} code={Code} msg={Msg}",
+            symbol,
+            conId,
+            exchange ?? "SMART",
+            primaryExchange ?? "n/a",
+            secType,
+            classification?.LocalSymbol ?? string.Empty,
+            classification?.TradingClass ?? string.Empty,
+            classification?.LastTradeDateOrContractMonth ?? string.Empty,
+            classification?.Multiplier ?? string.Empty,
+            errorCode,
+            errorMessage);
+    }
+
+    internal readonly record struct DepthRequestLogFields(
+        string Symbol,
+        int ConId,
+        string? SecType,
+        string? Exchange,
+        string? PrimaryExchange,
+        string? Currency,
+        string? LocalSymbol,
+        string? TradingClass,
+        string? LastTradeDateOrContractMonth,
+        string? Multiplier,
+        int DepthRows,
+        bool IsSmart);
     
     private void ProcessMessages(EClientSocket socket, EReaderSignal readerSignal, CancellationToken stoppingToken)
     {

@@ -23,6 +23,7 @@ public sealed class PreviewSignalEmitter
     private readonly int _perSymbolCooldownSeconds;
     private readonly bool _requireBookValid;
     private readonly bool _requireTapeRecent;
+    private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _discordEnabled;
     private readonly string _discordChannelTag;
     private readonly string? _webhookUrl;
@@ -51,6 +52,7 @@ public sealed class PreviewSignalEmitter
         _perSymbolCooldownSeconds = configuration.GetValue("Preview:PerSymbolCooldownSeconds", 0);
         _requireBookValid = configuration.GetValue("Preview:RequireBookValid", true);
         _requireTapeRecent = configuration.GetValue("Preview:RequireTapeRecent", false);
+        _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
         _discordEnabled = configuration.GetValue("Preview:DiscordEnabled", true);
         _discordChannelTag = configuration.GetValue<string>("Preview:DiscordChannelTag") ?? "PREVIEW";
         _webhookUrl = configuration["Discord:WebhookUrl"];
@@ -76,7 +78,7 @@ public sealed class PreviewSignalEmitter
             return;
         }
 
-        if (_requireTapeRecent && !ShadowTradingHelpers.HasRecentTape(book, nowMs))
+        if (_requireTapeRecent && !ShadowTradingHelpers.HasRecentTape(book, nowMs, _tapeGateConfig))
         {
             return;
         }

@@ -32,7 +32,6 @@ public sealed class DepthUniverseFilter
 
         var classifications = await _classificationService.GetClassificationsAsync(universe, cancellationToken);
         var filtered = new List<string>(universe.Count);
-        var allowUnknown = _configuration.GetValue("Universe:AllowUnknownAsCommon", false);
         var counts = new ClassificationCounts();
 
         foreach (var symbol in universe)
@@ -47,7 +46,7 @@ public sealed class DepthUniverseFilter
             var mapped = _classificationService.Classify(classification);
             counts.Increment(mapped);
 
-            var eligibility = EvaluateEligibility(normalized, classification, mapped, allowUnknown);
+            var eligibility = EvaluateEligibility(normalized, classification, mapped);
             if (!eligibility.IsEligible)
             {
                 LogOnce(normalized, eligibility.Reason);
@@ -70,18 +69,24 @@ public sealed class DepthUniverseFilter
     private static (bool IsEligible, string Reason) EvaluateEligibility(
         string symbol,
         ContractClassification? classification,
-        ContractSecurityClassification mapped,
-        bool allowUnknownAsCommon)
+        ContractSecurityClassification mapped)
     {
         if (classification is null)
         {
             return (false, "MissingClassification");
         }
 
-        var treatedAsCommon = mapped == ContractSecurityClassification.CommonStock
-                              || (allowUnknownAsCommon && mapped == ContractSecurityClassification.Unknown);
+        if (classification.ConId <= 0)
+        {
+            return (false, "MissingConId");
+        }
 
-        if (!treatedAsCommon)
+        if (!IsStockSecType(classification.SecType))
+        {
+            return (false, $"SecTypeNotStock:{classification.SecType ?? "null"}");
+        }
+
+        if (!IsCommonStockType(classification.StockType, mapped))
         {
             return (false, $"StockTypeNotCommon:{classification.StockType ?? "null"}");
         }
@@ -97,6 +102,31 @@ public sealed class DepthUniverseFilter
         }
 
         return (true, string.Empty);
+    }
+
+    private static bool IsStockSecType(string? secType)
+    {
+        return !string.IsNullOrWhiteSpace(secType)
+               && secType.Trim().Equals("STK", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCommonStockType(
+        string? stockType,
+        ContractSecurityClassification mapped)
+    {
+        if (string.IsNullOrWhiteSpace(stockType))
+        {
+            return false;
+        }
+
+        var normalized = stockType.Trim();
+        if (normalized.Equals("COMMON", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("CS", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("STK", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return mapped == ContractSecurityClassification.CommonStock;
     }
 
     private void LogOnce(string symbol, string reason)

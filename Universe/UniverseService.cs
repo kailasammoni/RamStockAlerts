@@ -20,7 +20,6 @@ public sealed class UniverseService
 
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private string _lastSource = "unknown";
-
     public UniverseService(
         IConfiguration configuration,
         IMemoryCache cache,
@@ -149,4 +148,5 @@ public sealed class UniverseService
         var source = _configuration["Universe:Source"];
         return string.IsNullOrWhiteSpace(source) ? "IbkrScanner" : source.Trim();
     }
+
 }

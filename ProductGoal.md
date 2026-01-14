@@ -228,3 +228,15 @@ Build a scarce, high-trust alert engine for human traders using market microstru
 - Shadow trades journaled but not yet scored as wins/losses
 - Outcome tagging (TP/hit/SL/miss) needed
 - Profit factor, drawdown, hit rate → not implemented yet
+
+
+## Current Status
+- Shadow mode is live: IBKR depth and tape subscriptions feed ShadowTradingCoordinator, blueprints are scored, and every accepted/rejected signal is journaled with the same book/tape context.
+- The shadow journal now writes SchemaVersion=2 entries, includes depth/tape snapshots and heartbeat markers, and keeps the format stable for replay and metric pipelines.
+- Tape and depth requests are paired by the subscription manager, duplicates are avoided, and HandleIbkrError plus DepthEligibilityCache log 10092 ineligibility patterns so depth gets disabled before new requests flood the same symbol.
+- The recorder tool (MODE=record / Ibkr:Mode=Record) is available to capture raw IBKR depth and tape JSONL files under logs/ibkr-* for debugging the live feed.
+
+## Next Steps
+- Build the outcome pipeline that turns SchemaVersion=2 journal entries into tagged wins, losses, and misses so PerformanceTracker can compute the actual win rate, avg gain/loss, and accuracy targets.
+- Surface those metrics (win rate, avg gain/loss, max drawdown, trades/day) in dashboards or health checks to understand how close we are to the 0.45% avg win, 62% accuracy goals.
+- Use the emerging analytics to refine scarcity gating (drop weaker signals, enforce 3-6 trades/day) and prioritize tuning absorption/tape filters toward a repeatable win-rate edge.

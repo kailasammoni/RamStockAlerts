@@ -2,28 +2,17 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Services.Universe;
+using RamStockAlerts.Tests.Helpers;
+using RamStockAlerts.Tests.TestDoubles;
 
 namespace RamStockAlerts.Tests;
 
 public class DepthUniverseFilterTests
 {
-    private static (DepthUniverseFilter Filter, ContractClassificationCache Cache, DepthEligibilityCache Eligibility) BuildFilter()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>())
-            .Build();
-
-        var cache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var service = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, cache);
-        var eligibility = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        var filter = new DepthUniverseFilter(service, config, NullLogger<DepthUniverseFilter>.Instance);
-        return (filter, cache, eligibility);
-    }
-
     [Fact]
     public async Task DepthUniverseFilter_RemovesEtfStockType()
     {
-        var (filter, cache, _) = BuildFilter();
+        var (filter, cache, _) = DepthUniverseFilterTestHelper.BuildFilter();
         var now = DateTimeOffset.UtcNow;
         await cache.PutAsync(new ContractClassification("AAA", 1, "STK", "NASDAQ", "USD", "COMMON", now), CancellationToken.None);
         await cache.PutAsync(new ContractClassification("ETF1", 2, "STK", "ARCA", "USD", "ETF", now), CancellationToken.None);
@@ -40,7 +29,7 @@ public class DepthUniverseFilterTests
     [Fact]
     public async Task DepthUniverseFilter_DoesNotRemoveDepthIneligible()
     {
-        var (filter, cache, eligibility) = BuildFilter();
+        var (filter, cache, eligibility) = DepthUniverseFilterTestHelper.BuildFilter();
         var now = DateTimeOffset.UtcNow;
         var classification = new ContractClassification("XYZ", 10, "STK", "NYSE", "USD", "COMMON", now);
         await cache.PutAsync(classification, CancellationToken.None);
@@ -97,7 +86,7 @@ public class DepthUniverseFilterTests
     }
 
     [Fact]
-    public async Task UnknownExcludedByDefaultIncludedWithOverride()
+    public async Task UnknownExcludedEvenWhenOverrideEnabled()
     {
         var configDefault = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>())
@@ -124,13 +113,13 @@ public class DepthUniverseFilterTests
         var filterOverride = new DepthUniverseFilter(service2, configOverride, NullLogger<DepthUniverseFilter>.Instance);
 
         var resultOverride = await filterOverride.FilterAsync(new[] { "UNK" }, CancellationToken.None);
-        Assert.Contains("UNK", resultOverride.Filtered);
+        Assert.Empty(resultOverride.Filtered);
     }
 
     [Fact]
     public async Task DepthUniverseFilter_ExcludesNonCommonStockType()
     {
-        var (filter, cache, _) = BuildFilter();
+        var (filter, cache, _) = DepthUniverseFilterTestHelper.BuildFilter();
         var now = DateTimeOffset.UtcNow;
         await cache.PutAsync(new ContractClassification("TSLL", 2, "STK", "NASDAQ", "USD", "ETF", now), CancellationToken.None);
 
@@ -143,11 +132,37 @@ public class DepthUniverseFilterTests
     [Fact]
     public async Task DepthUniverseFilter_ExcludesMissingPrimaryExchange()
     {
-        var (filter, cache, _) = BuildFilter();
+        var (filter, cache, _) = DepthUniverseFilterTestHelper.BuildFilter();
         var now = DateTimeOffset.UtcNow;
         await cache.PutAsync(new ContractClassification("NOEX", 3, "STK", null, "USD", "COMMON", now), CancellationToken.None);
 
         var result = await filter.FilterAsync(new[] { "NOEX" }, CancellationToken.None);
+
+        Assert.Empty(result.Filtered);
+        Assert.Equal(1, result.CommonCount);
+    }
+
+    [Fact]
+    public async Task DepthUniverseFilter_ExcludesMissingConId()
+    {
+        var (filter, cache, _) = DepthUniverseFilterTestHelper.BuildFilter();
+        var now = DateTimeOffset.UtcNow;
+        await cache.PutAsync(new ContractClassification("NOCON", 0, "STK", "NYSE", "USD", "COMMON", now), CancellationToken.None);
+
+        var result = await filter.FilterAsync(new[] { "NOCON" }, CancellationToken.None);
+
+        Assert.Empty(result.Filtered);
+        Assert.Equal(1, result.CommonCount);
+    }
+
+    [Fact]
+    public async Task DepthUniverseFilter_ExcludesNonStockSecType()
+    {
+        var (filter, cache, _) = DepthUniverseFilterTestHelper.BuildFilter();
+        var now = DateTimeOffset.UtcNow;
+        await cache.PutAsync(new ContractClassification("FUT1", 9, "FUT", "NYSE", "USD", "COMMON", now), CancellationToken.None);
+
+        var result = await filter.FilterAsync(new[] { "FUT1" }, CancellationToken.None);
 
         Assert.Empty(result.Filtered);
         Assert.Equal(1, result.CommonCount);
@@ -207,16 +222,4 @@ public class DepthUniverseFilterTests
         Assert.True(canRequestAfter);
     }
 
-    private sealed class ListLogger<T> : ILogger<T>
-    {
-        private readonly List<string> _messages = new();
-        public int Count => _messages.Count;
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-            _messages.Add(formatter(state, exception));
-        }
-    }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Models;
 
 namespace RamStockAlerts.Services;
@@ -19,14 +20,19 @@ internal static class ShadowTradingHelpers
         Ready
     }
 
-    internal readonly record struct TapeStatus(TapeStatusKind Kind, long? AgeMs)
+    internal readonly record struct TapeStatus(
+        TapeStatusKind Kind,
+        long? AgeMs,
+        int TradesInWarmupWindow,
+        int WarmupMinTrades,
+        int WarmupWindowMs)
     {
         public bool IsReady => Kind == TapeStatusKind.Ready;
     }
 
-    public static bool HasRecentTape(OrderBookState book, long nowMs)
+    public static bool HasRecentTape(OrderBookState book, long nowMs, TapeGateConfig config)
     {
-        return GetTapeStatus(book, nowMs, isTapeEnabled: true, TapeGateConfig.Default).IsReady;
+        return GetTapeStatus(book, nowMs, isTapeEnabled: true, config).IsReady;
     }
 
     public static TapeStatus GetTapeStatus(
@@ -35,31 +41,57 @@ internal static class ShadowTradingHelpers
         bool isTapeEnabled,
         TapeGateConfig config)
     {
+        var warmupMinTrades = Math.Max(0, config.WarmupMinTrades);
+        var warmupWindowMs = Math.Max(0, config.WarmupWindowMs);
+
         if (!isTapeEnabled)
         {
-            return new TapeStatus(TapeStatusKind.MissingSubscription, null);
+            return new TapeStatus(TapeStatusKind.MissingSubscription, null, 0, warmupMinTrades, warmupWindowMs);
+        }
+
+        if (book.RecentTrades.Count == 0)
+        {
+            return new TapeStatus(TapeStatusKind.NotWarmedUp, null, 0, warmupMinTrades, warmupWindowMs);
         }
 
         var lastTrade = book.RecentTrades.LastOrDefault();
         if (lastTrade.TimestampMs == 0)
         {
-            return new TapeStatus(TapeStatusKind.NotWarmedUp, null);
+            return new TapeStatus(TapeStatusKind.NotWarmedUp, null, 0, warmupMinTrades, warmupWindowMs);
         }
 
         var ageMs = nowMs - lastTrade.TimestampMs;
 
-        var warmupStart = nowMs - Math.Max(0, config.WarmupWindowMs);
-        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.TimestampMs >= warmupStart);
-        if (tradesInWarmupWindow < Math.Max(0, config.WarmupMinTrades))
-        {
-            return new TapeStatus(TapeStatusKind.NotWarmedUp, ageMs);
-        }
-
         if (ageMs > Math.Max(0, config.StaleWindowMs))
         {
-            return new TapeStatus(TapeStatusKind.Stale, ageMs);
+            return new TapeStatus(TapeStatusKind.Stale, ageMs, 0, warmupMinTrades, warmupWindowMs);
         }
 
-        return new TapeStatus(TapeStatusKind.Ready, ageMs);
+        var warmupStart = nowMs - warmupWindowMs;
+        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.TimestampMs >= warmupStart);
+        if (tradesInWarmupWindow < warmupMinTrades)
+        {
+            return new TapeStatus(
+                TapeStatusKind.NotWarmedUp,
+                ageMs,
+                tradesInWarmupWindow,
+                warmupMinTrades,
+                warmupWindowMs);
+        }
+
+        return new TapeStatus(TapeStatusKind.Ready, ageMs, tradesInWarmupWindow, warmupMinTrades, warmupWindowMs);
+    }
+
+    public static TapeGateConfig ReadTapeGateConfig(IConfiguration configuration)
+    {
+        var defaults = TapeGateConfig.Default;
+        var warmupMinTrades = configuration.GetValue("MarketData:TapeWarmupMinTrades", defaults.WarmupMinTrades);
+        var warmupWindowMs = configuration.GetValue("MarketData:TapeWarmupWindowMs", defaults.WarmupWindowMs);
+        var staleWindowMs = configuration.GetValue("MarketData:TapeStaleWindowMs", defaults.StaleWindowMs);
+
+        return new TapeGateConfig(
+            Math.Max(0, warmupMinTrades),
+            Math.Max(0, warmupWindowMs),
+            Math.Max(0, staleWindowMs));
     }
 }
