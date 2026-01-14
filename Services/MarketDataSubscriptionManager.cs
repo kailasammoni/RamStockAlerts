@@ -459,6 +459,7 @@ public sealed class MarketDataSubscriptionManager
             {
                 await disableTickByTickAsync(symbol, cancellationToken);
                 MarkPendingCancel(requestId, now);
+                UntrackRequest(requestId);
                 state.TickByTickRequestId = null;
             }
             else
@@ -903,7 +904,8 @@ public sealed class MarketDataSubscriptionManager
 
         var candidates = _active.Values
             .Where(state => orderIndex.ContainsKey(state.Symbol) && state.DepthRequestId.HasValue)
-            .OrderByDescending(state => GetActivityKeyDescending(state))
+            .OrderBy(state => state.TickByTickRequestId.HasValue ? 0 : 1)
+            .ThenByDescending(state => GetActivityKeyDescending(state))
             .ThenBy(state => orderIndex[state.Symbol])
             .Select(state => state.Symbol)
             .Take(maxSymbols)
