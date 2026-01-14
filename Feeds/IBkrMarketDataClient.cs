@@ -577,6 +577,11 @@ public class IBkrMarketDataClient : BackgroundService
 
     private async Task HandleIbkrErrorAsync(int requestId, int errorCode, string errorMessage)
     {
+        if (errorCode == 10190)
+        {
+            await ClearRejectedTickByTickAsync(requestId, CancellationToken.None);
+        }
+
         await _subscriptionManager.HandleIbkrErrorAsync(
             requestId,
             errorCode,
@@ -586,6 +591,35 @@ public class IBkrMarketDataClient : BackgroundService
             EnableTickByTickAsync,
             CancellationToken.None);
         return;
+    }
+
+    private async Task ClearRejectedTickByTickAsync(int requestId, CancellationToken cancellationToken)
+    {
+        if (!_tickerIdMap.TryGetValue(requestId, out var symbol))
+        {
+            return;
+        }
+
+        await _subscriptionLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_activeSubscriptions.TryGetValue(symbol, out var subscription))
+            {
+                return;
+            }
+
+            if (subscription.TickByTickRequestId != requestId)
+            {
+                return;
+            }
+
+            _tickerIdMap.TryRemove(requestId, out _);
+            _activeSubscriptions[symbol] = subscription with { TickByTickRequestId = null };
+        }
+        finally
+        {
+            _subscriptionLock.Release();
+        }
     }
 
     private async Task RetryDepthAsync(int failedRequestId, DepthRetryPlan plan)
