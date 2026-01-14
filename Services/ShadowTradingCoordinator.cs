@@ -123,10 +123,10 @@ public sealed class ShadowTradingCoordinator
                 book);
 
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
-            rejectedEntry.Decision = "Rejected";
-            rejectedEntry.Accepted = false;
+            rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = rejectionReason;
             rejectedEntry.DecisionResult = decisionResult;
+            rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("ValidatorReject", rejectionReason);
 
             EnqueueEntry(rejectedEntry);
             _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
@@ -149,10 +149,10 @@ public sealed class ShadowTradingCoordinator
                 book.BestAsk,
                 book);
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
-            rejectedEntry.Decision = "Rejected";
-            rejectedEntry.Accepted = false;
+            rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "SpoofSuspected";
             rejectedEntry.DecisionResult = decisionResult;
+            rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("SpoofCheckFail", "SpoofSuspected");
 
             EnqueueEntry(rejectedEntry);
             _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
@@ -175,10 +175,10 @@ public sealed class ShadowTradingCoordinator
                 book.BestAsk,
                 book);
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
-            rejectedEntry.Decision = "Rejected";
-            rejectedEntry.Accepted = false;
+            rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "ReplenishmentSuspected";
             rejectedEntry.DecisionResult = decisionResult;
+            rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("ReplenishmentCheckFail", "ReplenishmentSuspected");
 
             EnqueueEntry(rejectedEntry);
             return;
@@ -199,10 +199,10 @@ public sealed class ShadowTradingCoordinator
                 book.BestAsk,
                 book);
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
-            rejectedEntry.Decision = "Rejected";
-            rejectedEntry.Accepted = false;
+            rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "ReplenishmentSuspected";
             rejectedEntry.DecisionResult = decisionResult;
+            rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("ReplenishmentCheckFail", "ReplenishmentSuspected");
 
             EnqueueEntry(rejectedEntry);
             return;
@@ -223,10 +223,10 @@ public sealed class ShadowTradingCoordinator
                 book.BestAsk,
                 book);
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
-            rejectedEntry.Decision = "Rejected";
-            rejectedEntry.Accepted = false;
+            rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "AbsorptionInsufficient";
             rejectedEntry.DecisionResult = decisionResult;
+            rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("AbsorptionCheckFail", "AbsorptionInsufficient");
 
             EnqueueEntry(rejectedEntry);
             return;
@@ -249,10 +249,10 @@ public sealed class ShadowTradingCoordinator
                 book.BestAsk,
                 book);
             var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
-            rejectedEntry.Decision = "Rejected";
-            rejectedEntry.Accepted = false;
+            rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = rejectionReason;
             rejectedEntry.DecisionResult = decisionResult;
+            rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("BlueprintFail", rejectionReason);
 
             EnqueueEntry(rejectedEntry);
             _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
@@ -277,6 +277,8 @@ public sealed class ShadowTradingCoordinator
 
         var pendingEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
         pendingEntry.DecisionResult = acceptedDecisionResult;
+        pendingEntry.DecisionOutcome = "Pending";
+        pendingEntry.DecisionTrace = BuildDecisionTraceForAcceptance();
         _pendingRankedEntries[candidateId] = new PendingRankEntry(pendingEntry, blueprintPlan, nowMs, vwapBonus);
 
         var baseScore = decision.Signal?.Confidence ?? 0m;
@@ -309,46 +311,28 @@ public sealed class ShadowTradingCoordinator
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats)
     {
+        var marketTs = snapshot.TimestampMs > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds(snapshot.TimestampMs)
+            : (DateTimeOffset?)null;
+        var decisionTs = nowMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(nowMs) : (DateTimeOffset?)null;
+        var depthDeltaSnapshot = book.DepthDeltaTracker.GetSnapshot(nowMs);
+
         return new ShadowTradeJournalEntry
         {
-            SchemaVersion = 1,
+            SchemaVersion = 2,
             DecisionId = decisionId,
             SessionId = _sessionId,
             Source = "IBKR",
-            TimestampUtc = DateTime.UtcNow,
+            EntryType = "Signal",
+            MarketTimestampUtc = marketTs,
+            DecisionTimestampUtc = decisionTs,
             TradingMode = _tradingMode,
             Symbol = snapshot.Symbol,
-            Direction = decision.Direction ?? string.Empty,
-            Score = decision.Signal?.Confidence ?? 0m,
-            QueueImbalance = snapshot.QueueImbalance,
-            BidDepth4Level = snapshot.BidDepth4Level,
-            AskDepth4Level = snapshot.AskDepth4Level,
-            BidWallAgeMs = snapshot.BidWallAgeMs,
-            AskWallAgeMs = snapshot.AskWallAgeMs,
-            BidAbsorptionRate = snapshot.BidAbsorptionRate,
-            AskAbsorptionRate = snapshot.AskAbsorptionRate,
-            SpoofScore = snapshot.SpoofScore,
-            TapeAcceleration = snapshot.TapeAcceleration,
-            TradesIn3Sec = snapshot.TradesIn3Sec,
-            Spread = snapshot.Spread,
-            MidPrice = snapshot.MidPrice,
-            LastPrice = tapeStats.LastPrice,
-            VwapPrice = tapeStats.VwapPrice,
-            BestBidPrice = book.BestBid,
-            BestBidSize = depthSnapshot.BestBidSize,
-            BestAskPrice = book.BestAsk,
-            BestAskSize = depthSnapshot.BestAskSize,
-            TotalBidSizeTopN = depthSnapshot.TotalBidSizeTopN,
-            TotalAskSizeTopN = depthSnapshot.TotalAskSizeTopN,
-            BidAskRatioTopN = depthSnapshot.BidAskRatioTopN,
-            TapeVelocity3Sec = tapeStats.Velocity,
-            TapeVolume3Sec = tapeStats.Volume,
-            LastDepthUpdateAgeMs = depthSnapshot.LastDepthUpdateAgeMs,
-            LastTapeUpdateAgeMs = tapeStats.LastTapeAgeMs,
-            TickerCooldownRemainingSec = _validator.GetCooldownRemainingSeconds(snapshot.Symbol, nowMs),
-            AlertsLastHourCount = _validator.GetAlertCountInLastHour(nowMs),
-            BidsTopN = depthSnapshot.BidsTopN,
-            AsksTopN = depthSnapshot.AsksTopN
+            Direction = decision.Direction,
+            ObservedMetrics = BuildObservedMetrics(snapshot, depthSnapshot, tapeStats, depthDeltaSnapshot, book),
+            DecisionInputs = BuildDecisionInputs(snapshot, depthSnapshot, tapeStats, depthDeltaSnapshot, decision, nowMs, book),
+            DecisionTrace = new List<string>(),
+            DataQualityFlags = BuildDataQualityFlags(book, depthSnapshot, tapeStats, nowMs)
         };
     }
 
@@ -590,6 +574,194 @@ public sealed class ShadowTradingCoordinator
         return StrategyDecisionResultBuilder.Build(context);
     }
 
+    private static ShadowTradeJournalEntry.ObservedMetricsSnapshot BuildObservedMetrics(
+        OrderFlowMetrics.MetricSnapshot snapshot,
+        DepthSnapshot depthSnapshot,
+        TapeStats tapeStats,
+        DepthDeltaSnapshot depthDeltaSnapshot,
+        OrderBookState book)
+    {
+        return new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+        {
+            QueueImbalance = snapshot.QueueImbalance,
+            BidDepth4Level = snapshot.BidDepth4Level,
+            AskDepth4Level = snapshot.AskDepth4Level,
+            BidWallAgeMs = snapshot.BidWallAgeMs,
+            AskWallAgeMs = snapshot.AskWallAgeMs,
+            BidAbsorptionRate = snapshot.BidAbsorptionRate,
+            AskAbsorptionRate = snapshot.AskAbsorptionRate,
+            SpoofScore = snapshot.SpoofScore,
+            TapeAcceleration = snapshot.TapeAcceleration,
+            TradesIn3Sec = snapshot.TradesIn3Sec,
+            Spread = snapshot.Spread,
+            MidPrice = snapshot.MidPrice,
+            LastPrice = tapeStats.LastPrice,
+            VwapPrice = tapeStats.VwapPrice,
+            BestBidPrice = book.BestBid,
+            BestBidSize = depthSnapshot.BestBidSize,
+            BestAskPrice = book.BestAsk,
+            BestAskSize = depthSnapshot.BestAskSize,
+            TotalBidSizeTopN = depthSnapshot.TotalBidSizeTopN,
+            TotalAskSizeTopN = depthSnapshot.TotalAskSizeTopN,
+            BidAskRatioTopN = depthSnapshot.BidAskRatioTopN,
+            TapeVelocity3Sec = tapeStats.Velocity,
+            TapeVolume3Sec = tapeStats.Volume,
+            LastDepthUpdateAgeMs = depthSnapshot.LastDepthUpdateAgeMs,
+            LastTapeUpdateAgeMs = tapeStats.LastTapeAgeMs,
+            CumulativeVwap = tapeStats.CumulativeVwap,
+            PriceVsVwap = tapeStats.LastPrice.HasValue && tapeStats.CumulativeVwap.HasValue
+                ? tapeStats.LastPrice.Value - tapeStats.CumulativeVwap.Value
+                : null,
+            VwapReclaimDetected = tapeStats.VwapReclaimDetected,
+            DepthDelta = BuildDepthDeltaMetrics(depthDeltaSnapshot),
+            BidsTopN = depthSnapshot.BidsTopN,
+            AsksTopN = depthSnapshot.AsksTopN
+        };
+    }
+
+    private ShadowTradeJournalEntry.DecisionInputsSnapshot BuildDecisionInputs(
+        OrderFlowMetrics.MetricSnapshot snapshot,
+        DepthSnapshot depthSnapshot,
+        TapeStats tapeStats,
+        DepthDeltaSnapshot depthDeltaSnapshot,
+        OrderFlowSignalValidator.OrderFlowSignalDecision decision,
+        long nowMs,
+        OrderBookState book)
+    {
+        return new ShadowTradeJournalEntry.DecisionInputsSnapshot
+        {
+            Score = decision.Signal is null ? null : (decimal?)decision.Signal.Confidence,
+            VwapBonus = decision.Signal is null ? null : (tapeStats.VwapReclaimDetected ? 0.5m : 0m),
+            RankScore = decision.Signal is null
+                ? null
+                : decision.Signal.Confidence + (tapeStats.VwapReclaimDetected ? 0.5m : 0m),
+            TickerCooldownRemainingSec = _validator.GetCooldownRemainingSeconds(snapshot.Symbol, nowMs),
+            AlertsLastHourCount = _validator.GetAlertCountInLastHour(nowMs),
+            QueueImbalance = snapshot.QueueImbalance,
+            BidWallAgeMs = snapshot.BidWallAgeMs,
+            AskWallAgeMs = snapshot.AskWallAgeMs,
+            BidAbsorptionRate = snapshot.BidAbsorptionRate,
+            AskAbsorptionRate = snapshot.AskAbsorptionRate,
+            SpoofScore = snapshot.SpoofScore,
+            TapeAcceleration = snapshot.TapeAcceleration,
+            TradesIn3Sec = snapshot.TradesIn3Sec,
+            TapeVolume3Sec = tapeStats.Volume,
+            Spread = snapshot.Spread,
+            BestBidPrice = book.BestBid,
+            BestAskPrice = book.BestAsk,
+            DepthDelta = BuildDepthDeltaMetrics(depthDeltaSnapshot),
+            VwapReclaimDetected = tapeStats.VwapReclaimDetected
+        };
+    }
+
+    private static ShadowTradeJournalEntry.DepthDeltaMetrics BuildDepthDeltaMetrics(DepthDeltaSnapshot depthDeltaSnapshot)
+    {
+        return new ShadowTradeJournalEntry.DepthDeltaMetrics
+        {
+            BidCancelToAddRatio1s = depthDeltaSnapshot.Bid1s.CancelToAddRatio,
+            AskCancelToAddRatio1s = depthDeltaSnapshot.Ask1s.CancelToAddRatio,
+            BidCancelToAddRatio3s = depthDeltaSnapshot.Bid3s.CancelToAddRatio,
+            AskCancelToAddRatio3s = depthDeltaSnapshot.Ask3s.CancelToAddRatio,
+            BidCancelCount1s = depthDeltaSnapshot.Bid1s.CancelCount,
+            BidAddCount1s = depthDeltaSnapshot.Bid1s.AddCount,
+            AskCancelCount1s = depthDeltaSnapshot.Ask1s.CancelCount,
+            AskAddCount1s = depthDeltaSnapshot.Ask1s.AddCount,
+            BidTotalCanceledSize1s = depthDeltaSnapshot.Bid1s.TotalCanceledSize,
+            AskTotalCanceledSize1s = depthDeltaSnapshot.Ask1s.TotalCanceledSize,
+            BidTotalAddedSize1s = depthDeltaSnapshot.Bid1s.TotalAddedSize,
+            AskTotalAddedSize1s = depthDeltaSnapshot.Ask1s.TotalAddedSize
+        };
+    }
+
+    private static List<string> BuildDecisionTraceForAcceptance()
+    {
+        return new List<string>
+        {
+            "ValidatorPass",
+            "SpoofCheckPass",
+            "ReplenishmentCheckPass",
+            "AbsorptionCheckPass",
+            "BlueprintPass"
+        };
+    }
+
+    private static List<string> BuildDecisionTraceForScarcityAccepted(List<string>? existing)
+    {
+        var trace = existing is null || existing.Count == 0 ? BuildDecisionTraceForAcceptance() : new List<string>(existing);
+        trace.Add("ScarcityPass");
+        return trace;
+    }
+
+    private static List<string> BuildDecisionTraceForRejection(string stage, string? reason)
+    {
+        var trace = new List<string>();
+        switch (stage)
+        {
+            case "ValidatorReject":
+                trace.Add($"{stage}:{reason ?? "Unknown"}");
+                return trace;
+            case "SpoofCheckFail":
+                trace.Add("ValidatorPass");
+                break;
+            case "ReplenishmentCheckFail":
+                trace.Add("ValidatorPass");
+                trace.Add("SpoofCheckPass");
+                break;
+            case "AbsorptionCheckFail":
+                trace.Add("ValidatorPass");
+                trace.Add("SpoofCheckPass");
+                trace.Add("ReplenishmentCheckPass");
+                break;
+            case "BlueprintFail":
+                trace.Add("ValidatorPass");
+                trace.Add("SpoofCheckPass");
+                trace.Add("ReplenishmentCheckPass");
+                trace.Add("AbsorptionCheckPass");
+                break;
+            case "ScarcityReject":
+                trace = BuildDecisionTraceForAcceptance();
+                break;
+        }
+
+        trace.Add($"{stage}:{reason ?? "Unknown"}");
+        return trace;
+    }
+
+    private static List<string> BuildDataQualityFlags(
+        OrderBookState book,
+        DepthSnapshot depthSnapshot,
+        TapeStats tapeStats,
+        long nowMs)
+    {
+        var flags = new List<string>();
+        if (!book.IsBookValid(out var reason, nowMs))
+        {
+            flags.Add($"BookInvalid:{reason}");
+        }
+
+        if (!ShadowTradingHelpers.HasRecentTape(book, nowMs))
+        {
+            flags.Add("TapeStale");
+        }
+
+        if (depthSnapshot.BidsTopN.Count < 5 || depthSnapshot.AsksTopN.Count < 5)
+        {
+            flags.Add("PartialBook");
+        }
+
+        if (depthSnapshot.LastDepthUpdateAgeMs.HasValue && depthSnapshot.LastDepthUpdateAgeMs.Value > 2000)
+        {
+            flags.Add("StaleDepth");
+        }
+
+        if (tapeStats.LastTapeAgeMs.HasValue && tapeStats.LastTapeAgeMs.Value > TapePresenceWindowMs)
+        {
+            flags.Add("StaleTape");
+        }
+
+        return flags;
+    }
+
     private static IReadOnlyList<HardRejectReason> BuildHardRejectReasons(string? reasonCode)
     {
         if (string.IsNullOrWhiteSpace(reasonCode))
@@ -638,27 +810,33 @@ public sealed class ShadowTradingCoordinator
             var entry = pending.Entry;
             if (ranked.Decision.Accepted)
             {
-                entry.Accepted = true;
-                entry.Decision = "Accepted";
+                entry.DecisionOutcome = "Accepted";
                 entry.RejectionReason = null;
+                entry.DecisionTrace = BuildDecisionTraceForScarcityAccepted(entry.DecisionTrace);
                 entry.DecisionResult = UpdateDecisionResult(entry.DecisionResult, DecisionOutcome.Accepted, null);
 
                 if (_recordBlueprints && pending.Blueprint.Success)
                 {
-                    entry.Entry = pending.Blueprint.Entry;
-                    entry.Stop = pending.Blueprint.Stop;
-                    entry.Target = pending.Blueprint.Target;
+                    entry.Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+                    {
+                        Entry = pending.Blueprint.Entry,
+                        Stop = pending.Blueprint.Stop,
+                        Target = pending.Blueprint.Target
+                    };
                 }
 
-                _validator.RecordAcceptedSignal(entry.Symbol, pending.TimestampMsUtc);
+                if (!string.IsNullOrWhiteSpace(entry.Symbol))
+                {
+                    _validator.RecordAcceptedSignal(entry.Symbol, pending.TimestampMsUtc);
+                }
                 _logger.LogInformation("[Shadow] Signal accepted for {Symbol} ({Direction}) Score={Score}",
-                    entry.Symbol, entry.Direction, entry.Score);
+                    entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
             }
             else
             {
-                entry.Accepted = false;
-                entry.Decision = "ScarcityRejected";
+                entry.DecisionOutcome = "Rejected";
                 entry.RejectionReason = FormatRejectionReason(ranked.Decision);
+                entry.DecisionTrace = BuildDecisionTraceForRejection("ScarcityReject", entry.RejectionReason);
                 entry.DecisionResult = UpdateDecisionResult(
                     entry.DecisionResult,
                     DecisionOutcome.Rejected,
@@ -688,15 +866,51 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        var now = DateTimeOffset.UtcNow;
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var book = _metrics.GetOrderBookSnapshot(symbol);
+        var depthSnapshot = book is null ? null : BuildDepthSnapshot(book);
+        TapeStats? tapeStats = book is null ? null : BuildTapeStats(book, nowMs, null);
+
         var entry = new ShadowTradeJournalEntry
         {
+            SchemaVersion = 2,
+            DecisionId = Guid.NewGuid(),
+            SessionId = _sessionId,
+            Source = "IBKR",
             EntryType = "Rejection",
-            Decision = "Rejected",
-            Accepted = false,
-            RejectionReason = reason,
-            TimestampUtc = DateTime.UtcNow,
+            MarketTimestampUtc = now,
+            DecisionTimestampUtc = now,
             TradingMode = _tradingMode,
             Symbol = symbol,
+            DecisionOutcome = "Rejected",
+            RejectionReason = reason,
+            DecisionTrace = new List<string> { $"GateReject:{reason}" },
+            DataQualityFlags = book is null || depthSnapshot is null || tapeStats is null
+                ? new List<string> { "MissingBookContext" }
+                : BuildDataQualityFlags(book, depthSnapshot, tapeStats.Value, nowMs),
+            ObservedMetrics = book is null || depthSnapshot is null || tapeStats is null
+                ? null
+                : new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+                {
+                    Spread = book.Spread,
+                    BestBidPrice = book.BestBid,
+                    BestAskPrice = book.BestAsk,
+                    BestBidSize = depthSnapshot.BestBidSize,
+                    BestAskSize = depthSnapshot.BestAskSize,
+                    TotalBidSizeTopN = depthSnapshot.TotalBidSizeTopN,
+                    TotalAskSizeTopN = depthSnapshot.TotalAskSizeTopN,
+                    BidAskRatioTopN = depthSnapshot.BidAskRatioTopN,
+                    LastDepthUpdateAgeMs = depthSnapshot.LastDepthUpdateAgeMs,
+                    LastTapeUpdateAgeMs = tapeStats.Value.LastTapeAgeMs,
+                    LastPrice = tapeStats.Value.LastPrice,
+                    VwapPrice = tapeStats.Value.VwapPrice,
+                    TapeVelocity3Sec = tapeStats.Value.Velocity,
+                    TapeVolume3Sec = tapeStats.Value.Volume,
+                    BidsTopN = depthSnapshot.BidsTopN,
+                    AsksTopN = depthSnapshot.AsksTopN
+                },
+            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot(),
             DecisionResult = decisionResult
         };
 

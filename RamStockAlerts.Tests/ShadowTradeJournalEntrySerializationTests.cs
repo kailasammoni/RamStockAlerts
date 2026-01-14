@@ -1,7 +1,6 @@
 using System;
 using System.Text.Json;
 using RamStockAlerts.Models;
-using RamStockAlerts.Models.Decisions;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -9,37 +8,38 @@ namespace RamStockAlerts.Tests;
 public class ShadowTradeJournalEntrySerializationTests
 {
     [Fact]
-    public void Serialize_OmitsDecisionResult_WhenNull()
+    public void JournalSerialization_IsStable_AndOneLineJson()
     {
         var entry = new ShadowTradeJournalEntry
         {
+            SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
             SessionId = Guid.NewGuid(),
-            DecisionResult = null
-        };
-
-        var json = JsonSerializer.Serialize(entry);
-
-        Assert.DoesNotContain("\"DecisionResult\"", json);
-    }
-
-    [Fact]
-    public void Serialize_IncludesDecisionResult_WhenPresent()
-    {
-        var entry = new ShadowTradeJournalEntry
-        {
-            DecisionId = Guid.NewGuid(),
-            SessionId = Guid.NewGuid(),
-            DecisionResult = new StrategyDecisionResult
+            Source = "IBKR",
+            EntryType = "Signal",
+            MarketTimestampUtc = DateTimeOffset.UtcNow.AddSeconds(-1),
+            DecisionTimestampUtc = DateTimeOffset.UtcNow,
+            TradingMode = "Shadow",
+            Symbol = "TEST",
+            Direction = "BUY",
+            DecisionOutcome = "Accepted",
+            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot
             {
-                Outcome = DecisionOutcome.Accepted,
-                Direction = TradeDirection.Buy,
-                Score = 1m
-            }
+                QueueImbalance = 2.9m,
+                Spread = 0.02m,
+                BestBidPrice = 100.10m,
+                BestAskPrice = 100.12m
+            },
+            DecisionInputs = null,
+            DecisionTrace = new List<string> { "ValidatorPass", "ScarcityPass" },
+            DataQualityFlags = new List<string>()
         };
 
         var json = JsonSerializer.Serialize(entry);
 
-        Assert.Contains("\"DecisionResult\"", json);
+        Assert.DoesNotContain("\n", json);
+        Assert.DoesNotContain("\r", json);
+        Assert.Contains("\"DecisionInputs\":null", json);
+        Assert.NotNull(JsonSerializer.Deserialize<ShadowTradeJournalEntry>(json));
     }
 }

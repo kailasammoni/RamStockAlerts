@@ -68,27 +68,36 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
 
             var entry = new ShadowTradeJournalEntry
             {
+                SchemaVersion = 2,
+                DecisionId = Guid.NewGuid(),
+                SessionId = _journal.SessionId,
+                Source = "System",
                 EntryType = "Heartbeat",
-                Decision = "Heartbeat",
-                Accepted = false,
-                TimestampUtc = now,
+                MarketTimestampUtc = now,
+                DecisionTimestampUtc = now,
                 TradingMode = "Shadow",
-                UniverseCount = universe.Count,
-                ActiveSubscriptionsCount = stats.TotalSubscriptions,
-                DepthEnabledCount = stats.DepthEnabled,
-                TickByTickEnabledCount = stats.TickByTickEnabled,
-                DepthSubscribeAttempts = stats.DepthSubscribeAttempts,
-                DepthSubscribeSuccess = stats.DepthSubscribeUpdateReceived,
-                DepthSubscribeFailures = stats.DepthSubscribeErrors,
-                DepthSubscribeUpdateReceived = stats.DepthSubscribeUpdateReceived,
-                DepthSubscribeErrors = stats.DepthSubscribeErrors,
-                DepthSubscribeErrorsByCode = stats.DepthSubscribeErrorsByCode.ToDictionary(pair => pair.Key, pair => pair.Value),
-                DepthSubscribeLastErrorCode = stats.LastDepthErrorCode,
-                DepthSubscribeLastErrorMessage = stats.LastDepthErrorMessage,
-                LastDepthUpdateAgeMs = depthAge,
-                LastTapeUpdateAgeMs = tapeAge,
-                IsBookValidAny = bookValidAny,
-                TapeRecentAny = tapeRecentAny
+                DecisionOutcome = "Cancelled",
+                DecisionTrace = new List<string> { "Heartbeat" },
+                DataQualityFlags = new List<string> { "HeartbeatNoDecision" },
+                SystemMetrics = new ShadowTradeJournalEntry.SystemMetricsSnapshot
+                {
+                    UniverseCount = universe.Count,
+                    ActiveSubscriptionsCount = stats.TotalSubscriptions,
+                    DepthEnabledCount = stats.DepthEnabled,
+                    TickByTickEnabledCount = stats.TickByTickEnabled,
+                    DepthSubscribeAttempts = stats.DepthSubscribeAttempts,
+                    DepthSubscribeSuccess = stats.DepthSubscribeUpdateReceived,
+                    DepthSubscribeFailures = stats.DepthSubscribeErrors,
+                    DepthSubscribeUpdateReceived = stats.DepthSubscribeUpdateReceived,
+                    DepthSubscribeErrors = stats.DepthSubscribeErrors,
+                    DepthSubscribeErrorsByCode = stats.DepthSubscribeErrorsByCode.ToDictionary(pair => pair.Key, pair => pair.Value),
+                    DepthSubscribeLastErrorCode = stats.LastDepthErrorCode,
+                    DepthSubscribeLastErrorMessage = stats.LastDepthErrorMessage,
+                    LastDepthUpdateAgeMs = depthAge,
+                    LastTapeUpdateAgeMs = tapeAge,
+                    IsBookValidAny = bookValidAny,
+                    TapeRecentAny = tapeRecentAny
+                }
             };
 
             if (!_journal.TryEnqueue(entry))

@@ -118,19 +118,17 @@ public sealed class DailyRollupReporter
         public void Record(ShadowTradeJournalEntry entry)
         {
             TotalCandidates++;
-            var decision = entry.Decision ?? string.Empty;
+            var decision = entry.DecisionOutcome ?? string.Empty;
             var reason = entry.RejectionReason ?? string.Empty;
+            var trace = entry.DecisionTrace ?? new List<string>();
 
             if (string.Equals(decision, "Accepted", StringComparison.OrdinalIgnoreCase))
             {
                 ValidatorAccepted++;
                 ScarcityAccepted++;
-                if (entry.Accepted)
-                {
-                    _accepted.Add(entry);
-                }
+                _accepted.Add(entry);
             }
-            else if (string.Equals(decision, "ScarcityRejected", StringComparison.OrdinalIgnoreCase))
+            else if (trace.Any(t => t.StartsWith("ScarcityReject", StringComparison.OrdinalIgnoreCase)))
             {
                 ValidatorAccepted++;
                 ScarcityRejected++;
@@ -142,7 +140,7 @@ public sealed class DailyRollupReporter
                 AddReason(_validatorRejections, reason);
             }
 
-            AddScore(entry.Score);
+            AddScore(entry.DecisionInputs?.Score);
         }
 
         public string Render(string journalPath)
@@ -211,19 +209,19 @@ public sealed class DailyRollupReporter
                 return;
             }
 
-            var ordered = _accepted.OrderBy(x => x.TimestampUtc).ToList();
+            var ordered = _accepted.OrderBy(x => x.DecisionTimestampUtc ?? DateTimeOffset.MinValue).ToList();
             var limit = Math.Min(MaxAcceptedRowsToShow, ordered.Count);
 
             for (var i = 0; i < limit; i++)
             {
                 var entry = ordered[i];
-                var ts = entry.TimestampUtc == default
-                    ? "unknown"
-                    : entry.TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
-                var score = entry.Score.ToString("0.##", CultureInfo.InvariantCulture);
-                var spread = entry.Spread.ToString("0.####", CultureInfo.InvariantCulture);
-                var qi = entry.QueueImbalance.ToString("0.##", CultureInfo.InvariantCulture);
-                var tapeAccel = entry.TapeAcceleration.ToString("0.##", CultureInfo.InvariantCulture);
+                var ts = entry.DecisionTimestampUtc.HasValue
+                    ? entry.DecisionTimestampUtc.Value.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture)
+                    : "unknown";
+                var score = (entry.DecisionInputs?.Score).GetValueOrDefault().ToString("0.##", CultureInfo.InvariantCulture);
+                var spread = (entry.ObservedMetrics?.Spread).GetValueOrDefault().ToString("0.####", CultureInfo.InvariantCulture);
+                var qi = (entry.ObservedMetrics?.QueueImbalance).GetValueOrDefault().ToString("0.##", CultureInfo.InvariantCulture);
+                var tapeAccel = (entry.ObservedMetrics?.TapeAcceleration).GetValueOrDefault().ToString("0.##", CultureInfo.InvariantCulture);
 
                 sb.AppendLine($"- {ts} {entry.Symbol} {entry.Direction} score={score} spread={spread} qi={qi} tapeAccel={tapeAccel}");
             }
@@ -245,9 +243,14 @@ public sealed class DailyRollupReporter
             reasons[reason] = count + 1;
         }
 
-        private void AddScore(decimal score)
+        private void AddScore(decimal? score)
         {
-            var bucket = (int)Math.Floor(score / 10m);
+            if (!score.HasValue)
+            {
+                return;
+            }
+
+            var bucket = (int)Math.Floor(score.Value / 10m);
             var lower = bucket * 10;
             _scoreBuckets.TryGetValue(lower, out var count);
             _scoreBuckets[lower] = count + 1;

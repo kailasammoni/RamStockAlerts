@@ -1,53 +1,67 @@
-SYSTEM GOAL
+# SYSTEM_CHARTER.md
 
-Detect transient order-book imbalances using IBKR Level II + tape data that statistically precede short-term price continuation, and deliver high-quality, human-executed trade blueprints.
+## 🧭 System Goal (Locked)
+Build an order-flow intelligence platform that detects transient liquidity dislocations using IBKR Level II depth + tape, and produces high-quality, human-executed trade signals.
 
-DATA SOURCE (LOCKED)
+- **Strategy class**: Order-flow / market microstructure
+- **Edge source**: Order book imbalance + absorption + tape acceleration
+- **No** prediction, indicators, or momentum chasing
+- **Scarcity > frequency** → target 3–6 trades/day max
 
-Interactive Brokers (IBKR)
+---
 
-Nasdaq TotalView + NYSE OpenBook
+## 🚀 MVP Status
 
-Real Level II depth + Time & Sales
+**✅ MVP is live and running in shadow mode**
 
-No Schwab / no quote-only mode
+- Order book and tape feeds from IBKR are connected
+- Signal engine is processing real-time data continuously
+- Trade blueprints (entry/stop/target) are generated
+- Alerts are evaluated and scored with post-signal filters
+- All accepted/rejected signals logged to structured shadow journal
 
-STRATEGY CLASS
+---
 
-Order-flow / liquidity dislocation
+## ⚙️ Signal Engine
 
-Pre-price structure, not post-momentum
+- **Live scoring system** (QI, absorption, tape accel, spread, walls, VWAP bonus)
+- **Post-signal rejection filters**:
+  - Spoofing: large cancels at ask
+  - Replenishment: ask refill after fills
+  - Tape stall: lack of recent trades
+- **Not yet implemented**: spread blowout post-trigger, cancel-on-tape-freeze
 
-NON-NEGOTIABLE RULES
+---
 
-No signals when order book is invalid
+## 📉 Risk Management
 
-Crossed or locked book = INVALID
+- Stop = Entry − 4×Spread
+- Target = Entry + 8×Spread
+- No dynamic sizing yet (risk % per trade TBD)
 
-Replay determinism required before live shadow trading
+---
 
-Scarcity > frequency (3–6 trades/day max)
+## 📊 Scarcity Controls
 
-SUCCESS CRITERIA
+- Max 6 trades/day
+- Max 1 per ticker/day
+- Lower-ranked signals automatically dropped
 
-Win rate: 62–68%
+---
 
-Avg win: ≥ +0.45R
+## 🔔 Execution
 
-Avg loss: ≤ −1R
+- Currently running in shadow (simulation) mode
+- No real trades or Discord alerts yet
+- All signals journaled to disk
 
-Max daily drawdown: ≤ 1.5%
+---
 
-Monthly target (@ $25–30k): $1,000+
+## 🐞 Known Issues
 
-CURRENT STATUS
+- Book validity edge cases (crossed book, stale quotes)
+- Rejection filters still being hardened
+- Scanner relaunch on IBKR startup has minor glitches
+- Journal includes some default/missing values (under review)
 
-IBKR Level II verified in TWS
-
-Raw L2 + tape logging verified
-
-Replay implemented
-
-Fixing crossed book & exception hygiene
-
-Shadow trading pending replay PASS
+---

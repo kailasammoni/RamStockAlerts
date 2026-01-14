@@ -12,6 +12,7 @@ namespace RamStockAlerts.Services;
 
 public sealed class ShadowTradeJournal : BackgroundService
 {
+    internal const int CurrentSchemaVersion = 2;
     private readonly ILogger<ShadowTradeJournal> _logger;
     private readonly Channel<ShadowTradeJournalEntry> _channel;
     private readonly string _filePath;
@@ -31,6 +32,8 @@ public sealed class ShadowTradeJournal : BackgroundService
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
     }
+
+    public Guid SessionId => _sessionId;
 
     public bool TryEnqueue(ShadowTradeJournalEntry entry)
     {
@@ -68,9 +71,18 @@ public sealed class ShadowTradeJournal : BackgroundService
         {
             try
             {
-                entry.SchemaVersion = entry.SchemaVersion == 0 ? 1 : entry.SchemaVersion;
+                entry.SchemaVersion = entry.SchemaVersion == 0 ? CurrentSchemaVersion : entry.SchemaVersion;
+                entry.JournalWriteTimestampUtc = DateTimeOffset.UtcNow;
+                EnsureMonotonicTimestamps(entry);
                 var line = JsonSerializer.Serialize(entry);
                 await _writer.WriteLineAsync(line);
+                _logger.LogInformation(
+                    "JournalWrite: type={Type} schema={Schema} ticker={Ticker} score={Score} reason={Reason}",
+                    entry.DecisionOutcome ?? entry.EntryType ?? "Unknown",
+                    entry.SchemaVersion,
+                    entry.Symbol ?? string.Empty,
+                    entry.DecisionInputs?.Score,
+                    entry.RejectionReason ?? string.Empty);
             }
             catch (Exception ex)
             {
@@ -93,6 +105,22 @@ public sealed class ShadowTradeJournal : BackgroundService
         {
             await _writer.FlushAsync();
             _writer.Dispose();
+        }
+    }
+
+    private static void EnsureMonotonicTimestamps(ShadowTradeJournalEntry entry)
+    {
+        if (entry.MarketTimestampUtc.HasValue && entry.DecisionTimestampUtc.HasValue &&
+            entry.DecisionTimestampUtc < entry.MarketTimestampUtc)
+        {
+            entry.DecisionTimestampUtc = entry.MarketTimestampUtc;
+        }
+
+        var floor = entry.DecisionTimestampUtc ?? entry.MarketTimestampUtc;
+        if (floor.HasValue && entry.JournalWriteTimestampUtc.HasValue &&
+            entry.JournalWriteTimestampUtc < floor)
+        {
+            entry.JournalWriteTimestampUtc = floor;
         }
     }
 }

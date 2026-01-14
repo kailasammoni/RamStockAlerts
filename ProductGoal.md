@@ -157,3 +157,74 @@ This system does not predict price.
 It detects **liquidity failure points** — moments where institutions cannot hide their intent.
 
 That is where small, repeatable profits live.
+
+
+Update on 1/14/2026
+
+
+# PRODUCT_GOAL.md
+
+## 🎯 Product Vision
+
+Build a scarce, high-trust alert engine for human traders using market microstructure.
+
+**Core focus:**
+- Scarcity over volume (max 3–6 trades/day)
+- Detect dislocations, not trends
+- Use book + tape as primary signal drivers
+
+---
+
+## 🧠 Engine Logic
+
+### 🔍 Trade Signal Criteria
+- Quantitative score system (0–10) with live weights
+- Accept if score ≥ 7.5
+- Includes:
+  - Queue Imbalance (QI)
+  - Absorption (fill vs cancel at ask)
+  - Tape speed (volume/time accel)
+  - Wall pressure and depletion
+  - VWAP reclaim bonus (+0.5)
+  - Spread penalty
+
+### ❌ Post-Signal Filters
+- Spoofing rejection: large cancel near ask
+- Replenishment rejection: refill after fill
+- Tape stall: no recent prints
+- (Planned): spread blowout, tape freeze filter
+
+---
+
+## 📏 Blueprint Generation
+- Entry = Ask
+- Stop = Entry − 4×Spread
+- Target = Entry + 8×Spread
+- Stored per signal in shadow journal
+
+---
+
+## 📦 Universe Construction
+
+- IBKR Scanner live
+  - Filters: Price $5–20, Float < 150M, common stocks only
+  - Excludes: ETFs, ADRs, warrants, OTC
+- (Planned): enforce rel vol > 2, spread < $0.05
+
+---
+
+## 📚 Journal / Replay
+
+- Every signal captured (accepted/rejected)
+- JSONL format with timestamp, ticker, score, rejection reason
+- Used for:
+  - Strategy audit
+  - Replay testing
+  - Outcome tracking
+
+---
+
+## 📈 Performance Tracking (WIP)
+- Shadow trades journaled but not yet scored as wins/losses
+- Outcome tagging (TP/hit/SL/miss) needed
+- Profit factor, drawdown, hit rate → not implemented yet
