@@ -323,7 +323,7 @@ public sealed class ContractClassificationService
 
                 var completed = await Task.WhenAny(
                     task,
-                    Task.Delay(TimeSpan.FromSeconds(5), cancellationToken));
+                    Task.Delay(TimeSpan.FromSeconds(25), cancellationToken));
 
                 if (completed != task || !task.IsCompletedSuccessfully)
                 {

@@ -190,6 +190,7 @@ builder.Services.AddScoped<PerformanceTracker>();
 builder.Services.AddSingleton<ApiQuotaTracker>();
 builder.Services.AddScoped<BacktestService>();
 builder.Services.AddSingleton<ShadowTradeJournal>();
+builder.Services.AddSingleton<IShadowTradeJournal>(sp => sp.GetRequiredService<ShadowTradeJournal>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ShadowTradeJournal>());
 builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();

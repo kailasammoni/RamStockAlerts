@@ -10,7 +10,7 @@ namespace RamStockAlerts.Services;
 // NOTE: Offline ReplayShadow mode intentionally omitted.
 // Schema validated via live shadow trading only.
 
-public sealed class ShadowTradeJournal : BackgroundService
+public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
 {
     internal const int CurrentSchemaVersion = 2;
     private readonly ILogger<ShadowTradeJournal> _logger;

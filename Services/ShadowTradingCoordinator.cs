@@ -16,7 +16,7 @@ public sealed class ShadowTradingCoordinator
     private const int TapePresenceWindowMs = 3000;
     private readonly OrderFlowMetrics _metrics;
     private readonly OrderFlowSignalValidator _validator;
-    private readonly ShadowTradeJournal _journal;
+    private readonly IShadowTradeJournal _journal;
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly ILogger<ShadowTradingCoordinator> _logger;
     private readonly bool _enabled;
@@ -32,7 +32,7 @@ public sealed class ShadowTradingCoordinator
         IConfiguration configuration,
         OrderFlowMetrics metrics,
         OrderFlowSignalValidator validator,
-        ShadowTradeJournal journal,
+        IShadowTradeJournal journal,
         ScarcityController scarcityController,
         MarketDataSubscriptionManager subscriptionManager,
         ILogger<ShadowTradingCoordinator> logger)
@@ -67,23 +67,45 @@ public sealed class ShadowTradingCoordinator
 
         if (!book.IsBookValid(out _, nowMs))
         {
-            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyBookInvalid);
-            TryLogGatingRejection(book.Symbol, "NotReady_BookInvalid", decisionResult);
+            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(
+                book,
+                nowMs,
+                _subscriptionManager.IsTapeEnabled(book.Symbol));
+            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyBookInvalid, tapeStatus);
+            TryLogGatingRejection(book.Symbol, "NotReady_BookInvalid", decisionResult, tapeStatus);
             return;
         }
 
-        if (!ShadowTradingHelpers.HasRecentTape(book, nowMs))
+        var depthEnabled = _subscriptionManager.IsDepthEnabled(book.Symbol);
+        var tapeEnabled = _subscriptionManager.IsTapeEnabled(book.Symbol);
+        if (!depthEnabled || !tapeEnabled)
         {
-            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyTapeStale);
-            TryLogGatingRejection(book.Symbol, "NotReady_TapeStale", decisionResult);
+            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, tapeEnabled);
+            var reason = tapeEnabled ? "NotReady_NoDepth" : "NotReady_TapeMissingSubscription";
+            var hardReason = tapeEnabled ? HardRejectReason.NotReadyNoDepth : HardRejectReason.NotReadyTapeMissingSubscription;
+            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, hardReason, tapeStatus);
+            TryLogGatingRejection(book.Symbol, reason, decisionResult, tapeStatus);
+            return;
+        }
+
+        var tapeStatusReadyCheck = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true);
+        var tapeRejectionReason = GetTapeRejectionReason(tapeStatusReadyCheck);
+        if (tapeRejectionReason != null)
+        {
+            var decisionResult = BuildNotReadyDecisionResult(
+                book,
+                nowMs,
+                MapReason(tapeRejectionReason),
+                tapeStatusReadyCheck);
+            TryLogGatingRejection(book.Symbol, tapeRejectionReason, decisionResult, tapeStatusReadyCheck);
             return;
         }
 
         var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
         if (snapshot == null)
         {
-            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyNoDepth);
-            TryLogGatingRejection(book.Symbol, "NotReady_NoDepth", decisionResult);
+            var decisionResult = BuildNotReadyDecisionResult(book, nowMs, HardRejectReason.NotReadyNoDepth, tapeStatusReadyCheck);
+            TryLogGatingRejection(book.Symbol, "NotReady_NoDepth", decisionResult, tapeStatusReadyCheck);
             return;
         }
 
@@ -120,9 +142,10 @@ public sealed class ShadowTradingCoordinator
                 nowMs,
                 book.BestBid,
                 book.BestAsk,
-                book);
+                book,
+                tapeStatusReadyCheck);
 
-            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
             rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = rejectionReason;
             rejectedEntry.DecisionResult = decisionResult;
@@ -147,8 +170,9 @@ public sealed class ShadowTradingCoordinator
                 nowMs,
                 book.BestBid,
                 book.BestAsk,
-                book);
-            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+                book,
+                tapeStatusReadyCheck);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
             rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "SpoofSuspected";
             rejectedEntry.DecisionResult = decisionResult;
@@ -173,8 +197,9 @@ public sealed class ShadowTradingCoordinator
                 nowMs,
                 book.BestBid,
                 book.BestAsk,
-                book);
-            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+                book,
+                tapeStatusReadyCheck);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
             rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "ReplenishmentSuspected";
             rejectedEntry.DecisionResult = decisionResult;
@@ -197,8 +222,9 @@ public sealed class ShadowTradingCoordinator
                 nowMs,
                 book.BestBid,
                 book.BestAsk,
-                book);
-            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+                book,
+                tapeStatusReadyCheck);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
             rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "ReplenishmentSuspected";
             rejectedEntry.DecisionResult = decisionResult;
@@ -221,8 +247,9 @@ public sealed class ShadowTradingCoordinator
                 nowMs,
                 book.BestBid,
                 book.BestAsk,
-                book);
-            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+                book,
+                tapeStatusReadyCheck);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
             rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = "AbsorptionInsufficient";
             rejectedEntry.DecisionResult = decisionResult;
@@ -247,8 +274,9 @@ public sealed class ShadowTradingCoordinator
                 nowMs,
                 book.BestBid,
                 book.BestAsk,
-                book);
-            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+                book,
+                tapeStatusReadyCheck);
+            var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
             rejectedEntry.DecisionOutcome = "Rejected";
             rejectedEntry.RejectionReason = rejectionReason;
             rejectedEntry.DecisionResult = decisionResult;
@@ -273,9 +301,10 @@ public sealed class ShadowTradingCoordinator
             nowMs,
             book.BestBid,
             book.BestAsk,
-            book);
+            book,
+            tapeStatusReadyCheck);
 
-        var pendingEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats);
+        var pendingEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
         pendingEntry.DecisionResult = acceptedDecisionResult;
         pendingEntry.DecisionOutcome = "Pending";
         pendingEntry.DecisionTrace = BuildDecisionTraceForPending();
@@ -309,7 +338,8 @@ public sealed class ShadowTradingCoordinator
         long nowMs,
         Guid decisionId,
         DepthSnapshot depthSnapshot,
-        TapeStats tapeStats)
+        TapeStats tapeStats,
+        ShadowTradingHelpers.TapeStatus tapeStatus)
     {
         var marketTs = snapshot.TimestampMs > 0
             ? DateTimeOffset.FromUnixTimeMilliseconds(snapshot.TimestampMs)
@@ -332,7 +362,7 @@ public sealed class ShadowTradingCoordinator
             ObservedMetrics = BuildObservedMetrics(snapshot, depthSnapshot, tapeStats, depthDeltaSnapshot, book),
             DecisionInputs = BuildDecisionInputs(snapshot, depthSnapshot, tapeStats, depthDeltaSnapshot, decision, nowMs, book),
             DecisionTrace = new List<string>(),
-            DataQualityFlags = BuildDataQualityFlags(book, depthSnapshot, tapeStats, nowMs)
+            DataQualityFlags = BuildDataQualityFlags(book, depthSnapshot, tapeStats, tapeStatus, nowMs)
         };
     }
 
@@ -347,7 +377,8 @@ public sealed class ShadowTradingCoordinator
         long nowMs,
         decimal bestBidPrice,
         decimal bestAskPrice,
-        OrderBookState book)
+        OrderBookState book,
+        ShadowTradingHelpers.TapeStatus tapeStatus)
     {
         var context = new StrategyDecisionBuildContext
         {
@@ -385,7 +416,7 @@ public sealed class ShadowTradingCoordinator
             TickerCooldownRemainingSec = _validator.GetCooldownRemainingSeconds(snapshot.Symbol, nowMs),
             AlertsLastHourCount = _validator.GetAlertCountInLastHour(nowMs),
             IsBookValid = true,
-            TapeRecent = ShadowTradingHelpers.HasRecentTape(book, nowMs),
+            TapeRecent = tapeStatus.IsReady,
             BidsTopN = depthSnapshot.BidsTopN
                 .Select(b => new FeatureDepthLevelSnapshot(b.Level, b.Price, b.Size))
                 .ToList(),
@@ -549,7 +580,8 @@ public sealed class ShadowTradingCoordinator
     private StrategyDecisionResult BuildNotReadyDecisionResult(
         OrderBookState book,
         long nowMs,
-        HardRejectReason reason)
+        HardRejectReason reason,
+        ShadowTradingHelpers.TapeStatus tapeStatus)
     {
         var lastTrade = book.RecentTrades.LastOrDefault();
         var lastTapeAge = lastTrade.TimestampMs > 0 ? nowMs - lastTrade.TimestampMs : (long?)null;
@@ -567,7 +599,7 @@ public sealed class ShadowTradingCoordinator
             BestAskPrice = book.BestAsk,
             LastDepthUpdateAgeMs = book.LastDepthUpdateUtcMs > 0 ? nowMs - book.LastDepthUpdateUtcMs : null,
             LastTapeUpdateAgeMs = lastTapeAge,
-            TapeRecent = ShadowTradingHelpers.HasRecentTape(book, nowMs),
+            TapeRecent = tapeStatus.IsReady,
             IsBookValid = book.IsBookValid(out _, nowMs)
         };
 
@@ -740,10 +772,22 @@ public sealed class ShadowTradingCoordinator
         return trace;
     }
 
+    private static string? GetTapeRejectionReason(ShadowTradingHelpers.TapeStatus tapeStatus)
+    {
+        return tapeStatus.Kind switch
+        {
+            ShadowTradingHelpers.TapeStatusKind.MissingSubscription => "NotReady_TapeMissingSubscription",
+            ShadowTradingHelpers.TapeStatusKind.NotWarmedUp => "NotReady_TapeNotWarmedUp",
+            ShadowTradingHelpers.TapeStatusKind.Stale => "NotReady_TapeStale",
+            _ => null
+        };
+    }
+
     private static List<string> BuildDataQualityFlags(
         OrderBookState book,
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats,
+        ShadowTradingHelpers.TapeStatus tapeStatus,
         long nowMs)
     {
         var flags = new List<string>();
@@ -752,10 +796,21 @@ public sealed class ShadowTradingCoordinator
             flags.Add($"BookInvalid:{reason}");
         }
 
-        // Canonical tape staleness check: TapeStale indicates tape data is stale
-        if (!ShadowTradingHelpers.HasRecentTape(book, nowMs))
+        switch (tapeStatus.Kind)
         {
-            flags.Add("TapeStale");
+            case ShadowTradingHelpers.TapeStatusKind.MissingSubscription:
+                flags.Add("TapeMissingSubscription");
+                break;
+            case ShadowTradingHelpers.TapeStatusKind.NotWarmedUp:
+                flags.Add("TapeNotWarmedUp");
+                break;
+            case ShadowTradingHelpers.TapeStatusKind.Stale:
+                flags.Add("TapeStale");
+                if (tapeStatus.AgeMs.HasValue)
+                {
+                    flags.Add($"TapeStale:ageMs={tapeStatus.AgeMs.Value}");
+                }
+                break;
         }
 
         // PartialBook: less than expected configured depth levels were available
@@ -769,12 +824,6 @@ public sealed class ShadowTradingCoordinator
         if (depthSnapshot.LastDepthUpdateAgeMs.HasValue && depthSnapshot.LastDepthUpdateAgeMs.Value > 2000)
         {
             flags.Add("StaleDepth");
-        }
-
-        // Additional staleness detail: TapeStale:ageMs for analytics
-        if (tapeStats.LastTapeAgeMs.HasValue && tapeStats.LastTapeAgeMs.Value > TapePresenceWindowMs)
-        {
-            flags.Add($"TapeStale:ageMs={tapeStats.LastTapeAgeMs.Value}");
         }
 
         return flags;
@@ -800,6 +849,8 @@ public sealed class ShadowTradingCoordinator
         {
             "NotReady_BookInvalid" => HardRejectReason.NotReadyBookInvalid,
             "NotReady_TapeStale" => HardRejectReason.NotReadyTapeStale,
+            "NotReady_TapeMissingSubscription" => HardRejectReason.NotReadyTapeMissingSubscription,
+            "NotReady_TapeNotWarmedUp" => HardRejectReason.NotReadyTapeNotWarmedUp,
             "NotReady_NoDepth" => HardRejectReason.NotReadyNoDepth,
             "CooldownActive" => HardRejectReason.CooldownActive,
             "GlobalRateLimit" => HardRejectReason.GlobalRateLimit,
@@ -877,7 +928,11 @@ public sealed class ShadowTradingCoordinator
         }
     }
 
-    private void TryLogGatingRejection(string symbol, string reason, StrategyDecisionResult? decisionResult = null)
+    private void TryLogGatingRejection(
+        string symbol,
+        string reason,
+        StrategyDecisionResult? decisionResult = null,
+        ShadowTradingHelpers.TapeStatus? tapeStatus = null)
     {
         if (!_rejectionLogger.ShouldLog(symbol, _subscriptionManager.IsFocusSymbol(symbol)))
         {
@@ -889,6 +944,9 @@ public sealed class ShadowTradingCoordinator
         var book = _metrics.GetOrderBookSnapshot(symbol);
         var depthSnapshot = book is null ? null : BuildDepthSnapshot(book);
         TapeStats? tapeStats = book is null ? null : BuildTapeStats(book, nowMs, null);
+        var resolvedTapeStatus = tapeStatus ?? (book is null
+            ? default
+            : ShadowTradingHelpers.GetTapeStatus(book, nowMs, _subscriptionManager.IsTapeEnabled(symbol)));
 
         var entry = new ShadowTradeJournalEntry
         {
@@ -906,7 +964,7 @@ public sealed class ShadowTradingCoordinator
             DecisionTrace = new List<string> { $"GateReject:{reason}" },
             DataQualityFlags = book is null || depthSnapshot is null || tapeStats is null
                 ? new List<string> { "MissingBookContext" }
-                : BuildDataQualityFlags(book, depthSnapshot, tapeStats.Value, nowMs),
+                : BuildDataQualityFlags(book, depthSnapshot, tapeStats.Value, resolvedTapeStatus, nowMs),
             ObservedMetrics = book is null || depthSnapshot is null || tapeStats is null
                 ? null
                 : new ShadowTradeJournalEntry.ObservedMetricsSnapshot

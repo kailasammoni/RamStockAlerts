@@ -21,6 +21,8 @@ public enum HardRejectReason
     Unknown = 0,
     NotReadyBookInvalid,
     NotReadyTapeStale,
+    NotReadyTapeMissingSubscription,
+    NotReadyTapeNotWarmedUp,
     NotReadyNoDepth,
     CooldownActive,
     GlobalRateLimit,

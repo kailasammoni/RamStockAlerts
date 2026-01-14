@@ -61,6 +61,8 @@ public sealed class MarketDataSubscriptionManager
     private readonly ConcurrentDictionary<int, int> _depthSubscribeErrorsByCode = new();
     private int? _lastDepthErrorCode;
     private string? _lastDepthErrorMessage;
+    private IReadOnlyList<string> _lastTapeEnabledLog = Array.Empty<string>();
+    private IReadOnlyList<string> _lastEligibleLog = Array.Empty<string>();
 
     public MarketDataSubscriptionManager(
         IConfiguration configuration,
@@ -123,7 +125,28 @@ public sealed class MarketDataSubscriptionManager
             .ToList();
     }
 
-    public bool IsFocusSymbol(string symbol)
+    public IReadOnlyCollection<string> GetTapeEnabledSymbols()
+    {
+        return GetTickByTickSymbols();
+    }
+
+    public IReadOnlyCollection<string> GetDepthEnabledSymbols()
+    {
+        return _active.Values
+            .Where(state => state.DepthRequestId.HasValue)
+            .Select(state => state.Symbol)
+            .OrderBy(symbol => symbol)
+            .ToList();
+    }
+
+    public IReadOnlyCollection<string> GetEligibleSymbols()
+    {
+        var depth = GetDepthEnabledSymbols();
+        var tape = new HashSet<string>(GetTapeEnabledSymbols(), StringComparer.OrdinalIgnoreCase);
+        return depth.Where(tape.Contains).OrderBy(symbol => symbol).ToList();
+    }
+
+    public bool IsTapeEnabled(string symbol)
     {
         if (string.IsNullOrWhiteSpace(symbol))
         {
@@ -132,6 +155,32 @@ public sealed class MarketDataSubscriptionManager
 
         return _active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state)
             && state.TickByTickRequestId.HasValue;
+    }
+
+    public bool IsDepthEnabled(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        return _active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state)
+            && state.DepthRequestId.HasValue;
+    }
+
+    public bool IsEligibleSymbol(string symbol)
+    {
+        return IsDepthEnabled(symbol) && IsTapeEnabled(symbol);
+    }
+
+    public bool IsFocusSymbol(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        return IsTapeEnabled(symbol);
     }
 
     public void RecordActivity(string symbol)
@@ -309,6 +358,7 @@ public sealed class MarketDataSubscriptionManager
                 disableTickByTickAsync,
                 now,
                 cancellationToken);
+            LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
         }
         finally
         {
@@ -458,6 +508,29 @@ public sealed class MarketDataSubscriptionManager
         return activeTickByTick;
     }
 
+    private void LogTapeDepthPairingIfChanged(int tickByTickMaxSymbols)
+    {
+        var depthEnabled = GetDepthEnabledSymbols().ToList();
+        var tapeEnabled = GetTapeEnabledSymbols().ToList();
+        var eligible = GetEligibleSymbols().ToList();
+
+        if (_lastTapeEnabledLog.SequenceEqual(tapeEnabled, StringComparer.OrdinalIgnoreCase) &&
+            _lastEligibleLog.SequenceEqual(eligible, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _lastTapeEnabledLog = tapeEnabled;
+        _lastEligibleLog = eligible;
+
+        _logger.LogInformation(
+            "TapeDepthPairing: depthCount={DepthCount} tapeCap={TapeCap} tapeEnabled=[{TapeEnabled}] eligible=[{Eligible}]",
+            depthEnabled.Count,
+            tickByTickMaxSymbols,
+            string.Join(",", tapeEnabled),
+            string.Join(",", eligible));
+    }
+
     private int GetTotalLines()
     {
         return _active.Values.Sum(GetActiveLineCount);
@@ -583,7 +656,7 @@ public sealed class MarketDataSubscriptionManager
         }
 
         var candidates = _active.Values
-            .Where(state => orderIndex.ContainsKey(state.Symbol))
+            .Where(state => orderIndex.ContainsKey(state.Symbol) && state.DepthRequestId.HasValue)
             .OrderByDescending(state => GetActivityKeyDescending(state))
             .ThenBy(state => orderIndex[state.Symbol])
             .Select(state => state.Symbol)
