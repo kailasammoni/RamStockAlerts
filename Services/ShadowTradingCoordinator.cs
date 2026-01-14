@@ -25,6 +25,7 @@ public sealed class ShadowTradingCoordinator
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly ScarcityController _scarcityController;
     private readonly RejectionLogger _rejectionLogger;
+    private readonly GatingRejectionThrottle _gatingRejectionThrottle;
     private readonly ConcurrentDictionary<string, long> _lastProcessedSnapshotMs = new();
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
@@ -50,6 +51,8 @@ public sealed class ShadowTradingCoordinator
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
         _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
+        var gatingRejectDedupeSeconds = Math.Max(0, configuration.GetValue("ShadowTrading:GatingRejectDedupeSeconds", 4));
+        _gatingRejectionThrottle = new GatingRejectionThrottle(TimeSpan.FromSeconds(gatingRejectDedupeSeconds));
         var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
 
@@ -957,6 +960,10 @@ public sealed class ShadowTradingCoordinator
         }
 
         var now = DateTimeOffset.UtcNow;
+        if (IsNotReadyRejection(reason) && !_gatingRejectionThrottle.ShouldLog(symbol, reason, now))
+        {
+            return;
+        }
         var nowMs = now.ToUnixTimeMilliseconds();
         var book = _metrics.GetOrderBookSnapshot(symbol);
         var depthSnapshot = book is null ? null : BuildDepthSnapshot(book);
@@ -1010,6 +1017,9 @@ public sealed class ShadowTradingCoordinator
 
         EnqueueEntry(entry);
     }
+
+    private static bool IsNotReadyRejection(string reason) =>
+        reason.StartsWith("NotReady_", StringComparison.OrdinalIgnoreCase);
 
     private static string FormatRejectionReason(ScarcityDecision decision)
     {
@@ -1141,6 +1151,46 @@ public sealed class ShadowTradingCoordinator
                        && TapeStatusKind == tapeStatusKind;
             }
         }
+    }
+
+    private sealed class GatingRejectionThrottle
+    {
+        private readonly TimeSpan _interval;
+        private readonly Dictionary<string, GatingRejectionState> _states = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _lock = new();
+
+        public GatingRejectionThrottle(TimeSpan interval)
+        {
+            _interval = interval;
+        }
+
+        public bool ShouldLog(string symbol, string reason, DateTimeOffset now)
+        {
+            if (_interval <= TimeSpan.Zero)
+            {
+                return true;
+            }
+
+            lock (_lock)
+            {
+                if (!_states.TryGetValue(symbol, out var state))
+                {
+                    _states[symbol] = new GatingRejectionState(reason, now);
+                    return true;
+                }
+
+                if (!string.Equals(state.Reason, reason, StringComparison.OrdinalIgnoreCase) ||
+                    now - state.Timestamp >= _interval)
+                {
+                    _states[symbol] = new GatingRejectionState(reason, now);
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        private sealed record GatingRejectionState(string Reason, DateTimeOffset Timestamp);
     }
 
     private sealed class DepthSnapshot

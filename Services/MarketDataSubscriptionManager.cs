@@ -455,11 +455,15 @@ public sealed class MarketDataSubscriptionManager
 
             _tickByTickDisabledUntil[symbol] = now.Add(TickByTickCooldown);
 
-            if (state.TickByTickRequestId.HasValue)
+            if (state.TickByTickRequestId == requestId)
             {
                 await disableTickByTickAsync(symbol, cancellationToken);
-                MarkPendingCancel(state.TickByTickRequestId.Value, now);
+                MarkPendingCancel(requestId, now);
                 state.TickByTickRequestId = null;
+            }
+            else
+            {
+                UntrackRequest(requestId);
             }
 
             _logger.LogInformation(
@@ -612,6 +616,10 @@ public sealed class MarketDataSubscriptionManager
         }
 
         var activeTickByTick = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
+        if (activeTickByTick >= tickByTickMaxSymbols)
+        {
+            return activeTickByTick;
+        }
         if (_skipTickByTickEnableThisCycle)
         {
             return activeTickByTick;

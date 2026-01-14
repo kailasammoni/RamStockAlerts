@@ -59,8 +59,78 @@ public class ShadowTradingCoordinatorTapeGateTests
     }
 
     [Fact]
+    public async Task GatingRejection_SuppressesSameReasonWithinInterval()
+    {
+        var config = BuildConfig();
+        var symbol = "TEST";
+        var manager = await CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: false);
+        var (coordinator, journal, metrics) = BuildCoordinator(config, manager);
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var book = BuildValidBook(symbol, nowMs);
+        metrics.UpdateMetrics(book, nowMs);
+
+        coordinator.ProcessSnapshot(book, nowMs);
+        coordinator.ProcessSnapshot(book, nowMs + 1);
+
+        var entry = Assert.Single(journal.Entries);
+        Assert.Equal("NotReady_TapeMissingSubscription", entry.RejectionReason);
+    }
+
+    [Fact]
+    public async Task GatingRejection_LogsWhenReasonChanges()
+    {
+        var config = BuildConfig();
+        var symbol = "TEST";
+        var manager = await CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: false);
+        var (coordinator, journal, metrics) = BuildCoordinator(config, manager);
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var invalidBook = new OrderBookState(symbol);
+
+        coordinator.ProcessSnapshot(invalidBook, nowMs);
+
+        var validBook = BuildValidBook(symbol, nowMs + 1);
+        metrics.UpdateMetrics(validBook, nowMs + 1);
+        coordinator.ProcessSnapshot(validBook, nowMs + 1);
+
+        Assert.Equal(2, journal.Entries.Count);
+        Assert.Contains(journal.Entries, entry => entry.RejectionReason == "NotReady_BookInvalid");
+        Assert.Contains(journal.Entries, entry => entry.RejectionReason == "NotReady_TapeMissingSubscription");
+    }
+
+    [Fact]
     public async Task GateReject_NotWarmedUp_WritesOnceWithinInterval()
     {
+        return new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TradingMode"] = "Shadow",
+                ["MarketData:EnableDepth"] = "true",
+                ["MarketData:EnableTape"] = "true",
+                ["MarketData:MaxLines"] = "10",
+                ["MarketData:TickByTickMaxSymbols"] = "1",
+                ["ShadowTrading:GatingRejectDedupeSeconds"] = "5"
+            })
+            .Build();
+    }
+
+    private static (ShadowTradingCoordinator Coordinator, TestShadowTradeJournal Journal, OrderFlowMetrics Metrics) BuildCoordinator(
+        IConfiguration config,
+        MarketDataSubscriptionManager manager)
+    {
+        var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
+        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
+        var journal = new TestShadowTradeJournal();
+        var scarcity = new ScarcityController(config);
+        var coordinator = new ShadowTradingCoordinator(
+            config,
+            metrics,
+            validator,
+            journal,
+            scarcity,
+            manager,
+            NullLogger<ShadowTradingCoordinator>.Instance);
+
+        return (coordinator, journal, metrics);
         var config = ShadowTradingCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
         {
             ["MarketData:GateRejectLogMinIntervalMs"] = "2000"
