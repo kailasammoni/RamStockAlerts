@@ -370,7 +370,7 @@ public class IBkrMarketDataClient : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[IBKR] Error enabling tick-by-tick for {Symbol}", normalized);
+            _logger.LogWarning(ex, "[IBKR] Error enabling tick-by-tick for {Symbol} - possible subscription limit reached", normalized);
             if (requestId.HasValue && _eClientSocket?.IsConnected() == true)
             {
                 _eClientSocket.cancelTickByTickData(requestId.Value);
@@ -417,7 +417,7 @@ public class IBkrMarketDataClient : BackgroundService
             _tickerIdMap.TryRemove(existing.TickByTickRequestId.Value, out _);
             _activeSubscriptions[normalized] = existing with { TickByTickRequestId = null };
 
-            _logger.LogDebug(
+            _logger.LogInformation(
                 "[IBKR] Disabled tick-by-tick for {Symbol} tickByTickId={TickByTickId}",
                 normalized,
                 existing.TickByTickRequestId);
@@ -1190,12 +1190,27 @@ internal class IBkrWrapperImpl : EWrapper
             _logger.LogDebug("[IBKR Info {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
             return;
         }
+        
+        // Log tick-by-tick errors prominently
+        if (errorCode == 10167 || errorCode == 10168 || errorCode == 321 || errorMsg.Contains("tick-by-tick", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("[IBKR TickByTick Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
+        }
+        
         if (id > 0)
         {
             _errorHandler?.Invoke(id, errorCode, errorMsg);
         }
 
-        _logger.LogDebug("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
+        // Log all errors with ID at Info level for visibility during testing
+        if (id > 0)
+        {
+            _logger.LogInformation("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
+        }
+        else
+        {
+            _logger.LogDebug("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
+        }
     }
 
     public void error(string str) => _logger.LogError("[IBKR Error] {Message}", str);
