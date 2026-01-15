@@ -39,7 +39,8 @@ public sealed record DepthRetryPlan(
     string SecType,
     string? PrimaryExchange,
     string? Currency,
-    string PreviousExchange);
+    string PreviousExchange,
+    string NextExchange);
 
 public sealed class MarketDataSubscriptionManager
 {
@@ -363,6 +364,7 @@ public sealed class MarketDataSubscriptionManager
                     now,
                     now);
                 state.DepthExchange = subscription.DepthExchange;
+                RecordDepthAttempt(state, subscription.DepthExchange);
                 _active[subscription.Symbol] = state;
                 TrackRequests(state);
 
@@ -523,6 +525,10 @@ public sealed class MarketDataSubscriptionManager
             EnqueueDepthIneligibleSymbol(symbol);
 
             MarkDepthUnsupported(symbol, $"DepthUnsupported:{errorCode}", now);
+            _logger.LogWarning(
+                "DepthUnsupportedConfirmed: symbol={Symbol} attempts=[{Attempts}]",
+                symbol,
+                string.Join(",", GetDepthAttempts(state)));
 
             if (state.DepthRequestId.HasValue && await disableDepthAsync(symbol, cancellationToken))
             {
@@ -1102,6 +1108,7 @@ public sealed class MarketDataSubscriptionManager
         public bool DepthUpdateReceived { get; set; }
         public bool DepthRetryAttempted { get; set; }
         public string? DepthExchange { get; set; }
+        public List<string> DepthAttemptedExchanges { get; } = new();
         public DateTimeOffset SubscribedAtUtc { get; }
         public DateTimeOffset LastSeenUtc { get; set; }
         public DateTimeOffset LastActivityUtc { get; set; }
@@ -1184,6 +1191,7 @@ public sealed class MarketDataSubscriptionManager
         state.DepthRequestId = requestId;
         state.DepthUpdateReceived = false;
         state.DepthExchange = exchange;
+        RecordDepthAttempt(state, exchange);
         TrackRequest(requestId, symbol, MarketDataRequestKind.Depth);
     }
 
@@ -1213,6 +1221,7 @@ public sealed class MarketDataSubscriptionManager
         state.DepthRequestId = requestId;
         state.DepthUpdateReceived = false;
         state.DepthExchange = exchange;
+        RecordDepthAttempt(state, exchange);
         TrackRequest(requestId, symbol, MarketDataRequestKind.Depth);
     }
 
@@ -1233,14 +1242,19 @@ public sealed class MarketDataSubscriptionManager
             return null;
         }
 
-        if (!string.Equals(state.DepthExchange, "SMART", StringComparison.OrdinalIgnoreCase))
+        var classifications = await _classificationService.GetClassificationsAsync(new[] { mapping.Symbol }, cancellationToken);
+        classifications.TryGetValue(mapping.Symbol, out var classification);
+        if (classification is null || classification.ConId <= 0 ||
+            (string.IsNullOrWhiteSpace(classification.PrimaryExchange) && string.IsNullOrWhiteSpace(classification.Exchange)))
         {
             return null;
         }
 
-        var classifications = await _classificationService.GetClassificationsAsync(new[] { mapping.Symbol }, cancellationToken);
-        classifications.TryGetValue(mapping.Symbol, out var classification);
-        if (classification is null || classification.ConId <= 0 || string.IsNullOrWhiteSpace(classification.PrimaryExchange))
+        var previousExchange = string.IsNullOrWhiteSpace(state.DepthExchange) ? "SMART" : state.DepthExchange!;
+        var nextExchange = ResolveDepthRetryExchange(previousExchange, classification);
+        if (string.IsNullOrWhiteSpace(nextExchange) ||
+            string.Equals(previousExchange, nextExchange, StringComparison.OrdinalIgnoreCase) ||
+            state.DepthAttemptedExchanges.Contains(nextExchange, StringComparer.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -1252,7 +1266,8 @@ public sealed class MarketDataSubscriptionManager
             classification.SecType ?? "STK",
             classification.PrimaryExchange,
             classification.Currency,
-            state.DepthExchange ?? "SMART");
+            previousExchange,
+            nextExchange);
     }
 
     public void MarkDepthUnsupported(string symbol, string reason, DateTimeOffset now)
@@ -1260,5 +1275,46 @@ public sealed class MarketDataSubscriptionManager
         _depthDisabledUntil[symbol] = now.Add(DepthCooldown);
         var classification = _classificationService.TryGetCached(symbol);
         _depthEligibilityCache.MarkIneligible(classification, symbol, reason, now.Add(DepthCooldown));
+    }
+
+    private static string? ResolveDepthRetryExchange(string previousExchange, ContractClassification classification)
+    {
+        if (string.Equals(previousExchange, "SMART", StringComparison.OrdinalIgnoreCase))
+        {
+            return !string.IsNullOrWhiteSpace(classification.PrimaryExchange)
+                ? classification.PrimaryExchange
+                : classification.Exchange;
+        }
+
+        return "SMART";
+    }
+
+    private static void RecordDepthAttempt(SubscriptionState state, string? exchange)
+    {
+        if (string.IsNullOrWhiteSpace(exchange))
+        {
+            return;
+        }
+
+        if (!state.DepthAttemptedExchanges.Contains(exchange, StringComparer.OrdinalIgnoreCase))
+        {
+            state.DepthAttemptedExchanges.Add(exchange);
+        }
+    }
+
+    private static IReadOnlyList<string> GetDepthAttempts(SubscriptionState state)
+    {
+        if (state.DepthAttemptedExchanges.Count == 0 && !string.IsNullOrWhiteSpace(state.DepthExchange))
+        {
+            return new[] { state.DepthExchange! };
+        }
+
+        if (!string.IsNullOrWhiteSpace(state.DepthExchange) &&
+            !state.DepthAttemptedExchanges.Contains(state.DepthExchange, StringComparer.OrdinalIgnoreCase))
+        {
+            return state.DepthAttemptedExchanges.Concat(new[] { state.DepthExchange! }).ToList();
+        }
+
+        return state.DepthAttemptedExchanges;
     }
 }
