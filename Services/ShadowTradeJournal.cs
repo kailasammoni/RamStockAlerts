@@ -76,14 +76,27 @@ public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
                 EnsureMonotonicTimestamps(entry);
                 var line = JsonSerializer.Serialize(entry);
                 await _writer.WriteLineAsync(line);
-                _logger.LogInformation(
-                    "JournalWrite: type={Type} outcome={Outcome} schema={Schema} ticker={Ticker} score={Score} reason={Reason}",
-                    entry.EntryType ?? "Unknown",
-                    entry.DecisionOutcome ?? "Unknown",
-                    entry.SchemaVersion,
-                    entry.Symbol ?? string.Empty,
-                    entry.DecisionInputs?.Score,
-                    entry.RejectionReason ?? string.Empty);
+                if (entry.EntryType == "UniverseUpdate")
+                {
+                    _logger.LogInformation(
+                        "JournalWrite: type={Type} schema={Schema} candidates={CandidatesCount} active={ActiveCount} exclusions={ExclusionsCount}",
+                        entry.EntryType,
+                        entry.SchemaVersion,
+                        entry.UniverseUpdate?.Counts?.CandidatesCount ?? 0,
+                        entry.UniverseUpdate?.Counts?.ActiveCount ?? 0,
+                        entry.UniverseUpdate?.Exclusions?.Count ?? 0);
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "JournalWrite: type={Type} outcome={Outcome} schema={Schema} ticker={Ticker} score={Score} reason={Reason}",
+                        entry.EntryType ?? "Unknown",
+                        entry.DecisionOutcome ?? "Unknown",
+                        entry.SchemaVersion,
+                        entry.Symbol ?? string.Empty,
+                        entry.DecisionInputs?.Score,
+                        entry.RejectionReason ?? string.Empty);
+                }
             }
             catch (Exception ex)
             {

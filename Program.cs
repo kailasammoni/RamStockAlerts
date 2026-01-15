@@ -203,7 +203,13 @@ builder.Services.AddSingleton<DepthUniverseFilter>();
 builder.Services.AddSingleton<StaticUniverseSource>();
 builder.Services.AddSingleton<IbkrScannerUniverseSource>();
 builder.Services.AddSingleton<UniverseService>();
-builder.Services.AddSingleton<MarketDataSubscriptionManager>();
+builder.Services.AddSingleton<MarketDataSubscriptionManager>(sp =>
+    new MarketDataSubscriptionManager(
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<ILogger<MarketDataSubscriptionManager>>(),
+        sp.GetRequiredService<ContractClassificationService>(),
+        sp.GetRequiredService<DepthEligibilityCache>(),
+        sp.GetService<IShadowTradeJournal>()));
 
 if (!isShadowMode && isLegacyUniverse)
 {

@@ -24,7 +24,7 @@ public class BracketTemplateBuilderTests
             ReferencePrice = 150m,
             AccountEquityUsd = 10000m,
             RiskPerTradePct = 0.01m, // 1% risk
-            MaxNotionalPct = 1.0m, // 100% max notional to avoid cap
+            MaxNotionalPct = 5.0m, // Raise cap to avoid notional limit in test
             Template = "VOL_A",
             VolatilityProxy = 0.10m // 10 cent spread
         };
@@ -70,7 +70,7 @@ public class BracketTemplateBuilderTests
             ReferencePrice = 200m,
             AccountEquityUsd = 10000m,
             RiskPerTradePct = 0.005m, // 0.5% risk
-            MaxNotionalPct = 1.0m, // 100% max notional to avoid cap
+            MaxNotionalPct = 5.0m, // Raise cap to avoid notional limit in test
             Template = "VOL_A",
             VolatilityProxy = null // No spread provided
         };
@@ -103,7 +103,7 @@ public class BracketTemplateBuilderTests
             ReferencePrice = 500m,
             AccountEquityUsd = 20000m,
             RiskPerTradePct = 0.01m,
-            MaxNotionalPct = 1.0m, // 100% max notional to avoid cap
+            MaxNotionalPct = 5.0m, // Raise cap to avoid notional limit in test
             Template = "VOL_A",
             VolatilityProxy = 0.25m
         };
@@ -148,7 +148,7 @@ public class BracketTemplateBuilderTests
             ReferencePrice = 300m,
             AccountEquityUsd = 15000m,
             RiskPerTradePct = 0.01m,
-            MaxNotionalPct = 1.0m, // 100% max notional to avoid cap
+            MaxNotionalPct = 5.0m, // Raise cap to avoid notional limit in test
             Template = "VOL_B",
             VolatilityProxy = 0.15m
         };
@@ -181,7 +181,7 @@ public class BracketTemplateBuilderTests
             ReferencePrice = 100m,
             AccountEquityUsd = 10000m,
             RiskPerTradePct = 0.01m,
-            MaxNotionalPct = 1.0m, // 100% max notional to avoid cap
+            MaxNotionalPct = 5.0m, // Raise cap to avoid notional limit in test
             Template = "VOL_B",
             VolatilityProxy = null
         };

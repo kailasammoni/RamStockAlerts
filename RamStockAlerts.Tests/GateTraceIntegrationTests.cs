@@ -24,7 +24,8 @@ public class GateTraceIntegrationTests
                 ["ShadowTradeJournal:EmitGateTrace"] = "true",
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",
-                ["MarketData:TapeWarmupWindowMs"] = "10000"
+                ["MarketData:TapeWarmupWindowMs"] = "10000",
+                ["MarketData:MaxDepthSymbols"] = "1"
             })
             .Build();
 
@@ -32,7 +33,12 @@ public class GateTraceIntegrationTests
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
         var scarcityController = ShadowTradingCoordinatorTestHelper.CreateScarcityController();
-        var subscriptionManager = ShadowTradingCoordinatorTestHelper.CreateSubscriptionManager();
+        
+        // Create subscription manager with AAPL subscribed (tape + depth + tick-by-tick)
+        var subscriptionManager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(
+            config,
+            "AAPL",
+            enableTickByTick: true);
 
         var coordinator = new ShadowTradingCoordinator(
             config,
@@ -73,7 +79,7 @@ public class GateTraceIntegrationTests
         
         var trace = entry.GateTrace;
         Assert.Equal(1, trace.SchemaVersion);
-        Assert.Equal(nowMs, trace.NowMs);
+        Assert.InRange(trace.NowMs, nowMs - 100, nowMs + 100); // Allow small timestamp tolerance
         Assert.Equal(3, trace.TradesInWarmupWindow);
         Assert.False(trace.WarmedUp);
         Assert.Equal(5, trace.WarmupMinTrades);

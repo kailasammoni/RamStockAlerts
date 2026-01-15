@@ -30,6 +30,8 @@ public sealed class ShadowTradingCoordinator
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _emitGateTrace;
+    private readonly ConcurrentDictionary<string, long> _lastInactiveSymbolLogMs = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan InactiveSymbolLogThrottle = TimeSpan.FromMinutes(5);
 
     public ShadowTradingCoordinator(
         IConfiguration configuration,
@@ -69,6 +71,14 @@ public sealed class ShadowTradingCoordinator
     {
         if (!_enabled)
         {
+            return;
+        }
+
+        // ActiveUniverse gate: Skip symbols not in Active Universe
+        // This prevents gate rejections and unnecessary processing for inactive symbols
+        if (!_subscriptionManager.IsActiveSymbol(book.Symbol))
+        {
+            LogInactiveSymbolSkipThrottled(book.Symbol, nowMs);
             return;
         }
 
@@ -1076,6 +1086,26 @@ public sealed class ShadowTradingCoordinator
 
     private static bool IsNotReadyRejection(string reason) =>
         reason.StartsWith("NotReady_", StringComparison.OrdinalIgnoreCase);
+
+    private void LogInactiveSymbolSkipThrottled(string symbol, long nowMs)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return;
+        }
+
+        var normalized = symbol.Trim().ToUpperInvariant();
+        var throttleMs = (long)InactiveSymbolLogThrottle.TotalMilliseconds;
+
+        if (_lastInactiveSymbolLogMs.TryGetValue(normalized, out var lastLogMs) && 
+            nowMs - lastLogMs < throttleMs)
+        {
+            return; // Still within throttle window
+        }
+
+        _lastInactiveSymbolLogMs[normalized] = nowMs;
+        _logger.LogDebug("[Shadow] Skipping snapshot for inactive symbol={Symbol}", symbol);
+    }
 
     private static string FormatRejectionReason(ScarcityDecision decision)
     {

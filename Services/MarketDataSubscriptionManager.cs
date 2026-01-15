@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using RamStockAlerts.Models;
 using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Services;
@@ -51,6 +52,7 @@ public sealed class MarketDataSubscriptionManager
     private readonly ContractClassificationService _classificationService;
     private readonly DepthEligibilityCache _depthEligibilityCache;
     private readonly SemaphoreSlim _sync = new(1, 1);
+    private readonly IShadowTradeJournal? _journal;
     private readonly ConcurrentDictionary<string, SubscriptionState> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<int, RequestMapping> _requestMap = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _depthDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -75,17 +77,21 @@ public sealed class MarketDataSubscriptionManager
     private static readonly TimeSpan PendingCancelTtl = TimeSpan.FromMinutes(2);
     private bool _skipTickByTickEnableThisCycle;
     private bool _tickByTickCapLogged;
+    private readonly HashSet<string> _activeUniverse = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> _lastActiveUniverseSnapshot = Array.Empty<string>();
 
     public MarketDataSubscriptionManager(
         IConfiguration configuration,
         ILogger<MarketDataSubscriptionManager> logger,
         ContractClassificationService classificationService,
-        DepthEligibilityCache depthEligibilityCache)
+        DepthEligibilityCache depthEligibilityCache,
+        IShadowTradeJournal? journal = null)
     {
         _configuration = configuration;
         _logger = logger;
         _classificationService = classificationService;
         _depthEligibilityCache = depthEligibilityCache;
+            _journal = journal;
         var maxLines = _configuration.GetValue("MarketData:MaxLines", 95);
         var tickByTickMaxSymbols = _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10);
         var depthRows = _configuration.GetValue("MarketData:DepthRows", 5);
@@ -139,7 +145,11 @@ public sealed class MarketDataSubscriptionManager
 
     public IReadOnlyCollection<string> GetTapeEnabledSymbols()
     {
-        return GetTickByTickSymbols();
+        return _active.Values
+            .Where(state => state.MktDataRequestId.HasValue)
+            .Select(state => state.Symbol)
+            .OrderBy(symbol => symbol)
+            .ToList();
     }
 
     public IReadOnlyCollection<string> GetDepthEnabledSymbols()
@@ -159,6 +169,17 @@ public sealed class MarketDataSubscriptionManager
     }
 
     public bool IsTapeEnabled(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        return _active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state)
+            && state.MktDataRequestId.HasValue;
+    }
+
+    public bool IsPremiumTapeEnabled(string symbol)
     {
         if (string.IsNullOrWhiteSpace(symbol))
         {
@@ -195,6 +216,87 @@ public sealed class MarketDataSubscriptionManager
         return IsTapeEnabled(symbol);
     }
 
+    /// <summary>
+    /// Returns true if symbol is in the Active Universe.
+    /// Active means: tape enabled, depth enabled, tick-by-tick enabled, and tape status == Ready.
+    /// </summary>
+    public bool IsActiveSymbol(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        return _activeUniverse.Contains(symbol.Trim().ToUpperInvariant());
+    }
+
+    /// <summary>
+    /// Returns an immutable snapshot of the current Active Universe.
+    /// </summary>
+    public IReadOnlyCollection<string> GetActiveUniverseSnapshot()
+    {
+        lock (_activeUniverse)
+        {
+            return _activeUniverse.OrderBy(s => s).ToList();
+        }
+    }
+
+    /// <summary>
+    /// Updates the Active Universe. Should only be called by subscription/universe refresh flow.
+    /// Logs changes with counts and reasons.
+    /// </summary>
+    public void SetActiveUniverse(IEnumerable<string> symbols, string reason)
+    {
+        if (symbols is null)
+        {
+            throw new ArgumentNullException(nameof(symbols));
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            throw new ArgumentException("Reason cannot be null or empty", nameof(reason));
+        }
+
+        var normalized = symbols
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim().ToUpperInvariant())
+            .OrderBy(s => s)
+            .ToList();
+
+        lock (_activeUniverse)
+        {
+            var added = normalized.Except(_activeUniverse, StringComparer.OrdinalIgnoreCase).ToList();
+            var removed = _activeUniverse.Except(normalized, StringComparer.OrdinalIgnoreCase).ToList();
+
+            _activeUniverse.Clear();
+            foreach (var symbol in normalized)
+            {
+                _activeUniverse.Add(symbol);
+            }
+
+            _lastActiveUniverseSnapshot = normalized;
+
+            if (added.Count > 0 || removed.Count > 0)
+            {
+                _logger.LogInformation(
+                    "[ActiveUniverse] Update reason={Reason} active={ActiveCount} added={AddedCount} removed={RemovedCount} added=[{Added}] removed=[{Removed}]",
+                    reason,
+                    _activeUniverse.Count,
+                    added.Count,
+                    removed.Count,
+                    string.Join(",", added),
+                    string.Join(",", removed));
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "[ActiveUniverse] No change reason={Reason} active={ActiveCount}",
+                    reason,
+                    _activeUniverse.Count);
+            }
+        }
+    }
+
     public void RecordActivity(string symbol)
     {
         if (string.IsNullOrWhiteSpace(symbol))
@@ -209,7 +311,7 @@ public sealed class MarketDataSubscriptionManager
     }
 
     public async Task ApplyUniverseAsync(
-        IReadOnlyList<string> universe,
+        IReadOnlyList<string> candidates,
         Func<string, bool, CancellationToken, Task<MarketDataSubscription?>> subscribeAsync,
         Func<string, CancellationToken, Task<bool>> unsubscribeAsync,
         Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
@@ -217,15 +319,18 @@ public sealed class MarketDataSubscriptionManager
         Func<string, CancellationToken, Task<bool>> disableDepthAsync,
         CancellationToken cancellationToken)
     {
+        // Candidate Model: The input 'candidates' represents all symbols eligible for consideration.
+        // ActiveUniverse will be computed as the strict subset with tape + depth + tick-by-tick subscriptions.
+        
         var maxActiveSymbols = Math.Max(0, _configuration.GetValue("Universe:MaxActiveSymbols", 0));
-        if (maxActiveSymbols > 0 && universe.Count > maxActiveSymbols)
+        if (maxActiveSymbols > 0 && candidates.Count > maxActiveSymbols)
         {
-            universe = universe.Take(maxActiveSymbols).ToList();
+            candidates = candidates.Take(maxActiveSymbols).ToList();
         }
 
-        var normalizedUniverse = NormalizeUniverse(universe);
-        var universeSet = new HashSet<string>(normalizedUniverse, StringComparer.OrdinalIgnoreCase);
-        var classifications = await _classificationService.GetClassificationsAsync(normalizedUniverse, cancellationToken);
+        var normalizedCandidates = NormalizeUniverse(candidates);
+        var candidatesSet = new HashSet<string>(normalizedCandidates, StringComparer.OrdinalIgnoreCase);
+        var classifications = await _classificationService.GetClassificationsAsync(normalizedCandidates, cancellationToken);
 
         var enableDepth = _configuration.GetValue("MarketData:EnableDepth", true);
         var enableTape = _configuration.GetValue("MarketData:EnableTape", true);
@@ -238,20 +343,20 @@ public sealed class MarketDataSubscriptionManager
         var maxLines = _configuration.GetValue("MarketData:MaxLines", 95);
         var minHoldMinutes = _configuration.GetValue("MarketData:MinHoldMinutes", 5);
         var minHold = TimeSpan.FromMinutes(Math.Max(0, minHoldMinutes));
-        var tickByTickMaxSymbols = Math.Max(0, _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10));
-        var minDepthEligibleSymbols = GetMinDepthEligibleSymbols(tickByTickMaxSymbols);
-
+        var maxDepthSymbols = Math.Max(0, _configuration.GetValue("MarketData:MaxDepthSymbols", 3));
+        
         var now = DateTimeOffset.UtcNow;
 
         await _sync.WaitAsync(cancellationToken);
         try
         {
             _skipTickByTickEnableThisCycle = false;
-            _lastUniverse = normalizedUniverse;
+            _lastUniverse = normalizedCandidates;
             _lastMaxLines = maxLines;
+            var tickByTickMaxSymbols = _configuration.GetValue("MarketData:TickByTickMaxSymbols", 6);
             _lastTickByTickMaxSymbols = tickByTickMaxSymbols;
 
-            foreach (var symbol in normalizedUniverse)
+            foreach (var symbol in normalizedCandidates)
             {
                 if (_active.TryGetValue(symbol, out var state))
                 {
@@ -259,15 +364,44 @@ public sealed class MarketDataSubscriptionManager
                 }
             }
 
-            await DisableDepthIfNeededAsync(enableDepth, disableDepthAsync, now, cancellationToken);
+            // Phase 1: Clean up depth subscriptions for symbols no longer in depth candidate set
+            var depthCandidates = SelectDepthCandidates(normalizedCandidates, maxDepthSymbols, now);
+            var depthCandidatesSet = new HashSet<string>(depthCandidates, StringComparer.OrdinalIgnoreCase);
+            
+            foreach (var state in _active.Values)
+            {
+                if (state.DepthRequestId.HasValue && !depthCandidatesSet.Contains(state.Symbol))
+                {
+                    // This symbol had depth but is no longer in the depth candidate set
+                    if (await disableDepthAsync(state.Symbol, cancellationToken))
+                    {
+                        UntrackRequest(state.DepthRequestId!.Value);
+                        state.DepthRequestId = null;
+                        _logger.LogInformation(
+                            "[MarketData] Removed depth for {Symbol} reason=NotInDepthCandidateSet",
+                            state.Symbol);
+                    }
+                    
+                    // Also remove tick-by-tick since it's only for depth symbols
+                    if (state.TickByTickRequestId.HasValue && await disableTickByTickAsync(state.Symbol, cancellationToken))
+                    {
+                        MarkPendingCancel(state.TickByTickRequestId.Value, now);
+                        state.TickByTickRequestId = null;
+                        _logger.LogInformation(
+                            "[MarketData] Removed tick-by-tick for {Symbol} reason=DepthRemoved",
+                            state.Symbol);
+                    }
+                }
+            }
 
+            // Phase 2: Free lines if over cap
             var totalLines = GetTotalLines();
             if (totalLines > maxLines)
             {
                 var linesToFree = totalLines - maxLines;
                 linesToFree -= await FreeLinesByDroppingTickByTickAsync(
                     linesToFree,
-                    universeSet,
+                    candidatesSet,
                     disableTickByTickAsync,
                     now,
                     cancellationToken);
@@ -276,7 +410,7 @@ public sealed class MarketDataSubscriptionManager
                 {
                     await EvictForLinesAsync(
                         linesToFree,
-                        universeSet,
+                        candidatesSet,
                         minHold,
                         allowBeforeHold: true,
                         unsubscribeAsync,
@@ -285,42 +419,26 @@ public sealed class MarketDataSubscriptionManager
                 }
             }
 
-            foreach (var symbol in normalizedUniverse)
+            // Phase 3: Subscribe tape-only for all candidates that don't have active subscriptions
+            foreach (var symbol in normalizedCandidates)
             {
                 if (_active.ContainsKey(symbol))
                 {
                     continue;
                 }
 
-                classifications.TryGetValue(symbol, out var classification);
-                var requestDepth = enableDepth && !IsDepthDisabled(symbol, now);
-                if (requestDepth && !_depthEligibilityCache.CanRequestDepth(classification, symbol, now, out var eligibilityState))
-                {
-                    _depthEligibilityCache.LogSkipOnce(classification, symbol, eligibilityState);
-                    requestDepth = false;
-                }
-
-                if (!requestDepth && enableDepth && ShouldPreferDepth(minDepthEligibleSymbols))
-                {
-                    if (_depthEligibilityCache.CanRequestDepth(classification, symbol, now, out var preferredEligibilityState))
-                    {
-                        requestDepth = true;
-                    }
-                }
-
-                var baseLines = (enableTape ? 1 : 0) + (requestDepth ? 1 : 0);
-                if (baseLines == 0)
+                if (!enableTape)
                 {
                     continue;
                 }
 
                 totalLines = GetTotalLines();
-                if (totalLines + baseLines > maxLines)
+                if (totalLines + 1 > maxLines)
                 {
-                    var linesToFree = (totalLines + baseLines) - maxLines;
+                    var linesToFree = (totalLines + 1) - maxLines;
                     linesToFree -= await FreeLinesByDroppingTickByTickAsync(
                         linesToFree,
-                        universeSet,
+                        candidatesSet,
                         disableTickByTickAsync,
                         now,
                         cancellationToken);
@@ -329,14 +447,14 @@ public sealed class MarketDataSubscriptionManager
                     {
                         var freed = await EvictForLinesAsync(
                             linesToFree,
-                            universeSet,
+                            candidatesSet,
                             minHold,
                             allowBeforeHold: false,
                             unsubscribeAsync,
                             cancellationToken,
                             "make room");
 
-                        if (freed <= 0 || GetTotalLines() + baseLines > maxLines)
+                        if (freed <= 0 || GetTotalLines() + 1 > maxLines)
                         {
                             _logger.LogInformation(
                                 "[MarketData] At cap ({ActiveLines}/{MaxLines}). Holding {Symbol} due to minimum hold time.",
@@ -348,7 +466,8 @@ public sealed class MarketDataSubscriptionManager
                     }
                 }
 
-                var subscription = await subscribeAsync(symbol, requestDepth, cancellationToken);
+                // Subscribe tape-only (requestDepth = false)
+                var subscription = await subscribeAsync(symbol, false, cancellationToken);
                 if (subscription is null)
                 {
                     _logger.LogWarning("[MarketData] Subscribe failed for {Symbol}.", symbol);
@@ -358,39 +477,361 @@ public sealed class MarketDataSubscriptionManager
                 var state = new SubscriptionState(
                     subscription.Symbol,
                     subscription.MktDataRequestId,
-                    subscription.DepthRequestId,
-                    subscription.TickByTickRequestId,
+                    null, // No depth yet
+                    null, // No tick-by-tick yet
                     now,
                     now);
-                state.DepthExchange = subscription.DepthExchange;
                 _active[subscription.Symbol] = state;
-                TrackRequests(state);
+                TrackRequest(subscription.MktDataRequestId, subscription.Symbol, MarketDataRequestKind.MktData);
 
                 _logger.LogInformation(
-                    "[MarketData] Subscribed {Symbol} mktDataId={MktDataId} depthId={DepthId} activeLines={ActiveLines}/{MaxLines}",
+                    "[MarketData] Subscribed tape-only {Symbol} mktDataId={MktDataId} activeLines={ActiveLines}/{MaxLines}",
                     subscription.Symbol,
                     subscription.MktDataRequestId,
-                    subscription.DepthRequestId,
                     GetTotalLines(),
                     maxLines);
             }
 
-            var focusSet = SelectFocusSet(normalizedUniverse, tickByTickMaxSymbols, now);
-            await ApplyTickByTickAsync(
-                focusSet,
-                tickByTickMaxSymbols,
-                maxLines,
+            // Phase 4: Enable depth for depth candidates
+            if (enableDepth)
+            {
+                _logger.LogInformation(
+                    "[MarketData] Phase 4: Depth loop starting - depthCandidates count={Count}, symbols=[{Symbols}]",
+                    depthCandidates.Count,
+                    string.Join(",", depthCandidates));
+
+                if (depthCandidates.Count > 0)
+                {
+                    _logger.LogInformation("[MarketData] Depth candidates selected: {Symbols}", string.Join(",", depthCandidates));
+                }
+
+                foreach (var symbol in depthCandidates)
+                {
+                    if (!_active.TryGetValue(symbol, out var state))
+                    {
+                        continue; // Symbol not subscribed yet
+                    }
+
+                    if (state.DepthRequestId.HasValue)
+                    {
+                        continue; // Already has depth
+                    }
+
+                    totalLines = GetTotalLines();
+                    if (totalLines + 1 > maxLines)
+                    {
+                        _logger.LogInformation(
+                            "[MarketData] Cannot add depth for {Symbol}: at line cap ({ActiveLines}/{MaxLines})",
+                            symbol,
+                            GetTotalLines(),
+                            maxLines);
+                        continue;
+                    }
+
+                    classifications.TryGetValue(symbol, out var classification);
+                    if (!_depthEligibilityCache.CanRequestDepth(classification, symbol, now, out var eligibilityState))
+                    {
+                        _depthEligibilityCache.LogSkipOnce(classification, symbol, eligibilityState);
+                        continue;
+                    }
+
+                    // Upgrade to depth (from tape-only) for this symbol
+                    _logger.LogInformation("[MarketData] Upgrading to depth for {Symbol}", symbol);
+                    RecordDepthSubscribeAttempt(symbol);
+                    var depthSubscription = await subscribeAsync(symbol, true, cancellationToken);
+                    if (depthSubscription?.DepthRequestId != null)
+                    {
+                        state.DepthRequestId = depthSubscription.DepthRequestId;
+                        state.DepthExchange = depthSubscription.DepthExchange;
+                        TrackRequest(depthSubscription.DepthRequestId.Value, symbol, MarketDataRequestKind.Depth);
+                        _logger.LogInformation(
+                            "[MarketData] Enabled depth for {Symbol} depthId={DepthId} activeLines={ActiveLines}/{MaxLines}",
+                            symbol,
+                            depthSubscription.DepthRequestId,
+                            GetTotalLines(),
+                            maxLines);
+                    }
+                }
+            }
+
+            // Phase 5: Enable tick-by-tick for all depth symbols (required for ActiveUniverse)
+            await ApplyTickByTickForDepthSymbolsAsync(
                 enableTickByTickAsync,
                 disableTickByTickAsync,
+                disableDepthAsync,
+                maxLines,
                 now,
                 cancellationToken);
-            LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
+
+            LogTapeDepthPairingIfChanged(maxDepthSymbols);
             LogTapeGateConfigIfChanged();
-            LogDepthEligibilitySummary(normalizedUniverse, classifications, now);
+            LogDepthEligibilitySummary(normalizedCandidates, classifications, now);
+            
+            // Update ActiveUniverse: only symbols with all required subscriptions are Active
+            // Note: Tape status check (Ready) will be done at evaluation time by strategy
+            UpdateActiveUniverseAfterSubscriptionChanges("UniverseRefresh");
+            
+            // Log post-Phase 4/5 subscription state
+            var depthEnabledSymbols = GetDepthEnabledSymbols();
+            var premiumTapeSymbols = _active.Values
+                .Where(state => state.TickByTickRequestId.HasValue)
+                .Select(state => state.Symbol)
+                .OrderBy(s => s)
+                .ToList();
+            var activeUniverse = GetActiveUniverseSnapshot();
+            
+            _logger.LogInformation(
+                "[MarketData] Post-Phase 4/5 state - depthCandidates=[{DepthCandidates}], depthEnabled=[{DepthEnabled}], premiumTape=[{PremiumTape}], ActiveUniverse=[{ActiveUniverse}]",
+                string.Join(",", depthCandidates),
+                string.Join(",", depthEnabledSymbols),
+                string.Join(",", premiumTapeSymbols),
+                string.Join(",", activeUniverse));
+            
+            LogSubscriptionSummary(normalizedCandidates.Count);
+            
+                    // Emit UniverseUpdate journal entry for audit trail
+                    EmitUniverseUpdateJournalEntry(normalizedCandidates, now);
         }
         finally
         {
             _sync.Release();
+        }
+    }
+
+    /// <summary>
+    /// Emits a UniverseUpdate journal entry once per refresh cycle for audit purposes.
+    /// </summary>
+    private void EmitUniverseUpdateJournalEntry(IReadOnlyList<string> candidates, DateTimeOffset now)
+    {
+        if (_journal == null)
+        {
+            return;
+        }
+
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var activeSnapshot = GetActiveUniverseSnapshot();
+
+        // Collect counts
+        var tapeCount = _active.Values.Count(state => state.MktDataRequestId.HasValue);
+        var depthCount = _active.Values.Count(state => state.DepthRequestId.HasValue);
+        var tickByTickCount = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
+
+        // Identify exclusions (symbols with tape but not in ActiveUniverse)
+        var exclusions = new List<ShadowTradeJournalEntry.UniverseExclusion>();
+        var activeSet = new HashSet<string>(activeSnapshot, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var state in _active.Values)
+        {
+            if (!activeSet.Contains(state.Symbol))
+            {
+                // Determine exclusion reason
+                string reason;
+                if (!state.DepthRequestId.HasValue)
+                {
+                    reason = "NoDepth";
+                }
+                else if (!state.TickByTickRequestId.HasValue)
+                {
+                    reason = "NoTickByTick";
+                }
+                else if (!state.MktDataRequestId.HasValue)
+                {
+                    reason = "NoTape";
+                }
+                else
+                {
+                    reason = "Unknown";
+                }
+
+                exclusions.Add(new ShadowTradeJournalEntry.UniverseExclusion
+                {
+                    Symbol = state.Symbol,
+                    Reason = reason
+                });
+            }
+        }
+
+        var entry = new ShadowTradeJournalEntry
+        {
+            SchemaVersion = ShadowTradeJournal.CurrentSchemaVersion,
+            SessionId = _journal.SessionId,
+            EntryType = "UniverseUpdate",
+            Source = "MarketDataSubscriptionManager",
+            MarketTimestampUtc = now,
+            UniverseUpdate = new ShadowTradeJournalEntry.UniverseUpdateSnapshot
+            {
+                SchemaVersion = 1,
+                NowMs = nowMs,
+                NowUtc = now,
+                Candidates = candidates.Take(20).ToList(),
+                ActiveUniverse = activeSnapshot.ToList(),
+                Exclusions = exclusions,
+                Counts = new ShadowTradeJournalEntry.UniverseCounts
+                {
+                    CandidatesCount = candidates.Count,
+                    ActiveCount = activeSnapshot.Count,
+                    DepthCount = depthCount,
+                    TickByTickCount = tickByTickCount,
+                    TapeCount = tapeCount
+                }
+            }
+        };
+
+        _journal.TryEnqueue(entry);
+    }
+
+    /// <summary>
+    /// Computes and updates the Active Universe based on current subscription state.
+    /// A symbol is Active IFF: tape enabled, depth enabled, and tick-by-tick enabled.
+    /// Note: Tape activity gate (Ready status) is checked at strategy evaluation time, not here.
+    /// </summary>
+    private void UpdateActiveUniverseAfterSubscriptionChanges(string reason)
+    {
+        var activeSymbols = _active.Values
+            .Where(state => 
+                state.MktDataRequestId.HasValue &&  // Tape subscription
+                state.DepthRequestId.HasValue &&     // Depth subscription
+                state.TickByTickRequestId.HasValue)  // Tick-by-tick subscription
+            .Select(state => state.Symbol)
+            .ToList();
+
+        SetActiveUniverse(activeSymbols, reason);
+    }
+
+    /// <summary>
+    /// Enables tick-by-tick for all depth symbols. This is REQUIRED for ActiveUniverse membership.
+    /// If tick-by-tick enable fails for a depth symbol, the depth subscription is removed and
+    /// the symbol is excluded from ActiveUniverse.
+    /// </summary>
+    private async Task ApplyTickByTickForDepthSymbolsAsync(
+        Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
+        Func<string, CancellationToken, Task<bool>> disableTickByTickAsync,
+        Func<string, CancellationToken, Task<bool>> disableDepthAsync,
+        int maxLines,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        CleanupPendingCancels(now);
+
+        if (_skipTickByTickEnableThisCycle)
+        {
+            // Tick-by-tick cap hit - clean up all depth subscriptions since they require tick-by-tick
+            var depthSymbolsToClean = _active.Values
+                .Where(state => state.DepthRequestId.HasValue)
+                .ToList();
+            
+            foreach (var state in depthSymbolsToClean)
+            {
+                _logger.LogWarning(
+                    "[MarketData] Removing depth for {Symbol} reason=TickByTickCapHit",
+                    state.Symbol);
+                
+                if (await disableDepthAsync(state.Symbol, cancellationToken))
+                {
+                    UntrackRequest(state.DepthRequestId!.Value);
+                    state.DepthRequestId = null;
+                }
+            }
+            return;
+        }
+
+        var depthSymbols = _active.Values
+            .Where(state => state.DepthRequestId.HasValue)
+            .ToList();
+
+        foreach (var state in depthSymbols)
+        {
+            if (state.TickByTickRequestId.HasValue)
+            {
+                continue; // Already has tick-by-tick
+            }
+
+            if (IsTickByTickDisabled(state.Symbol, now))
+            {
+                // Tick-by-tick is temporarily disabled due to cooldown
+                // Remove depth since we require tick-by-tick for depth symbols
+                _logger.LogWarning(
+                    "[MarketData] Removing depth for {Symbol} reason=TickByTickCooldown",
+                    state.Symbol);
+                
+                if (await disableDepthAsync(state.Symbol, cancellationToken))
+                {
+                    UntrackRequest(state.DepthRequestId!.Value);
+                    state.DepthRequestId = null;
+                }
+                continue;
+            }
+
+            if (GetTotalLines() + 1 > maxLines)
+            {
+                _logger.LogWarning(
+                    "[MarketData] Cannot enable tick-by-tick for {Symbol}: at line cap ({ActiveLines}/{MaxLines}). Removing depth.",
+                    state.Symbol,
+                    GetTotalLines(),
+                    maxLines);
+                
+                if (await disableDepthAsync(state.Symbol, cancellationToken))
+                {
+                    UntrackRequest(state.DepthRequestId!.Value);
+                    state.DepthRequestId = null;
+                }
+                continue;
+            }
+
+            var requestId = await enableTickByTickAsync(state.Symbol, cancellationToken);
+            if (!requestId.HasValue)
+            {
+                _logger.LogWarning(
+                    "[MarketData] Tick-by-tick enable failed for {Symbol}. Removing depth.",
+                    state.Symbol);
+                
+                if (await disableDepthAsync(state.Symbol, cancellationToken))
+                {
+                    UntrackRequest(state.DepthRequestId!.Value);
+                    state.DepthRequestId = null;
+                }
+                continue;
+            }
+
+            state.TickByTickRequestId = requestId.Value;
+            state.LastActivityUtc = now;
+            TrackRequest(requestId.Value, state.Symbol, MarketDataRequestKind.TickByTick);
+            
+            _logger.LogInformation(
+                "[MarketData] Enabled tick-by-tick for {Symbol} tickByTickId={TickByTickId} activeLines={ActiveLines}/{MaxLines}",
+                state.Symbol,
+                requestId.Value,
+                GetTotalLines(),
+                maxLines);
+        }
+    }
+
+    /// <summary>
+    /// Logs a summary of subscription counts to verify the candidate model invariants.
+    /// Invariant: depthCount == activeCount (since tick-by-tick is required for depth).
+    /// </summary>
+    private void LogSubscriptionSummary(int candidatesCount)
+    {
+        var tapeCount = _active.Values.Count(state => state.MktDataRequestId.HasValue);
+        var depthCount = _active.Values.Count(state => state.DepthRequestId.HasValue);
+        var tickByTickCount = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
+        var activeCount = _activeUniverse.Count;
+
+        _logger.LogInformation(
+            "[MarketData] Subscription summary: candidates={CandidatesCount} tape={TapeCount} depth={DepthCount} tickByTick={TickByTickCount} active={ActiveCount}",
+            candidatesCount,
+            tapeCount,
+            depthCount,
+            tickByTickCount,
+            activeCount);
+
+        // Verify invariant: depth should equal active (since tick-by-tick is required for depth)
+        if (depthCount != activeCount)
+        {
+            _logger.LogWarning(
+                "[MarketData] Invariant violation: depthCount ({DepthCount}) != activeCount ({ActiveCount}). This indicates incomplete subscriptions.",
+                depthCount,
+                activeCount);
         }
     }
 
@@ -455,6 +896,7 @@ public sealed class MarketDataSubscriptionManager
 
             _tickByTickDisabledUntil[symbol] = now.Add(TickByTickCooldown);
 
+            // Remove tick-by-tick subscription
             if (state.TickByTickRequestId == requestId)
             {
                 await disableTickByTickAsync(symbol, cancellationToken);
@@ -467,33 +909,20 @@ public sealed class MarketDataSubscriptionManager
                 UntrackRequest(requestId);
             }
 
+            // Tick-by-tick is REQUIRED for ActiveUniverse membership.
+            // Remove depth subscription since depth without tick-by-tick is not allowed for Active symbols.
+            if (state.DepthRequestId.HasValue && await disableDepthAsync(symbol, cancellationToken))
+            {
+                UntrackRequest(state.DepthRequestId.Value);
+                state.DepthRequestId = null;
+            }
+
+            // Update ActiveUniverse - this symbol is now excluded
+            UpdateActiveUniverseAfterSubscriptionChanges("TickByTickUnavailable");
+
             _logger.LogInformation(
-                "Downgrade symbol={Symbol} reason=TickByTickCap action=UseMktDataTapeOnly",
+                "[MarketData] ActiveUniverse exclude {Symbol} reason=TickByTickUnavailable",
                 symbol);
-        }
-    }
-
-    private async Task DisableDepthIfNeededAsync(
-        bool enableDepth,
-        Func<string, CancellationToken, Task<bool>> disableDepthAsync,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        foreach (var state in _active.Values)
-        {
-            if (!state.DepthRequestId.HasValue)
-            {
-                continue;
-            }
-
-            if (!enableDepth || IsDepthDisabled(state.Symbol, now))
-            {
-                if (await disableDepthAsync(state.Symbol, cancellationToken))
-                {
-                    UntrackRequest(state.DepthRequestId.Value);
-                    state.DepthRequestId = null;
-                }
-            }
         }
     }
 
@@ -514,7 +943,7 @@ public sealed class MarketDataSubscriptionManager
             if (_depthIneligibleLogged.TryAdd(symbol, 0))
             {
                 _logger.LogWarning(
-                    "DepthIneligible: symbol={Symbol} code={Code} msg={Msg} -> removing from depth eligibility and rebalancing",
+                    "DepthIneligible: symbol={Symbol} code={Code} msg={Msg} -> removing from depth eligibility. Will be reconsidered on next universe refresh.",
                     symbol,
                     errorCode,
                     errorMessage);
@@ -536,19 +965,9 @@ public sealed class MarketDataSubscriptionManager
                 state.TickByTickRequestId = null;
             }
 
-            if (_lastUniverse.Count > 0 && _lastTickByTickMaxSymbols > 0)
-            {
-                var focusSet = SelectFocusSet(_lastUniverse, _lastTickByTickMaxSymbols, now);
-                await ApplyTickByTickAsync(
-                    focusSet,
-                    _lastTickByTickMaxSymbols,
-                    _lastMaxLines,
-                    enableTickByTickAsync,
-                    disableTickByTickAsync,
-                    now,
-                    cancellationToken);
-            }
-
+            // Update ActiveUniverse since this symbol lost depth + tick-by-tick
+            UpdateActiveUniverseAfterSubscriptionChanges("DepthIneligible");
+            
             LogTapeDepthPairingIfChanged(_lastTickByTickMaxSymbols);
         }
         finally
@@ -577,92 +996,6 @@ public sealed class MarketDataSubscriptionManager
         }
     }
 
-    private async Task<int> ApplyTickByTickAsync(
-        List<string> focusSet,
-        int tickByTickMaxSymbols,
-        int maxLines,
-        Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
-        Func<string, CancellationToken, Task<bool>> disableTickByTickAsync,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        CleanupPendingCancels(now);
-        if (tickByTickMaxSymbols <= 0)
-        {
-            return 0;
-        }
-
-        if (focusSet.Count > tickByTickMaxSymbols)
-        {
-            focusSet = focusSet.Take(tickByTickMaxSymbols).ToList();
-        }
-
-        var focus = new HashSet<string>(focusSet, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var state in _active.Values)
-        {
-            if (!state.TickByTickRequestId.HasValue)
-            {
-                continue;
-            }
-
-            if (!focus.Contains(state.Symbol) || IsTickByTickDisabled(state.Symbol, now))
-            {
-                if (await disableTickByTickAsync(state.Symbol, cancellationToken))
-                {
-                    MarkPendingCancel(state.TickByTickRequestId.Value, now);
-                    state.TickByTickRequestId = null;
-                }
-            }
-        }
-
-        var activeTickByTick = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
-        if (activeTickByTick >= tickByTickMaxSymbols)
-        {
-            return activeTickByTick;
-        }
-        if (_skipTickByTickEnableThisCycle)
-        {
-            return activeTickByTick;
-        }
-
-        foreach (var symbol in focusSet)
-        {
-            if (activeTickByTick >= tickByTickMaxSymbols)
-            {
-                break;
-            }
-
-            if (!_active.TryGetValue(symbol, out var state))
-            {
-                continue;
-            }
-
-            if (state.TickByTickRequestId.HasValue || IsTickByTickDisabled(symbol, now))
-            {
-                continue;
-            }
-
-            if (GetTotalLines() + 1 > maxLines)
-            {
-                break;
-            }
-
-            var requestId = await enableTickByTickAsync(symbol, cancellationToken);
-            if (!requestId.HasValue)
-            {
-                continue;
-            }
-
-            state.TickByTickRequestId = requestId.Value;
-            state.LastActivityUtc = now;
-            TrackRequest(requestId.Value, symbol, MarketDataRequestKind.TickByTick);
-            activeTickByTick++;
-        }
-
-        return activeTickByTick;
-    }
-
     private void MarkPendingCancel(int requestId, DateTimeOffset now)
     {
         _pendingTickByTickCancels[requestId] = now;
@@ -682,22 +1015,6 @@ public sealed class MarketDataSubscriptionManager
                 UntrackRequest(entry.Key);
             }
         }
-    }
-
-    private int GetMinDepthEligibleSymbols(int tickByTickMaxSymbols)
-    {
-        var defaultMin = Math.Min(3, tickByTickMaxSymbols);
-        return Math.Max(0, _configuration.GetValue("MarketData:MinDepthEligibleSymbols", defaultMin));
-    }
-
-    private bool ShouldPreferDepth(int minDepthEligibleSymbols)
-    {
-        if (minDepthEligibleSymbols <= 0)
-        {
-            return false;
-        }
-
-        return GetDepthEnabledSymbols().Count < minDepthEligibleSymbols;
     }
 
     private void LogDepthEligibilitySummary(
@@ -889,29 +1206,25 @@ public sealed class MarketDataSubscriptionManager
         return freed;
     }
 
-    private List<string> SelectFocusSet(IReadOnlyList<string> universe, int maxSymbols, DateTimeOffset now)
+    /// <summary>
+    /// Selects up to maxDepth symbols from candidates for depth (L2) subscriptions.
+    /// This enforces the strict cap on depth subscriptions - only these symbols will be
+    /// eligible for ActiveUniverse if they also have tape + tick-by-tick.
+    /// </summary>
+    private List<string> SelectDepthCandidates(IReadOnlyList<string> candidates, int maxDepth, DateTimeOffset now)
     {
-        if (maxSymbols <= 0)
+        if (maxDepth <= 0 || candidates.Count == 0)
         {
             return new List<string>();
         }
 
-        var orderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        for (var i = 0; i < universe.Count; i++)
-        {
-            orderIndex[universe[i]] = i;
-        }
-
-        var candidates = _active.Values
-            .Where(state => orderIndex.ContainsKey(state.Symbol) && state.DepthRequestId.HasValue)
-            .OrderBy(state => state.TickByTickRequestId.HasValue ? 0 : 1)
-            .ThenByDescending(state => GetActivityKeyDescending(state))
-            .ThenBy(state => orderIndex[state.Symbol])
-            .Select(state => state.Symbol)
-            .Take(maxSymbols)
+        // Filter out depth-ineligible symbols (e.g., those that returned error 10092)
+        var eligible = candidates
+            .Where(symbol => !IsDepthDisabled(symbol, now))
             .ToList();
 
-        return candidates;
+        // Take the first maxDepth symbols from the candidate list (respecting UniverseService ranking)
+        return eligible.Take(maxDepth).ToList();
     }
 
     private static DateTimeOffset GetActivityKey(SubscriptionState state)
@@ -922,11 +1235,6 @@ public sealed class MarketDataSubscriptionManager
         }
 
         return state.LastSeenUtc == DateTimeOffset.MinValue ? state.SubscribedAtUtc : state.LastSeenUtc;
-    }
-
-    private static DateTimeOffset GetActivityKeyDescending(SubscriptionState state)
-    {
-        return GetActivityKey(state);
     }
 
     private List<SubscriptionState> GetEvictionCandidates(

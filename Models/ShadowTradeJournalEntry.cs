@@ -30,6 +30,7 @@ public sealed class ShadowTradeJournalEntry
     public SystemMetricsSnapshot? SystemMetrics { get; set; }
     public StrategyDecisionResult? DecisionResult { get; set; }
     public GateTraceSnapshot? GateTrace { get; set; }
+    public UniverseUpdateSnapshot? UniverseUpdate { get; set; }
 
     public sealed class BlueprintPlan
     {
@@ -165,5 +166,43 @@ public sealed class ShadowTradeJournalEntry
         public int Level { get; set; }
         public decimal Price { get; set; }
         public decimal Size { get; set; }
+    }
+
+    /// <summary>
+    /// Universe update snapshot emitted once per universe refresh cycle.
+    /// Provides deterministic audit trail for candidate selection and ActiveUniverse computation.
+    /// </summary>
+    public sealed class UniverseUpdateSnapshot
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public long NowMs { get; set; }
+        public DateTimeOffset NowUtc { get; set; }
+        
+        /// <summary>Top 20 candidate symbols from UniverseService</summary>
+        public List<string> Candidates { get; set; } = new();
+        
+        /// <summary>Symbols currently in ActiveUniverse (<=3 by design)</summary>
+        public List<string> ActiveUniverse { get; set; } = new();
+        
+        /// <summary>Symbols excluded from ActiveUniverse with reasons</summary>
+        public List<UniverseExclusion> Exclusions { get; set; } = new();
+        
+        /// <summary>Subscription counts for verification</summary>
+        public UniverseCounts Counts { get; set; } = new();
+    }
+
+    public sealed class UniverseExclusion
+    {
+        public string Symbol { get; set; } = string.Empty;
+        public string Reason { get; set; } = string.Empty;
+    }
+
+    public sealed class UniverseCounts
+    {
+        public int CandidatesCount { get; set; }
+        public int ActiveCount { get; set; }
+        public int DepthCount { get; set; }
+        public int TickByTickCount { get; set; }
+        public int TapeCount { get; set; }
     }
 }

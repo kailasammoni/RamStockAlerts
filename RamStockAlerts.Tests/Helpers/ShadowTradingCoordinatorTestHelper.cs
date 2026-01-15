@@ -96,6 +96,11 @@ internal static class ShadowTradingCoordinatorTestHelper
             DisableDepth,
             CancellationToken.None);
 
+        // For testing gate rejection behavior, ensure symbol is in ActiveUniverse
+        // even if subscriptions are incomplete. This allows tests to verify
+        // specific gate rejection logic without being blocked by ActiveUniverse gate.
+        manager.SetActiveUniverse(new[] { symbol }, "TestSetup");
+
         return manager;
     }
 
