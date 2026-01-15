@@ -106,4 +106,38 @@ internal static class ShadowTradingCoordinatorTestHelper
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Ask, DepthOperation.Insert, 100.05m, 200m, 0, nowMs));
         return book;
     }
+
+    public static ScarcityController CreateScarcityController()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Scarcity:MaxBlueprintsPerDay"] = "100",
+                ["Scarcity:MaxPerSymbolPerDay"] = "10"
+            })
+            .Build();
+        return new ScarcityController(config);
+    }
+
+    public static MarketDataSubscriptionManager CreateSubscriptionManager(bool depthEnabled = true, bool tapeEnabled = true)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MarketData:EnableDepth"] = depthEnabled.ToString(),
+                ["MarketData:EnableTape"] = tapeEnabled.ToString(),
+                ["MarketData:MaxLines"] = "10"
+            })
+            .Build();
+
+        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+
+        return new MarketDataSubscriptionManager(
+            config,
+            NullLogger<MarketDataSubscriptionManager>.Instance,
+            classificationService,
+            eligibilityCache);
+    }
 }

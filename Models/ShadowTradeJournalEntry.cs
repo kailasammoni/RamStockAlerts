@@ -29,12 +29,41 @@ public sealed class ShadowTradeJournalEntry
     public BlueprintPlan? Blueprint { get; set; }
     public SystemMetricsSnapshot? SystemMetrics { get; set; }
     public StrategyDecisionResult? DecisionResult { get; set; }
+    public GateTraceSnapshot? GateTrace { get; set; }
 
     public sealed class BlueprintPlan
     {
         public decimal? Entry { get; set; }
         public decimal? Stop { get; set; }
         public decimal? Target { get; set; }
+    }
+
+    /// <summary>
+    /// Gate trace snapshot capturing numeric context when a symbol is rejected.
+    /// Emitted alongside rejection entries to provide deterministic debugging context.
+    /// </summary>
+    public sealed class GateTraceSnapshot
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public long NowMs { get; set; }
+        
+        // Tape context
+        public long? LastTradeMs { get; set; }
+        public int TradesInWarmupWindow { get; set; }
+        public bool WarmedUp { get; set; }
+        public long? StaleAgeMs { get; set; }
+        
+        // Depth context
+        public long? LastDepthMs { get; set; }
+        public long? DepthAgeMs { get; set; }
+        public int? DepthRowsKnown { get; set; }
+        public bool DepthSupported { get; set; }
+        
+        // Config snapshot
+        public int WarmupMinTrades { get; set; }
+        public int WarmupWindowMs { get; set; }
+        public int StaleWindowMs { get; set; }
+        public int DepthStaleWindowMs { get; set; }
     }
 
     public sealed class SystemMetricsSnapshot

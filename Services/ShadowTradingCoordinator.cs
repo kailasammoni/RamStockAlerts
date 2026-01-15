@@ -29,6 +29,7 @@ public sealed class ShadowTradingCoordinator
     private readonly ConcurrentDictionary<string, long> _lastProcessedSnapshotMs = new();
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
+    private readonly bool _emitGateTrace;
 
     public ShadowTradingCoordinator(
         IConfiguration configuration,
@@ -55,6 +56,7 @@ public sealed class ShadowTradingCoordinator
         _gatingRejectionThrottle = new GatingRejectionThrottle(TimeSpan.FromSeconds(gatingRejectDedupeSeconds));
         var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
+        _emitGateTrace = configuration.GetValue("ShadowTradeJournal:EmitGateTrace", true);
 
         if (_enabled)
         {
@@ -789,6 +791,50 @@ public sealed class ShadowTradingCoordinator
         return trace;
     }
 
+    private ShadowTradeJournalEntry.GateTraceSnapshot? BuildGateTrace(
+        OrderBookState? book,
+        long nowMs,
+        ShadowTradingHelpers.TapeStatus tapeStatus,
+        DepthSnapshot? depthSnapshot)
+    {
+        if (book is null)
+        {
+            return null;
+        }
+
+        var lastTrade = book.RecentTrades.LastOrDefault();
+        var lastTradeMs = lastTrade.TimestampMs == 0 ? (long?)null : lastTrade.TimestampMs;
+        var depthAgeMs = book.LastDepthUpdateUtcMs > 0 ? nowMs - book.LastDepthUpdateUtcMs : (long?)null;
+        var lastDepthMs = book.LastDepthUpdateUtcMs > 0 ? book.LastDepthUpdateUtcMs : (long?)null;
+        var depthRowsKnown = depthSnapshot is not null 
+            ? Math.Max(depthSnapshot.BidsTopN.Count, depthSnapshot.AsksTopN.Count)
+            : (int?)null;
+
+        return new ShadowTradeJournalEntry.GateTraceSnapshot
+        {
+            SchemaVersion = 1,
+            NowMs = nowMs,
+            
+            // Tape context
+            LastTradeMs = lastTradeMs,
+            TradesInWarmupWindow = tapeStatus.TradesInWarmupWindow,
+            WarmedUp = tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready,
+            StaleAgeMs = tapeStatus.AgeMs,
+            
+            // Depth context
+            LastDepthMs = lastDepthMs,
+            DepthAgeMs = depthAgeMs,
+            DepthRowsKnown = depthRowsKnown,
+            DepthSupported = _subscriptionManager.IsDepthEnabled(book.Symbol),
+            
+            // Config snapshot
+            WarmupMinTrades = tapeStatus.WarmupMinTrades,
+            WarmupWindowMs = tapeStatus.WarmupWindowMs,
+            StaleWindowMs = _tapeGateConfig.StaleWindowMs,
+            DepthStaleWindowMs = 2000 // From OrderBookState.StaleDepthThresholdMs const
+        };
+    }
+
     private static string? GetTapeRejectionReason(ShadowTradingHelpers.TapeStatus tapeStatus)
     {
         return tapeStatus.Kind switch
@@ -1021,7 +1067,8 @@ public sealed class ShadowTradingCoordinator
                 },
             // Gate rejection: no decision inputs computed since signal never reached scoring/ranking
             DecisionInputs = null,
-            DecisionResult = decisionResult
+            DecisionResult = decisionResult,
+            GateTrace = _emitGateTrace ? BuildGateTrace(book, nowMs, resolvedTapeStatus, depthSnapshot) : null
         };
 
         EnqueueEntry(entry);
