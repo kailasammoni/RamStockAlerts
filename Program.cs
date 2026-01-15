@@ -209,6 +209,7 @@ builder.Services.AddSingleton<MarketDataSubscriptionManager>(sp =>
         sp.GetRequiredService<ILogger<MarketDataSubscriptionManager>>(),
         sp.GetRequiredService<ContractClassificationService>(),
         sp.GetRequiredService<DepthEligibilityCache>(),
+        sp.GetRequiredService<OrderFlowMetrics>(),
         sp.GetService<IShadowTradeJournal>()));
 
 if (!isShadowMode && isLegacyUniverse)

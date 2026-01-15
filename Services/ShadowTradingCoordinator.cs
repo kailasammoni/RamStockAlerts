@@ -1065,6 +1065,9 @@ public sealed class ShadowTradingCoordinator
             ? default
             : ShadowTradingHelpers.GetTapeStatus(book, nowMs, _subscriptionManager.IsTapeEnabled(symbol), _tapeGateConfig));
 
+        // Log structured tape gate rejection details for tape-related rejections
+        LogGateRejectionDetails(symbol, reason, resolvedTapeStatus, now);
+
         var entry = new ShadowTradeJournalEntry
         {
             SchemaVersion = 2,
@@ -1115,6 +1118,34 @@ public sealed class ShadowTradingCoordinator
     private static bool IsNotReadyRejection(string reason) =>
         reason.StartsWith("NotReady_", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Logs structured details of gate rejections, with throttling to prevent spam.
+    /// For tape-related rejections, logs: Kind, AgeMs, TradesInWarmupWindow, WarmupMinTrades, WarmupWindowMs.
+    /// Throttled via _gatingRejectionThrottle per symbol+reason to allow visibility without spam.
+    /// </summary>
+    private void LogGateRejectionDetails(
+        string symbol,
+        string reason,
+        ShadowTradingHelpers.TapeStatus tapeStatus,
+        DateTimeOffset now)
+    {
+        // Only log tape-related rejections with structured details
+        if (!reason.Contains("Tape", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "[GateRejection] {Symbol} rejected by {Reason}: TapeStatus={{Kind={Kind}, AgeMs={AgeMs}, TradesInWarmupWindow={TradesInWarmupWindow}, WarmupMinTrades={WarmupMinTrades}, WarmupWindowMs={WarmupWindowMs}}}",
+            symbol,
+            reason,
+            tapeStatus.Kind,
+            tapeStatus.AgeMs ?? -1,
+            tapeStatus.TradesInWarmupWindow,
+            tapeStatus.WarmupMinTrades,
+            tapeStatus.WarmupWindowMs);
+    }
+
     private void LogInactiveSymbolSkipThrottled(string symbol, long nowMs)
     {
         if (string.IsNullOrWhiteSpace(symbol))
@@ -1140,14 +1171,16 @@ public sealed class ShadowTradingCoordinator
         // Use receipt time for staleness reporting, show both event and receipt times for diagnostics
         var lastTapeRecvMs = book.LastTapeRecvMs;
         var lastTrade = book.RecentTrades.LastOrDefault();
-        var lastTapeEventMs = lastTrade.TimestampMs;
-        var skewMs = lastTapeRecvMs - lastTapeEventMs;
+        var lastTapeEventMs = lastTrade.EventTimestampMs;
+        var lastTapeRecvFromTradeMs = lastTrade.ReceiptTimestampMs;
+        var skewMs = lastTapeRecvFromTradeMs - lastTapeEventMs;
         
         _logger.LogWarning(
-            "[ShadowTrading GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeRecvMs={LastRecvMs}, lastTapeEventMs={LastEventMs}, skewMs={SkewMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=ReceiptTime",
+            "[ShadowTrading GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeRecvMs={LastRecvMs}, lastTapeRecvMs(lastTrade)={LastRecvTradeMs}, lastTapeEventMs={LastEventMs}, skewMs={SkewMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=ReceiptTime",
             book.Symbol, 
             nowMs, 
             lastTapeRecvMs,
+            lastTapeRecvFromTradeMs,
             lastTapeEventMs, 
             skewMs,
             status.AgeMs, 

@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services.Universe;
 
@@ -51,6 +52,7 @@ public sealed class MarketDataSubscriptionManager
     private readonly ILogger<MarketDataSubscriptionManager> _logger;
     private readonly ContractClassificationService _classificationService;
     private readonly DepthEligibilityCache _depthEligibilityCache;
+    private readonly OrderFlowMetrics _metrics;
     private readonly SemaphoreSlim _sync = new(1, 1);
     private readonly IShadowTradeJournal? _journal;
     private readonly ConcurrentDictionary<string, SubscriptionState> _active = new(StringComparer.OrdinalIgnoreCase);
@@ -79,19 +81,29 @@ public sealed class MarketDataSubscriptionManager
     private bool _tickByTickCapLogged;
     private readonly HashSet<string> _activeUniverse = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyCollection<string> _lastActiveUniverseSnapshot = Array.Empty<string>();
+    private string _lastTriageLog = string.Empty;
+
+    // Focus rotation defaults (ms). Configurable via MarketData:Focus* settings.
+    private const int DefaultFocusMinDwellMs = 120_000;    // 2 minutes
+    private const int DefaultFocusTapeIdleMs = 30_000;     // 30 seconds
+    private const int DefaultFocusDepthIdleMs = 10_000;    // 10 seconds
+    private const int DefaultFocusWarmupMinTrades = 3;
+    private const int DefaultMinScoreDeltaToSwap = 15;
 
     public MarketDataSubscriptionManager(
         IConfiguration configuration,
         ILogger<MarketDataSubscriptionManager> logger,
         ContractClassificationService classificationService,
         DepthEligibilityCache depthEligibilityCache,
+        OrderFlowMetrics metrics,
         IShadowTradeJournal? journal = null)
     {
         _configuration = configuration;
         _logger = logger;
         _classificationService = classificationService;
         _depthEligibilityCache = depthEligibilityCache;
-            _journal = journal;
+        _metrics = metrics;
+        _journal = journal;
         var maxLines = _configuration.GetValue("MarketData:MaxLines", 95);
         var tickByTickMaxSymbols = _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10);
         var depthRows = _configuration.GetValue("MarketData:DepthRows", 5);
@@ -310,6 +322,46 @@ public sealed class MarketDataSubscriptionManager
         }
     }
 
+    /// <summary>
+    /// Record a tape receipt (receipt-time based) for focus rotation telemetry.
+    /// </summary>
+    public void RecordTapeReceipt(string symbol, long receiptTimestampMs)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return;
+        }
+
+        if (_active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state))
+        {
+            state.LastTapeReceiptMs = Math.Max(state.LastTapeReceiptMs, receiptTimestampMs);
+            if (state.DepthRequestId.HasValue && state.FocusStartMs > 0)
+            {
+                state.TradesReceivedInDwell++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Record a depth receipt (receipt-time based) for focus rotation telemetry.
+    /// </summary>
+    public void RecordDepthReceipt(string symbol, long receiptTimestampMs)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return;
+        }
+
+        if (_active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state))
+        {
+            state.LastDepthReceiptMs = Math.Max(state.LastDepthReceiptMs, receiptTimestampMs);
+            if (state.DepthRequestId.HasValue && state.FocusStartMs > 0)
+            {
+                state.DepthUpdatesInDwell++;
+            }
+        }
+    }
+
     public async Task ApplyUniverseAsync(
         IReadOnlyList<string> candidates,
         Func<string, bool, CancellationToken, Task<MarketDataSubscription?>> subscribeAsync,
@@ -361,12 +413,38 @@ public sealed class MarketDataSubscriptionManager
                 if (_active.TryGetValue(symbol, out var state))
                 {
                     state.LastSeenUtc = now;
+                    if (state.DepthRequestId.HasValue && state.FocusStartMs == 0)
+                    {
+                        state.FocusStartMs = state.SubscribedAtUtc.ToUnixTimeMilliseconds();
+                    }
                 }
             }
 
-            // Phase 1: Clean up depth subscriptions for symbols no longer in depth candidate set
-            var depthCandidates = SelectDepthCandidates(normalizedCandidates, maxDepthSymbols, now);
+            // Focus rotation config
+            var focusEnabled = _configuration.GetValue("MarketData:FocusRotationEnabled", true);
+            var focusMinDwellMs = _configuration.GetValue("MarketData:FocusMinDwellMs", DefaultFocusMinDwellMs);
+            var focusTapeIdleMs = _configuration.GetValue("MarketData:FocusTapeIdleMs", DefaultFocusTapeIdleMs);
+            var focusDepthIdleMs = _configuration.GetValue("MarketData:FocusDepthIdleMs", DefaultFocusDepthIdleMs);
+            var focusWarmupMinTrades = _configuration.GetValue("MarketData:FocusWarmupMinTrades", DefaultFocusWarmupMinTrades);
+            var minScoreDeltaToSwap = _configuration.GetValue("MarketData:MinScoreDeltaToSwap", DefaultMinScoreDeltaToSwap);
+
+            var triageScores = ComputeTriageScores(normalizedCandidates, now);
+            LogTriageScoresIfChanged(triageScores);
+
+            // Phase 1: Clean up depth subscriptions for symbols no longer in depth candidate set (after focus rotation)
+            var focusSelection = SelectDepthCandidates(
+                triageScores,
+                maxDepthSymbols,
+                now,
+                focusEnabled,
+                focusMinDwellMs,
+                focusTapeIdleMs,
+                focusDepthIdleMs,
+                focusWarmupMinTrades,
+                minScoreDeltaToSwap);
+            var depthCandidates = focusSelection.DepthCandidates;
             var depthCandidatesSet = new HashSet<string>(depthCandidates, StringComparer.OrdinalIgnoreCase);
+            var focusEvictions = focusSelection.FocusEvictions;
             
             foreach (var state in _active.Values)
             {
@@ -377,9 +455,14 @@ public sealed class MarketDataSubscriptionManager
                     {
                         UntrackRequest(state.DepthRequestId!.Value);
                         state.DepthRequestId = null;
+                        ResetFocusTelemetry(state);
+                        var reason = focusEvictions.TryGetValue(state.Symbol, out var r)
+                            ? r
+                            : "NotInDepthCandidateSet";
                         _logger.LogInformation(
-                            "[MarketData] Removed depth for {Symbol} reason=NotInDepthCandidateSet",
-                            state.Symbol);
+                            "[MarketData] Removed depth for {Symbol} reason={Reason}",
+                            state.Symbol,
+                            reason);
                     }
                     
                     // Also remove tick-by-tick since it's only for depth symbols
@@ -543,6 +626,7 @@ public sealed class MarketDataSubscriptionManager
                     {
                         state.DepthRequestId = depthSubscription.DepthRequestId;
                         state.DepthExchange = depthSubscription.DepthExchange;
+                        StartFocusWindow(state, now.ToUnixTimeMilliseconds());
                         TrackRequest(depthSubscription.DepthRequestId.Value, symbol, MarketDataRequestKind.Depth);
                         _logger.LogInformation(
                             "[MarketData] Enabled depth for {Symbol} depthId={DepthId} activeLines={ActiveLines}/{MaxLines}",
@@ -566,6 +650,9 @@ public sealed class MarketDataSubscriptionManager
             LogTapeDepthPairingIfChanged(maxDepthSymbols);
             LogTapeGateConfigIfChanged();
             LogDepthEligibilitySummary(normalizedCandidates, classifications, now);
+            
+            // Log detailed universe refresh snapshot with focus rotation state
+            LogUniverseRefreshSnapshot(normalizedCandidates, triageScores, now);
             
             // Update ActiveUniverse: only symbols with all required subscriptions are Active
             // Note: Tape status check (Ready) will be done at evaluation time by strategy
@@ -730,6 +817,7 @@ public sealed class MarketDataSubscriptionManager
                 {
                     UntrackRequest(state.DepthRequestId!.Value);
                     state.DepthRequestId = null;
+                    ResetFocusTelemetry(state);
                 }
             }
             return;
@@ -758,6 +846,7 @@ public sealed class MarketDataSubscriptionManager
                 {
                     UntrackRequest(state.DepthRequestId!.Value);
                     state.DepthRequestId = null;
+                    ResetFocusTelemetry(state);
                 }
                 continue;
             }
@@ -774,6 +863,7 @@ public sealed class MarketDataSubscriptionManager
                 {
                     UntrackRequest(state.DepthRequestId!.Value);
                     state.DepthRequestId = null;
+                    ResetFocusTelemetry(state);
                 }
                 continue;
             }
@@ -789,6 +879,7 @@ public sealed class MarketDataSubscriptionManager
                 {
                     UntrackRequest(state.DepthRequestId!.Value);
                     state.DepthRequestId = null;
+                    ResetFocusTelemetry(state);
                 }
                 continue;
             }
@@ -804,6 +895,48 @@ public sealed class MarketDataSubscriptionManager
                 GetTotalLines(),
                 maxLines);
         }
+    }
+
+    /// <summary>
+    /// Logs a detailed summary of the universe refresh showing focus rotation state.
+    /// Structured for debuggability: one line captures CandidatesCount, TapeOnlyCount, FocusCount, FocusSymbols,
+    /// and for each focus symbol: FocusAgeMs, LastTapeRecvAgeMs, LastDepthRecvAgeMs, TriageScore.
+    /// </summary>
+    private void LogUniverseRefreshSnapshot(
+        IReadOnlyList<string> candidates,
+        List<TriageScore> triageScores,
+        DateTimeOffset now)
+    {
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var focusSymbols = _active.Values
+            .Where(state => state.DepthRequestId.HasValue && state.FocusStartMs > 0)
+            .OrderBy(state => state.Symbol)
+            .ToList();
+        
+        var focusCount = focusSymbols.Count;
+        var tapeOnlyCount = _active.Values.Count(state => 
+            state.MktDataRequestId.HasValue && !state.DepthRequestId.HasValue);
+        
+        var scoreMap = triageScores.ToDictionary(ts => ts.Symbol, ts => ts.Score);
+        
+        var focusDetails = string.Join(
+            "|",
+            focusSymbols.Select(state =>
+            {
+                var focusAgeMs = nowMs - state.FocusStartMs;
+                var lastTapeRecvAgeMs = state.LastTapeReceiptMs > 0 ? nowMs - state.LastTapeReceiptMs : -1;
+                var lastDepthRecvAgeMs = state.LastDepthReceiptMs > 0 ? nowMs - state.LastDepthReceiptMs : -1;
+                var triageScore = scoreMap.TryGetValue(state.Symbol, out var score) ? (int)score : 0;
+                
+                return $"{state.Symbol}(age={focusAgeMs}ms,tape={lastTapeRecvAgeMs}ms,depth={lastDepthRecvAgeMs}ms,score={triageScore})";
+            }));
+
+        _logger.LogInformation(
+            "[UniverseRefresh] Snapshot: candidates={CandidatesCount} tapeOnly={TapeOnlyCount} focus={FocusCount} focusSymbols=[{FocusDetails}]",
+            candidates.Count,
+            tapeOnlyCount,
+            focusCount,
+            focusDetails);
     }
 
     /// <summary>
@@ -915,6 +1048,7 @@ public sealed class MarketDataSubscriptionManager
             {
                 UntrackRequest(state.DepthRequestId.Value);
                 state.DepthRequestId = null;
+                ResetFocusTelemetry(state);
             }
 
             // Update ActiveUniverse - this symbol is now excluded
@@ -957,6 +1091,7 @@ public sealed class MarketDataSubscriptionManager
             {
                 UntrackRequest(state.DepthRequestId.Value);
                 state.DepthRequestId = null;
+                ResetFocusTelemetry(state);
             }
 
             if (state.TickByTickRequestId.HasValue && await disableTickByTickAsync(symbol, cancellationToken))
@@ -1206,25 +1341,327 @@ public sealed class MarketDataSubscriptionManager
         return freed;
     }
 
-    /// <summary>
-    /// Selects up to maxDepth symbols from candidates for depth (L2) subscriptions.
-    /// This enforces the strict cap on depth subscriptions - only these symbols will be
-    /// eligible for ActiveUniverse if they also have tape + tick-by-tick.
-    /// </summary>
-    private List<string> SelectDepthCandidates(IReadOnlyList<string> candidates, int maxDepth, DateTimeOffset now)
+    private List<TriageScore> ComputeTriageScores(IReadOnlyList<string> candidates, DateTimeOffset now)
     {
-        if (maxDepth <= 0 || candidates.Count == 0)
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var scores = new List<TriageScore>(candidates.Count);
+
+        for (var i = 0; i < candidates.Count; i++)
         {
-            return new List<string>();
+            var symbol = candidates[i];
+            var book = _metrics.GetOrderBookSnapshot(symbol);
+            if (book is null)
+            {
+                scores.Add(new TriageScore(symbol, 0m, 0m, 0m, 0m, null, 0m, 0m, i));
+                continue;
+            }
+
+            var trades = book.RecentTrades.ToArray();
+            var window3Start = nowMs - 3_000;
+            var window15Start = nowMs - 15_000;
+            var trades3 = trades.Where(t => t.ReceiptTimestampMs >= window3Start).ToList();
+            var trades15 = trades.Where(t => t.ReceiptTimestampMs >= window15Start).ToList();
+
+            var rate3s = trades3.Count / 3m;
+            var rate15s = trades15.Count / 15m;
+            var dollarVol15s = trades15.Sum(t => (decimal)t.Price * t.Size);
+
+            decimal? spread = book.Spread > 0m ? book.Spread : null;
+            var mid = book.BestBid > 0 && book.BestAsk > 0 ? (book.BestBid + book.BestAsk) / 2 : 0m;
+            if (mid == 0m && trades15.Count > 0)
+            {
+                mid = (decimal)trades15.Average(t => t.Price);
+            }
+
+            decimal volatilityRangePct = 0m;
+            if (mid > 0m && trades15.Count > 0)
+            {
+                var minPx = trades15.Min(t => (decimal)t.Price);
+                var maxPx = trades15.Max(t => (decimal)t.Price);
+                volatilityRangePct = (maxPx - minPx) / mid;
+            }
+
+            var rate15Baseline = rate15s <= 0m ? 0.1m : rate15s;
+            var burst = rate3s / rate15Baseline;
+
+            var rate3Score = Clamp01(rate3s / 5m);
+            var rate15Score = Clamp01(rate15s / 2m);
+            var dollarScore = Clamp01((decimal)Math.Log10((double)(1m + dollarVol15s)) / 4m);
+            var spreadScore = spread.HasValue && mid > 0m
+                ? Clamp01((0.02m - (spread.Value / mid)) / 0.02m)
+                : 0.5m;
+            var volatilityScore = Clamp01(volatilityRangePct / 0.005m); // saturate around 50 bps move
+            var burstScore = Clamp01(burst / 3m); // saturate around 3x acceleration
+
+            var score = 100m * (
+                0.25m * rate3Score +
+                0.15m * rate15Score +
+                0.20m * dollarScore +
+                0.10m * spreadScore +
+                0.15m * volatilityScore +
+                0.15m * burstScore);
+
+            scores.Add(new TriageScore(
+                symbol,
+                Math.Round(score, 1),
+                Math.Round(rate3s, 2),
+                Math.Round(rate15s, 2),
+                Math.Round(dollarVol15s, 2),
+                spread,
+                Math.Round(volatilityRangePct, 4),
+                Math.Round(burst, 2),
+                i));
         }
 
-        // Filter out depth-ineligible symbols (e.g., those that returned error 10092)
-        var eligible = candidates
-            .Where(symbol => !IsDepthDisabled(symbol, now))
+        return scores
+            .OrderByDescending(s => s.Score)
+            .ThenBy(s => s.CandidateOrder)
+            .ToList();
+    }
+
+    private void LogTriageScoresIfChanged(IReadOnlyList<TriageScore> triageScores)
+    {
+        if (triageScores.Count == 0)
+        {
+            return;
+        }
+
+        var top = triageScores
+            .Take(10)
+            .Select(s =>
+                $"{s.Symbol}:{s.Score:F1}(t3={s.Rate3s:F2}/s t15={s.Rate15s:F2}/s dv={s.DollarVol15s:F0} burst={s.Burst:F2} spread={(s.Spread ?? 0m):F4})");
+        var logLine = string.Join(" | ", top);
+        if (logLine.Equals(_lastTriageLog, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastTriageLog = logLine;
+        _logger.LogInformation("[MarketData] TriageTop10 {Top}", logLine);
+    }
+
+    private static decimal Clamp01(decimal value)
+    {
+        if (value < 0m)
+        {
+            return 0m;
+        }
+
+        if (value > 1m)
+        {
+            return 1m;
+        }
+
+        return value;
+    }
+
+    private sealed record TriageScore(
+        string Symbol,
+        decimal Score,
+        decimal Rate3s,
+        decimal Rate15s,
+        decimal DollarVol15s,
+        decimal? Spread,
+        decimal VolatilityRangePct,
+        decimal Burst,
+        int CandidateOrder);
+
+    private sealed record FocusSelectionResult(List<string> DepthCandidates, Dictionary<string, string> FocusEvictions);
+
+    private sealed record FocusEvaluation(
+        bool ShouldEvict,
+        string Reason,
+        long DwellMs,
+        long? TapeAgeMs,
+        long? DepthAgeMs);
+
+    /// <summary>
+    /// Selects up to maxDepth symbols from candidates for depth (L2) subscriptions.
+    /// Applies focus rotation to evict idle depth symbols after dwell and backfill with fresh candidates.
+    /// Includes hysteresis to retain focus unless challenger beats by configured delta after dwell.
+    /// </summary>
+    private FocusSelectionResult SelectDepthCandidates(
+        IReadOnlyList<TriageScore> triagedCandidates,
+        int maxDepth,
+        DateTimeOffset now,
+        bool focusEnabled,
+        int focusMinDwellMs,
+        int focusTapeIdleMs,
+        int focusDepthIdleMs,
+        int focusWarmupMinTrades,
+        int minScoreDeltaToSwap)
+    {
+        if (maxDepth <= 0 || triagedCandidates.Count == 0)
+        {
+            return new FocusSelectionResult(new List<string>(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        focusMinDwellMs = Math.Max(0, focusMinDwellMs);
+        focusTapeIdleMs = Math.Max(0, focusTapeIdleMs);
+        focusDepthIdleMs = Math.Max(0, focusDepthIdleMs);
+        focusWarmupMinTrades = Math.Max(0, focusWarmupMinTrades);
+        minScoreDeltaToSwap = Math.Max(0, minScoreDeltaToSwap);
+
+        var triageBySymbol = triagedCandidates.ToDictionary(t => t.Symbol, StringComparer.OrdinalIgnoreCase);
+        var eligible = triagedCandidates
+            .Where(t => !IsDepthDisabled(t.Symbol, now))
+            .OrderByDescending(t => t.Score)
+            .ThenBy(t => t.CandidateOrder)
             .ToList();
 
-        // Take the first maxDepth symbols from the candidate list (respecting UniverseService ranking)
-        return eligible.Take(maxDepth).ToList();
+        if (eligible.Count == 0)
+        {
+            return new FocusSelectionResult(new List<string>(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        if (!focusEnabled || eligible.Count <= maxDepth)
+        {
+            return new FocusSelectionResult(eligible.Take(maxDepth).Select(t => t.Symbol).ToList(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var focusEvictions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var focusStates = _active.Values
+            .Where(state => state.DepthRequestId.HasValue)
+            .ToList();
+        var focusSet = new HashSet<string>(focusStates.Select(s => s.Symbol), StringComparer.OrdinalIgnoreCase);
+
+        var keptFocus = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var state in focusStates)
+        {
+            if (!triageBySymbol.TryGetValue(state.Symbol, out var triage))
+            {
+                continue;
+            }
+
+            var evaluation = EvaluateFocus(state, nowMs, focusMinDwellMs, focusTapeIdleMs, focusDepthIdleMs, focusWarmupMinTrades);
+            if (evaluation.ShouldEvict)
+            {
+                focusEvictions[state.Symbol] = evaluation.Reason;
+                _logger.LogInformation(
+                    "[MarketData] Focus rotation marking {Symbol} for eviction reason={Reason} dwellMs={DwellMs} trades={Trades} depthUpdates={DepthUpdates} tapeAgeMs={TapeAgeMs} depthAgeMs={DepthAgeMs}",
+                    state.Symbol,
+                    evaluation.Reason,
+                    evaluation.DwellMs,
+                    state.TradesReceivedInDwell,
+                    state.DepthUpdatesInDwell,
+                    evaluation.TapeAgeMs ?? -1,
+                    evaluation.DepthAgeMs ?? -1);
+                continue;
+            }
+
+            var dwellMet = state.FocusStartMs > 0 && nowMs - state.FocusStartMs >= focusMinDwellMs;
+            var challenger = eligible.FirstOrDefault(t => !focusSet.Contains(t.Symbol) && !focusEvictions.ContainsKey(t.Symbol));
+            if (dwellMet && challenger != null && challenger.Score >= triage.Score + minScoreDeltaToSwap)
+            {
+                focusEvictions[state.Symbol] = "HysteresisChallenger";
+                _logger.LogInformation(
+                    "[MarketData] Focus swap candidate challenger={Challenger} challengerScore={ChallengerScore:F1} focus={FocusSymbol} focusScore={FocusScore:F1} delta={Delta:F1} dwellMs={DwellMs}",
+                    challenger.Symbol,
+                    challenger.Score,
+                    state.Symbol,
+                    triage.Score,
+                    challenger.Score - triage.Score,
+                    nowMs - state.FocusStartMs);
+                continue;
+            }
+
+            keptFocus.Add(state.Symbol);
+        }
+
+        var selection = new List<string>();
+
+        foreach (var candidate in eligible)
+        {
+            if (selection.Count >= maxDepth)
+            {
+                break;
+            }
+
+            if (focusEvictions.ContainsKey(candidate.Symbol))
+            {
+                continue;
+            }
+
+            if (keptFocus.Contains(candidate.Symbol) && !selection.Contains(candidate.Symbol))
+            {
+                selection.Add(candidate.Symbol);
+            }
+        }
+
+        if (selection.Count < maxDepth)
+        {
+            foreach (var candidate in eligible)
+            {
+                if (selection.Count >= maxDepth)
+                {
+                    break;
+                }
+
+                if (focusEvictions.ContainsKey(candidate.Symbol))
+                {
+                    continue;
+                }
+
+                if (selection.Contains(candidate.Symbol))
+                {
+                    continue;
+                }
+
+                selection.Add(candidate.Symbol);
+            }
+        }
+
+        return new FocusSelectionResult(selection.Take(maxDepth).ToList(), focusEvictions);
+    }
+
+    private FocusEvaluation EvaluateFocus(
+        SubscriptionState state,
+        long nowMs,
+        int focusMinDwellMs,
+        int focusTapeIdleMs,
+        int focusDepthIdleMs,
+        int focusWarmupMinTrades)
+    {
+        var focusStartMs = state.FocusStartMs > 0 ? state.FocusStartMs : state.SubscribedAtUtc.ToUnixTimeMilliseconds();
+        var dwellMs = Math.Max(0, nowMs - focusStartMs);
+        var tapeAgeMs = state.LastTapeReceiptMs > 0 ? nowMs - state.LastTapeReceiptMs : (long?)null;
+        var depthAgeMs = state.LastDepthReceiptMs > 0 ? nowMs - state.LastDepthReceiptMs : (long?)null;
+        var dwellMet = dwellMs >= focusMinDwellMs;
+        var tapeIdle = dwellMet && (!tapeAgeMs.HasValue || tapeAgeMs.Value >= focusTapeIdleMs);
+        var depthIdle = dwellMet && (!depthAgeMs.HasValue || depthAgeMs.Value >= focusDepthIdleMs);
+        var warmupMet = state.TradesReceivedInDwell >= focusWarmupMinTrades;
+
+        var shouldEvict = dwellMet && ((tapeIdle && depthIdle) || (!warmupMet && (tapeIdle || depthIdle)));
+
+        string reason;
+        if (!dwellMet)
+        {
+            reason = "DwellNotMet";
+        }
+        else if (tapeIdle && depthIdle)
+        {
+            reason = "TapeDepthIdle";
+        }
+        else if (!warmupMet && (tapeIdle || depthIdle))
+        {
+            reason = "WarmupNotMet";
+        }
+        else if (tapeIdle)
+        {
+            reason = "TapeIdle";
+        }
+        else if (depthIdle)
+        {
+            reason = "DepthIdle";
+        }
+        else
+        {
+            reason = "Retain";
+        }
+
+        return new FocusEvaluation(shouldEvict, reason, dwellMs, tapeAgeMs, depthAgeMs);
     }
 
     private static DateTimeOffset GetActivityKey(SubscriptionState state)
@@ -1362,6 +1799,24 @@ public sealed class MarketDataSubscriptionManager
         }
     }
 
+    private static void ResetFocusTelemetry(SubscriptionState state)
+    {
+        state.FocusStartMs = 0;
+        state.LastTapeReceiptMs = 0;
+        state.LastDepthReceiptMs = 0;
+        state.TradesReceivedInDwell = 0;
+        state.DepthUpdatesInDwell = 0;
+    }
+
+    private static void StartFocusWindow(SubscriptionState state, long nowMs)
+    {
+        state.FocusStartMs = nowMs;
+        state.TradesReceivedInDwell = 0;
+        state.DepthUpdatesInDwell = 0;
+        state.LastTapeReceiptMs = 0;
+        state.LastDepthReceiptMs = 0;
+    }
+
     private static List<string> NormalizeUniverse(IReadOnlyList<string> universe)
     {
         var normalized = new List<string>();
@@ -1401,6 +1856,11 @@ public sealed class MarketDataSubscriptionManager
             SubscribedAtUtc = subscribedAtUtc;
             LastSeenUtc = lastSeenUtc;
             LastActivityUtc = DateTimeOffset.MinValue;
+            FocusStartMs = 0;
+            LastTapeReceiptMs = 0;
+            LastDepthReceiptMs = 0;
+            TradesReceivedInDwell = 0;
+            DepthUpdatesInDwell = 0;
         }
 
         public string Symbol { get; }
@@ -1413,6 +1873,11 @@ public sealed class MarketDataSubscriptionManager
         public DateTimeOffset SubscribedAtUtc { get; }
         public DateTimeOffset LastSeenUtc { get; set; }
         public DateTimeOffset LastActivityUtc { get; set; }
+        public long FocusStartMs { get; set; }
+        public long LastTapeReceiptMs { get; set; }
+        public long LastDepthReceiptMs { get; set; }
+        public int TradesReceivedInDwell { get; set; }
+        public int DepthUpdatesInDwell { get; set; }
     }
 
     private sealed record RequestMapping(string Symbol, MarketDataRequestKind Kind);

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using RamStockAlerts.Engine;
 using RamStockAlerts.Services;
 using RamStockAlerts.Services.Universe;
 using Xunit;
@@ -276,11 +277,13 @@ public class ActiveUniverseTests
         var eligibilityCache = new DepthEligibilityCache(
             config,
             NullLogger<DepthEligibilityCache>.Instance);
+        var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
 
         return new MarketDataSubscriptionManager(
             config,
             NullLogger<MarketDataSubscriptionManager>.Instance,
             classificationService,
-            eligibilityCache);
+            eligibilityCache,
+            metrics);
     }
 }

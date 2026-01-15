@@ -43,6 +43,29 @@ public sealed class TapeClockDomainTests
     }
 
     [Fact]
+    public void TapeReady_WhenEventTimeIsVeryOld_ButReceiptIsFresh()
+    {
+        // Scenario: Event time is 15 minutes old, but we just received the trade now
+        // Expected: Tape should be Ready because receipt time is authoritative
+        var book = new OrderBookState("AAPL");
+        var nowMs = 1_000_000_000_000L;
+        var eventMs = nowMs - TimeSpan.FromMinutes(15).TotalMilliseconds;
+        var recvMs = nowMs;
+
+        book.RecordTrade((long)eventMs, recvMs, 150.25, 5m);
+
+        var config = new ShadowTradingHelpers.TapeGateConfig(
+            WarmupMinTrades: 1,
+            WarmupWindowMs: 15_000,
+            StaleWindowMs: 30_000);
+
+        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+
+        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(0, status.AgeMs);
+    }
+
+    [Fact]
     public void TapeStale_WhenReceiptTimeIsOld_RegardlessOfEventTime()
     {
         // Scenario: Receipt time is old (no new trades arriving)
@@ -90,8 +113,7 @@ public sealed class TapeClockDomainTests
 
         var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
-        // Key assertion: Warmup passes because we have 5 trades (counting by event time in window)
-        // Note: Trade counting still uses event time for warmup, but staleness uses receipt time
+        // Key assertion: Warmup passes because we have 5 trades (counting by receipt time in window)
         Assert.True(status.TradesInWarmupWindow >= 5, $"Expected >= 5 trades, got {status.TradesInWarmupWindow}");
         Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
     }
