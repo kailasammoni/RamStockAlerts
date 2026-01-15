@@ -111,7 +111,7 @@ public class IBkrMarketDataClient : BackgroundService
             
             _logger.LogInformation("[IBKR] Market data client ready. Managing subscriptions...");
 
-            var refreshInterval = TimeSpan.FromMinutes(1);
+            var refreshInterval = TimeSpan.FromMinutes(5);
             while (!stoppingToken.IsCancellationRequested)
             {
                 IReadOnlyList<string> universe;

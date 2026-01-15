@@ -15,6 +15,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private static int _nextRequestId = 5000;
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
+    private DateTime _lastScanTimeUtc = DateTime.MinValue;
+    private static readonly TimeSpan MinScanInterval = TimeSpan.FromMinutes(5);
     private readonly int _startHourEt;
     private readonly int _startMinuteEt;
     private readonly int _endHourEt;
@@ -40,6 +42,21 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Rate limit: Don't scan more than once per MinScanInterval
+        lock (_cacheLock)
+        {
+            var timeSinceLastScan = DateTime.UtcNow - _lastScanTimeUtc;
+            if (timeSinceLastScan < MinScanInterval && _lastUniverse.Count > 0)
+            {
+                _logger.LogInformation(
+                    "[IBKR Scanner] Rate limit: Last scan was {Seconds:F1}s ago (min {MinSeconds}s). Returning cached count={Count}.",
+                    timeSinceLastScan.TotalSeconds,
+                    MinScanInterval.TotalSeconds,
+                    _lastUniverse.Count);
+                return _lastUniverse;
+            }
+        }
 
         if (!IsWithinOperatingWindow())
         {
@@ -110,6 +127,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                     lock (_cacheLock)
                     {
                         _lastUniverse = universe;
+                        _lastScanTimeUtc = DateTime.UtcNow;
                     }
                 }
 
