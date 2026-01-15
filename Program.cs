@@ -43,7 +43,7 @@ string ResolveMode(IConfiguration config)
 string ResolveSymbol(IConfiguration config)
 {
     return Environment.GetEnvironmentVariable("SYMBOL")?.Trim() ??
-           config["Ibkr:Symbol"] ??
+           config["IBKR:Symbol"] ??
            "AAPL";
 }
 

@@ -575,7 +575,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
             return envSymbol.ToUpperInvariant();
         }
 
-        var cfgSymbol = _configuration["Ibkr:Symbol"];
+        var cfgSymbol = _configuration["IBKR:Symbol"];
         return string.IsNullOrWhiteSpace(cfgSymbol) ? "AAPL" : cfgSymbol.ToUpperInvariant();
     }
 

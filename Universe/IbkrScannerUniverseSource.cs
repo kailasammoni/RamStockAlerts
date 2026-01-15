@@ -54,13 +54,9 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             return cached;
         }
 
-        var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
-        var port = _configuration.GetValue<int?>("IBKR:Port")
-                   ?? _configuration.GetValue<int?>("Ibkr:Port")
-                   ?? 7496;
-        var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId")
-                         ?? _configuration.GetValue<int?>("Ibkr:ClientId")
-                         ?? 1;
+        var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
+        var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
+        var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
         var clientId = _configuration.GetValue<int?>("Universe:IbkrScanner:ClientId") ?? baseClientId + 1;
 
         var instrument = _configuration["Universe:IbkrScanner:Instrument"] ?? "STK";
