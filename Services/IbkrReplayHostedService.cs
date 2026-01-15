@@ -563,7 +563,8 @@ public sealed class IbkrReplayHostedService : BackgroundService
             return false;
         }
 
-        payload = new TradePrint(ts.ToUnixTimeMilliseconds(), price, (decimal)size);
+        var tsMs = ts.ToUnixTimeMilliseconds();
+        payload = new TradePrint(tsMs, tsMs, price, (decimal)size);
         return true;
     }
 

@@ -171,10 +171,6 @@ public class IBkrMarketDataClient : BackgroundService
         }
 
         var normalized = symbol.Trim().ToUpperInvariant();
-        if (_activeSubscriptions.TryGetValue(normalized, out var existing))
-        {
-            return existing;
-        }
 
         var enableTape = _configuration.GetValue("MarketData:EnableTape", true);
         var enableDepth = _configuration.GetValue("MarketData:EnableDepth", true);
@@ -185,6 +181,7 @@ public class IBkrMarketDataClient : BackgroundService
             return null;
         }
 
+        // Fetch classification outside lock if depth might be requested
         ContractClassification? classification = null;
         if (requestDepth)
         {
@@ -196,6 +193,7 @@ public class IBkrMarketDataClient : BackgroundService
             classification = _classificationService.TryGetCached(normalized);
         }
 
+        // Validate depth prerequisites outside lock
         if (requestDepth && (classification is null || classification.ConId <= 0 || string.IsNullOrWhiteSpace(classification.PrimaryExchange)))
         {
             _logger.LogWarning(
@@ -210,16 +208,47 @@ public class IBkrMarketDataClient : BackgroundService
             requestDepth = false;
         }
 
+        // All subscription state decisions happen inside the lock
         var depthAttempted = false;
         await _subscriptionLock.WaitAsync(cancellationToken);
         int? mktDataRequestId = null;
         int? depthRequestId = null;
+        string? actualDepthExchange = null;
         try
         {
-            if (_activeSubscriptions.TryGetValue(normalized, out existing))
+            // Re-read subscription state inside lock - this is the authoritative view
+            var existing = _activeSubscriptions.TryGetValue(normalized, out var existingSub) ? existingSub : null;
+
+            // Decide what action to take based on current state and request
+            bool isNewSubscription = existing == null;
+            bool isDepthUpgrade = existing != null && requestDepth && !existing.DepthRequestId.HasValue;
+            bool shouldReturnExisting = existing != null && (!requestDepth || existing.DepthRequestId.HasValue);
+
+            if (shouldReturnExisting)
             {
+                _logger.LogDebug(
+                    "[IBKR] SubscribeSymbolAsync: symbol={Symbol}, requestDepth={RequestDepth}, existing: mktDataId={MktDataId}, depthId={DepthId} - returning existing",
+                    normalized,
+                    requestDepth,
+                    existing!.MktDataRequestId,
+                    existing.DepthRequestId);
                 return existing;
             }
+
+            // If requestDepth became false after validation, and we have existing subscription, return it unchanged
+            if (existing != null && !requestDepth)
+            {
+                _logger.LogDebug(
+                    "[IBKR] SubscribeSymbolAsync: symbol={Symbol}, requestDepth=false after checks - returning existing unchanged",
+                    normalized);
+                return existing;
+            }
+
+            _logger.LogInformation(
+                "[IBKR] SubscribeSymbolAsync: symbol={Symbol}, requestDepth={RequestDepth}, action={Action}",
+                normalized,
+                requestDepth,
+                isNewSubscription ? "NEW" : isDepthUpgrade ? "UPGRADE_TO_DEPTH" : "UNKNOWN");
 
             var baseContract = new Contract
             {
@@ -229,13 +258,20 @@ public class IBkrMarketDataClient : BackgroundService
                 Currency = classification?.Currency ?? "USD"
             };
 
-            if (enableTape)
+            // Request tape only for NEW subscriptions
+            if (isNewSubscription && enableTape)
             {
                 mktDataRequestId = Interlocked.Increment(ref _nextRequestId);
                 _eClientSocket.reqMktData(mktDataRequestId.Value, baseContract, string.Empty, false, false, null);
                 _tickerIdMap[mktDataRequestId.Value] = normalized;
             }
+            else if (isDepthUpgrade)
+            {
+                // Reuse existing tape subscription
+                mktDataRequestId = existing!.MktDataRequestId;
+            }
 
+            // Request depth if needed
             if (requestDepth)
             {
                 _subscriptionManager.RecordDepthSubscribeAttempt(normalized);
@@ -243,14 +279,27 @@ public class IBkrMarketDataClient : BackgroundService
                 var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
                 depthRequestId = Interlocked.Increment(ref _nextRequestId);
                 var depthContract = BuildDepthContractForDepth(normalized, classification);
+                
+                // Capture the actual exchange used for depth request
+                actualDepthExchange = depthContract.Exchange;
+                
+                _logger.LogInformation(
+                    "[IBKR] DepthRequest: symbol={Symbol}, conId={ConId}, exchange={Exchange}, secType={SecType}",
+                    normalized,
+                    classification?.ConId ?? 0,
+                    actualDepthExchange,
+                    depthContract.SecType);
+                
                 LogDepthRequest(depthContract, classification, depthRows, isSmart: false);
                 _eClientSocket.reqMarketDepth(depthRequestId.Value, depthContract, depthRows, false, null);
                 _tickerIdMap[depthRequestId.Value] = normalized;
             }
 
+            // Ensure we have at least one request type
             if (mktDataRequestId is null && depthRequestId is null)
             {
-                return null;
+                _logger.LogWarning("[IBKR] No requests issued for {Symbol}", normalized);
+                return existing; // Return existing if available, otherwise null
             }
 
             _orderBooks.AddOrUpdate(
@@ -258,19 +307,43 @@ public class IBkrMarketDataClient : BackgroundService
                 _ => new OrderBookState { Symbol = normalized },
                 (_, existingBook) => existingBook);
 
-            var subscription = new MarketDataSubscription(
-                normalized,
-                mktDataRequestId,
-                depthRequestId,
-                null,
-                requestDepth ? ResolveDepthExchange(classification) : null);
+            // Create or update subscription record
+            MarketDataSubscription subscription;
+            if (isNewSubscription)
+            {
+                // New subscription - create full record
+                subscription = new MarketDataSubscription(
+                    normalized,
+                    mktDataRequestId,
+                    depthRequestId,
+                    null, // No tick-by-tick yet
+                    actualDepthExchange);
+            }
+            else if (isDepthUpgrade)
+            {
+                // Depth upgrade - clone existing and only update depth fields
+                subscription = new MarketDataSubscription(
+                    normalized,
+                    existing!.MktDataRequestId,     // Preserve existing
+                    depthRequestId,                 // New depth request
+                    existing.TickByTickRequestId,   // Preserve existing
+                    actualDepthExchange);           // Actual exchange from depth contract
+            }
+            else
+            {
+                _logger.LogWarning("[IBKR] Unexpected state for {Symbol}", normalized);
+                return existing;
+            }
+
             _activeSubscriptions[normalized] = subscription;
 
             _logger.LogInformation(
-                "[IBKR] Subscribed to {Symbol} mktDataId={MktDataId} depthId={DepthId}",
+                "[IBKR] SubscribeSymbolAsync EXIT: symbol={Symbol}, mktDataId={MktDataId}, depthId={DepthId}, tickByTickId={TickByTickId}, action={Action}",
                 normalized,
-                mktDataRequestId,
-                depthRequestId);
+                subscription.MktDataRequestId,
+                subscription.DepthRequestId,
+                subscription.TickByTickRequestId,
+                isNewSubscription ? "NEW" : "UPGRADE");
 
             return subscription;
         }
@@ -1107,17 +1180,22 @@ internal class IBkrWrapperImpl : EWrapper
                 return;
             }
 
+            // Capture receipt time immediately
+            var recvMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            
             // IB gives epoch seconds for some callbacks; normalize to ms when it looks like seconds.
-            var tsMs = time < 10_000_000_000 ? time * 1000 : time;
-            book.RecordTrade(tsMs, price, (decimal)size);
+            var eventMs = time < 10_000_000_000 ? time * 1000 : time;
+            
+            // Record with both timestamps: event time (IB server) and receipt time (local)
+            book.RecordTrade(eventMs, recvMs, price, (decimal)size);
             _recordActivity?.Invoke(book.Symbol);
 
             // Fix 3: Only update metrics if book is valid
-            if (book.IsBookValid(out var validityReason, tsMs))
+            if (book.IsBookValid(out var validityReason, recvMs))
             {
-                _metrics.UpdateMetrics(book, tsMs);
-                _shadowTradingCoordinator.ProcessSnapshot(book, tsMs);
-                _ = _previewSignalEmitter.ProcessSnapshotAsync(book, tsMs);
+                _metrics.UpdateMetrics(book, recvMs);
+                _shadowTradingCoordinator.ProcessSnapshot(book, recvMs);
+                _ = _previewSignalEmitter.ProcessSnapshotAsync(book, recvMs);
             }
             else
             {
@@ -1154,7 +1232,8 @@ internal class IBkrWrapperImpl : EWrapper
         }
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        book.RecordTrade(nowMs, price, size);
+        // Market data callbacks don't provide event time, so use receipt time for both
+        book.RecordTrade(nowMs, nowMs, price, size);
         _recordActivity?.Invoke(book.Symbol);
 
         if (book.IsBookValid(out var validityReason, nowMs))

@@ -83,9 +83,10 @@ public class ShadowTradingCoordinatorTapeGateTests
 
         coordinator.ProcessSnapshot(invalidBook, nowMs);
 
-        var validBook = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs + 1);
-        metrics.UpdateMetrics(validBook, nowMs + 1);
-        coordinator.ProcessSnapshot(validBook, nowMs + 1);
+        // Allow enough time to bypass evaluation throttle (250ms)
+        var validBook = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs + 300);
+        metrics.UpdateMetrics(validBook, nowMs + 300);
+        coordinator.ProcessSnapshot(validBook, nowMs + 300);
 
         Assert.Equal(2, journal.Entries.Count);
         Assert.Contains(journal.Entries, entry => entry.RejectionReason == "NotReady_BookInvalid");

@@ -62,7 +62,11 @@ public readonly record struct DepthUpdate(
 /// <summary>
 /// Trade print used for optional tape bookkeeping.
 /// </summary>
-public readonly record struct TradePrint(long TimestampMs, double Price, decimal Size);
+/// <param name="TimestampMs">Event timestamp from IB (can lag)</param>
+/// <param name="ReceiptMs">Local receipt timestamp (UtcNow when callback arrived)</param>
+/// <param name="Price">Trade price</param>
+/// <param name="Size">Trade size</param>
+public readonly record struct TradePrint(long TimestampMs, long ReceiptMs, double Price, decimal Size);
 
 /// <summary>
 /// Single depth level: price with size and timestamp.
@@ -125,6 +129,12 @@ public sealed class OrderBookState
     /// Timestamp of the last applied depth update (ms since epoch). Used for staleness check.
     /// </summary>
     public long LastDepthUpdateUtcMs { get; private set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last tape event RECEIPT TIME (local clock).
+    /// Used for tape staleness gating - NOT event time which can lag.
+    /// </summary>
+    public long LastTapeRecvMs { get; private set; }
 
     /// <summary>
     /// Read-only bid levels in position order (index 0 = best bid).
@@ -482,12 +492,27 @@ public sealed class OrderBookState
     /// <summary>
     /// Record a trade print for optional downstream metrics.
     /// </summary>
+    /// <param name="eventMs">Trade event timestamp (may be IB server time, can lag)</param>
+    /// <param name="recvMs">Receipt timestamp (local UtcNow when callback arrived)</param>
+    /// <param name="price">Trade price</param>
+    /// <param name="size">Trade size</param>
+    public void RecordTrade(long eventMs, long recvMs, double price, decimal size)
+    {
+        _recentTrades.Enqueue(new TradePrint(eventMs, recvMs, price, size));
+        _vwapTracker.OnTrade(price, size, eventMs);
+        TrimTrades();
+        LastUpdateMs = Math.Max(LastUpdateMs, eventMs);
+        LastTapeRecvMs = Math.Max(LastTapeRecvMs, recvMs);
+    }
+
+    /// <summary>
+    /// Record a trade print using single timestamp for both event and receipt time.
+    /// Used when event time is unknown (e.g., market data LAST callbacks).
+    /// </summary>
+    [Obsolete("Use RecordTrade(eventMs, recvMs, price, size) to properly separate event and receipt times")]
     public void RecordTrade(long timestampMs, double price, decimal size)
     {
-        _recentTrades.Enqueue(new TradePrint(timestampMs, price, size));
-        _vwapTracker.OnTrade(price, size, timestampMs);
-        TrimTrades();
-        LastUpdateMs = Math.Max(LastUpdateMs, timestampMs);
+        RecordTrade(timestampMs, timestampMs, price, size);
     }
 
     /// <summary>

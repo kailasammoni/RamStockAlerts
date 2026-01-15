@@ -54,13 +54,15 @@ internal static class ShadowTradingHelpers
             return new TapeStatus(TapeStatusKind.NotWarmedUp, null, 0, warmupMinTrades, warmupWindowMs);
         }
 
-        var lastTrade = book.RecentTrades.LastOrDefault();
-        if (lastTrade.TimestampMs == 0)
+        // Use RECEIPT TIME for staleness check, not event time
+        // Event time can lag due to IB server delays, batching, replay, etc.
+        var lastTapeRecvMs = book.LastTapeRecvMs;
+        if (lastTapeRecvMs == 0)
         {
             return new TapeStatus(TapeStatusKind.NotWarmedUp, null, 0, warmupMinTrades, warmupWindowMs);
         }
 
-        var ageMs = nowMs - lastTrade.TimestampMs;
+        var ageMs = nowMs - lastTapeRecvMs;
         var staleWindowMs = Math.Max(0, config.StaleWindowMs);
 
         if (ageMs > staleWindowMs)
@@ -68,8 +70,9 @@ internal static class ShadowTradingHelpers
             return new TapeStatus(TapeStatusKind.Stale, ageMs, 0, warmupMinTrades, warmupWindowMs);
         }
 
+        // Count trades in warmup window based on RECEIPT TIME, not event time
         var warmupStart = nowMs - warmupWindowMs;
-        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.TimestampMs >= warmupStart);
+        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.ReceiptMs >= warmupStart);
         if (tradesInWarmupWindow < warmupMinTrades)
         {
             return new TapeStatus(

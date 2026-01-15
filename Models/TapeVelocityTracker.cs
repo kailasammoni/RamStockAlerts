@@ -31,7 +31,7 @@ public sealed class TapeVelocityTracker
     /// </summary>
     public void AddTrade(long timestampMs, double price, decimal size)
     {
-        _prints.Enqueue(new TradePrint(timestampMs, price, size));
+        _prints.Enqueue(new TradePrint(timestampMs, timestampMs, price, size));
         Prune(timestampMs);
     }
 

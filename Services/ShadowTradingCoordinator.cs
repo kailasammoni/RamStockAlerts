@@ -14,6 +14,9 @@ namespace RamStockAlerts.Services;
 public sealed class ShadowTradingCoordinator
 {
     private const int TapePresenceWindowMs = 3000;
+    private const int SignalEvaluationThrottleMs = 250; // Don't evaluate more than once per 250ms per symbol
+    private const int TapeStaleWarningThrottleSec = 30; // Log tape stale warning at most once per 30s per symbol
+    
     private readonly OrderFlowMetrics _metrics;
     private readonly OrderFlowSignalValidator _validator;
     private readonly IShadowTradeJournal _journal;
@@ -27,6 +30,8 @@ public sealed class ShadowTradingCoordinator
     private readonly RejectionLogger _rejectionLogger;
     private readonly GatingRejectionThrottle _gatingRejectionThrottle;
     private readonly ConcurrentDictionary<string, long> _lastProcessedSnapshotMs = new();
+    private readonly ConcurrentDictionary<string, long> _lastEvaluationMs = new(StringComparer.OrdinalIgnoreCase); // Evaluation throttle
+    private readonly ConcurrentDictionary<string, long> _lastTapeStaleWarnMs = new(StringComparer.OrdinalIgnoreCase); // Rate-limited warnings
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _emitGateTrace;
@@ -82,6 +87,16 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
+        // Evaluation throttle: Prevent signal spam by limiting evaluations per symbol
+        if (_lastEvaluationMs.TryGetValue(book.Symbol, out var lastEval))
+        {
+            if (nowMs - lastEval < SignalEvaluationThrottleMs)
+            {
+                return; // Skip, too soon since last evaluation
+            }
+        }
+        _lastEvaluationMs[book.Symbol] = nowMs;
+
         FinalizeRankedDecisions(_scarcityController.FlushRankWindow(nowMs));
 
         if (!book.IsBookValid(out _, nowMs))
@@ -112,13 +127,26 @@ public sealed class ShadowTradingCoordinator
         var tapeRejectionReason = GetTapeRejectionReason(tapeStatusReadyCheck);
         if (tapeRejectionReason != null)
         {
-            // Log detailed staleness info when tape gate blocks
-            if (tapeStatusReadyCheck.Kind == ShadowTradingHelpers.TapeStatusKind.Stale && book.RecentTrades.Count > 0)
+            // Log detailed staleness info when tape gate blocks - but rate-limited to prevent spam
+            if (tapeStatusReadyCheck.Kind == ShadowTradingHelpers.TapeStatusKind.Stale)
             {
-                var lastTrade = book.RecentTrades.LastOrDefault();
-                _logger.LogWarning(
-                    "[ShadowTrading GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeMs={LastTapeMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=UnixEpoch",
-                    book.Symbol, nowMs, lastTrade.TimestampMs, tapeStatusReadyCheck.AgeMs, _tapeGateConfig.StaleWindowMs);
+                if (_lastTapeStaleWarnMs.TryGetValue(book.Symbol, out var lastWarnMs))
+                {
+                    if (nowMs - lastWarnMs < TapeStaleWarningThrottleSec * 1000)
+                    {
+                        // Skip this warning, too soon since last one
+                    }
+                    else
+                    {
+                        _lastTapeStaleWarnMs[book.Symbol] = nowMs;
+                        LogTapeStaleWarning(book, nowMs, tapeStatusReadyCheck);
+                    }
+                }
+                else
+                {
+                    _lastTapeStaleWarnMs[book.Symbol] = nowMs;
+                    LogTapeStaleWarning(book, nowMs, tapeStatusReadyCheck);
+                }
             }
             
             var decisionResult = BuildNotReadyDecisionResult(
@@ -1105,6 +1133,25 @@ public sealed class ShadowTradingCoordinator
 
         _lastInactiveSymbolLogMs[normalized] = nowMs;
         _logger.LogDebug("[Shadow] Skipping snapshot for inactive symbol={Symbol}", symbol);
+    }
+
+    private void LogTapeStaleWarning(OrderBookState book, long nowMs, ShadowTradingHelpers.TapeStatus status)
+    {
+        // Use receipt time for staleness reporting, show both event and receipt times for diagnostics
+        var lastTapeRecvMs = book.LastTapeRecvMs;
+        var lastTrade = book.RecentTrades.LastOrDefault();
+        var lastTapeEventMs = lastTrade.TimestampMs;
+        var skewMs = lastTapeRecvMs - lastTapeEventMs;
+        
+        _logger.LogWarning(
+            "[ShadowTrading GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeRecvMs={LastRecvMs}, lastTapeEventMs={LastEventMs}, skewMs={SkewMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=ReceiptTime",
+            book.Symbol, 
+            nowMs, 
+            lastTapeRecvMs,
+            lastTapeEventMs, 
+            skewMs,
+            status.AgeMs, 
+            _tapeGateConfig.StaleWindowMs);
     }
 
     private static string FormatRejectionReason(ScarcityDecision decision)
