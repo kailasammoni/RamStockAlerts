@@ -282,9 +282,10 @@ public sealed class OrderBookState
             return false;
         }
 
-        if (nowUtcMs - LastDepthUpdateUtcMs > StaleDepthThresholdMs)
+        var depthAgeMs = nowUtcMs - LastDepthUpdateUtcMs;
+        if (depthAgeMs > StaleDepthThresholdMs)
         {
-            reason = "StaleDepthData";
+            reason = $"StaleDepthData (nowMs={nowUtcMs}, lastDepthMs={LastDepthUpdateUtcMs}, ageMs={depthAgeMs}, thresholdMs={StaleDepthThresholdMs}, timeSource=UnixEpoch)";
             return false;
         }
 

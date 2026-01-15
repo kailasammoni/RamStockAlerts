@@ -1199,7 +1199,7 @@ internal class IBkrWrapperImpl : EWrapper
             _errorHandler?.Invoke(id, errorCode, errorMsg);
         }
 
-        _logger.LogError("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
+        _logger.LogDebug("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
     }
 
     public void error(string str) => _logger.LogError("[IBKR Error] {Message}", str);

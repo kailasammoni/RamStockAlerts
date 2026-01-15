@@ -61,8 +61,9 @@ internal static class ShadowTradingHelpers
         }
 
         var ageMs = nowMs - lastTrade.TimestampMs;
+        var staleWindowMs = Math.Max(0, config.StaleWindowMs);
 
-        if (ageMs > Math.Max(0, config.StaleWindowMs))
+        if (ageMs > staleWindowMs)
         {
             return new TapeStatus(TapeStatusKind.Stale, ageMs, 0, warmupMinTrades, warmupWindowMs);
         }

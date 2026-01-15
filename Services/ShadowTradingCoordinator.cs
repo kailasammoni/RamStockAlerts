@@ -100,6 +100,15 @@ public sealed class ShadowTradingCoordinator
         var tapeRejectionReason = GetTapeRejectionReason(tapeStatusReadyCheck);
         if (tapeRejectionReason != null)
         {
+            // Log detailed staleness info when tape gate blocks
+            if (tapeStatusReadyCheck.Kind == ShadowTradingHelpers.TapeStatusKind.Stale && book.RecentTrades.Count > 0)
+            {
+                var lastTrade = book.RecentTrades.LastOrDefault();
+                _logger.LogWarning(
+                    "[ShadowTrading GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeMs={LastTapeMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=UnixEpoch",
+                    book.Symbol, nowMs, lastTrade.TimestampMs, tapeStatusReadyCheck.AgeMs, _tapeGateConfig.StaleWindowMs);
+            }
+            
             var decisionResult = BuildNotReadyDecisionResult(
                 book,
                 nowMs,

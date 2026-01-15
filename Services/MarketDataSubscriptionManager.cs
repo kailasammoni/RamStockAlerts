@@ -1152,11 +1152,11 @@ public sealed class MarketDataSubscriptionManager
 
         if (errorCode.HasValue)
         {
-            _logger.LogWarning("[MarketData] Depth subscribe failure code={Code} msg={Msg}", errorCode, errorMessage);
+            _logger.LogDebug("[MarketData] Depth subscribe failure code={Code} msg={Msg}", errorCode, errorMessage);
         }
         else
         {
-            _logger.LogWarning("[MarketData] Depth subscribe failure msg={Msg}", errorMessage);
+            _logger.LogDebug("[MarketData] Depth subscribe failure msg={Msg}", errorMessage);
         }
     }
 
