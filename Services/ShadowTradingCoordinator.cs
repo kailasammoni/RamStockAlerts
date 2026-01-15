@@ -51,8 +51,10 @@ public sealed class ShadowTradingCoordinator
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
         _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
-        var gatingRejectDedupeSeconds = Math.Max(0, configuration.GetValue("ShadowTrading:GatingRejectDedupeSeconds", 4));
-        _gatingRejectionThrottle = new GatingRejectionThrottle(TimeSpan.FromSeconds(gatingRejectDedupeSeconds));
+        var gatingRejectSuppressionSeconds = configuration.GetValue<double?>("ShadowTrading:GatingRejectSuppressionSeconds")
+            ?? configuration.GetValue("ShadowTrading:GatingRejectDedupeSeconds", 10d);
+        _gatingRejectionThrottle = new GatingRejectionThrottle(
+            TimeSpan.FromSeconds(Math.Max(0d, gatingRejectSuppressionSeconds)));
         var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
 
