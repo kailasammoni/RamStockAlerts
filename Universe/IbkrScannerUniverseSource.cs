@@ -502,7 +502,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
         public void contractDetailsEnd(int reqId) { }
 
-        public void execDetails(int reqId, Contract contract, Execution execution) { }
+        public void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
         public void execDetailsEnd(int reqId) { }
         public void commissionReport(CommissionReport commissionReport) { }
         public void fundamentalData(int reqId, string data) { }

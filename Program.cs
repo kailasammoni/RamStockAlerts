@@ -242,6 +242,56 @@ else
 builder.Services.AddSingleton<OrderFlowMetrics>();
 builder.Services.AddSingleton<OrderFlowSignalValidator>();
 
+// Register Execution module (F0-F3)
+var executionEnabled = builder.Configuration.GetValue("Execution:Enabled", false);
+var executionBroker = builder.Configuration.GetValue("Execution:Broker", "Fake");
+
+// Always register types (even if disabled) - controller will check enabled flag
+// Bind ExecutionOptions from configuration
+var executionOptions = new RamStockAlerts.Execution.Contracts.ExecutionOptions();
+builder.Configuration.GetSection("Execution").Bind(executionOptions);
+
+builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IExecutionLedger, 
+    RamStockAlerts.Execution.Storage.InMemoryExecutionLedger>();
+builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IRiskManager>(sp =>
+{
+    var maxNotional = builder.Configuration.GetValue("Execution:MaxNotionalUsd", 2000m);
+    var maxShares = builder.Configuration.GetValue("Execution:MaxShares", 500m);
+    return new RamStockAlerts.Execution.Risk.RiskManagerV0(executionOptions, maxNotional, maxShares);
+});
+
+// Broker selection based on config
+if (string.Equals(executionBroker, "IBKR", StringComparison.OrdinalIgnoreCase))
+{
+    // TODO F4: Implement IbkrBrokerClient
+    Log.Warning("Execution:Broker=IBKR requested but IbkrBrokerClient not yet implemented. Falling back to FakeBrokerClient.");
+    builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IBrokerClient, 
+        RamStockAlerts.Execution.Services.FakeBrokerClient>();
+}
+else
+{
+    builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IBrokerClient, 
+        RamStockAlerts.Execution.Services.FakeBrokerClient>();
+}
+
+builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IExecutionService, 
+    RamStockAlerts.Execution.Services.ExecutionService>();
+
+// Add execution enabled flag to IConfiguration for controller to check
+builder.Services.AddSingleton(sp => new { ExecutionEnabled = executionEnabled });
+
+if (executionEnabled)
+{
+    Log.Information("Execution module ENABLED with {Broker} broker (maxNotional: {MaxNotional}, maxShares: {MaxShares})",
+        executionBroker,
+        builder.Configuration.GetValue("Execution:MaxNotionalUsd", 2000m),
+        builder.Configuration.GetValue("Execution:MaxShares", 500m));
+}
+else
+{
+    Log.Information("Execution module DISABLED (endpoints will return 503). Set Execution:Enabled=true to enable.");
+}
+
 // Register IBKR market data client (Phase 1-2) if configured
 var ibkrEnabled = builder.Configuration.GetValue("IBKR:Enabled", false);
 if (ibkrEnabled)

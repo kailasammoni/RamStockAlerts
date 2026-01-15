@@ -560,7 +560,7 @@ public sealed class ContractClassificationService
         public void accountSummaryEnd(int reqId) { }
         public void nextValidId(int orderId) { }
         public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
-        public void execDetails(int reqId, Contract contract, Execution execution) { }
+        public void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
         public void execDetailsEnd(int reqId) { }
         public void commissionReport(CommissionReport commissionReport) { }
         public void fundamentalData(int reqId, string data) { }
