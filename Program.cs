@@ -196,6 +196,7 @@ builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();
 builder.Services.AddSingleton<ShadowTradingCoordinator>();
 builder.Services.AddSingleton<PreviewSignalEmitter>();
+builder.Services.AddSingleton<IRequestIdSource, IbkrRequestIdSource>();
 builder.Services.AddSingleton<ContractClassificationCache>();
 builder.Services.AddSingleton<ContractClassificationService>();
 builder.Services.AddSingleton<DepthEligibilityCache>();

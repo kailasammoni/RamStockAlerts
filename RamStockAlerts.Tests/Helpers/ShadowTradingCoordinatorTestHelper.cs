@@ -64,7 +64,8 @@ internal static class ShadowTradingCoordinatorTestHelper
         bool enableTickByTick)
     {
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         await classificationCache.PutAsync(
             new ContractClassification(symbol, 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow),
