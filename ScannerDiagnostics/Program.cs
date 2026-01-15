@@ -8,9 +8,9 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        if (args.Length == 0 || (args[0] != "dump-params" && args[0] != "run-matrix" && args[0] != "run-most-active-major" && args[0] != "run-float-low"))
+        if (args.Length == 0 || (args[0] != "dump-params" && args[0] != "run-matrix" && args[0] != "run-most-active-major" && args[0] != "run-float-low" && args[0] != "test-subscriptions"))
         {
-            Console.WriteLine("Usage: dotnet run --project ScannerDiagnostics -- dump-params|run-matrix|run-most-active-major|run-float-low");
+            Console.WriteLine("Usage: dotnet run --project ScannerDiagnostics -- dump-params|run-matrix|run-most-active-major|run-float-low|test-subscriptions");
             return 1;
         }
 
@@ -57,6 +57,9 @@ internal static class Program
                 case "run-float-low":
                     await RunFloatLowAsync(client, artifactsDir, diag);
                     break;
+                case "test-subscriptions":
+                    await TestSubscriptionsAsync(artifactsDir, diag, ibkr);
+                    return 0;
             }
         }
         finally
@@ -339,6 +342,87 @@ internal static class Program
             value = value.Replace(c, '_');
         }
         return value;
+    }
+
+    private static async Task TestSubscriptionsAsync(string artifactsDir, DiagnosticsConfig diag, IbkrConfig ibkr)
+    {
+        Console.WriteLine("\n╔════════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║        IBKR Subscription Limits Diagnostic Test            ║");
+        Console.WriteLine("║              (Common Stock Symbols Only)                   ║");
+        Console.WriteLine("╚════════════════════════════════════════════════════════════╝\n");
+
+        // Common Stock symbols only - filtered from high-conviction list
+        var testSymbols = new[] { "AMD", "INTC", "NVDA", "CRM", "ADSK", "QCOM", "AVGO", "MCHP", "CDNS", "SNPS", "KLAC", "LRCX", "ASML", "NXPI", "STM", "MARA", "RIOT", "COIN", "TSLA", "PLTR" };
+
+        var tool = new SubscriptionDiagnosticsTool(ibkr);
+
+        try
+        {
+            var results = await tool.RunTestAsync(testSymbols, TimeSpan.FromSeconds(10));
+
+            // Display results
+            Console.WriteLine($"Test completed");
+            Console.WriteLine($"Total symbols tested: {results.TotalSymbols}");
+            Console.WriteLine($"Total errors: {results.Errors.Count}\n");
+
+            var summary = results.Summary;
+            Console.WriteLine("╔════ Subscription Tiers ════╗");
+            Console.WriteLine($"║ Depth + Tick-by-Tick: {summary.DepthPlusTickByTickSuccess,3} ║");
+            Console.WriteLine($"║ Depth Only:           {summary.DepthOnlySuccess,3} ║");
+            Console.WriteLine($"║ Tick-by-Tick Only:    {summary.TickByTickOnlySuccess,3} ║");
+            Console.WriteLine($"║ Tape Only (Fallback): {summary.TapeOnlyFallback,3} ║");
+            Console.WriteLine("╚════════════════════════════╝\n");
+
+            // Group errors by code
+            if (results.Errors.Count > 0)
+            {
+                var errorsByCode = results.Errors.GroupBy(e => e.ErrorCode).ToList();
+                Console.WriteLine("╔════ Error Codes ════╗");
+                foreach (var group in errorsByCode.OrderBy(g => g.Key))
+                {
+                    Console.WriteLine($"║ Code {group.Key}: {group.Count()} errors");
+                }
+                Console.WriteLine("╚═══════════════════════╝\n");
+            }
+
+            // Show per-symbol results
+            Console.WriteLine("╔════════════════════════════════════════════════════════════╗");
+            Console.WriteLine("║                     Per-Symbol Results                     ║");
+            Console.WriteLine("╠════════════════════════════════════════════════════════════╣");
+
+            foreach (var result in results.Results.OrderBy(s => s.Symbol))
+            {
+                var hasDepth = result.DepthDataReceived;
+                var hasTick = result.TickByTickDataReceived;
+                var icon = hasDepth && hasTick ? "✓✓" :
+                          hasDepth ? "✓ " :
+                          hasTick ? "✓ " :
+                          "⚠ ";
+
+                var tier = hasDepth && hasTick ? "Depth + Tick" :
+                          hasDepth ? "Depth Only" :
+                          hasTick ? "Tick Only" :
+                          "Tape Only";
+
+                var errorMsg = result.DepthErrorCode.HasValue ? $"[D:{result.DepthErrorCode}]" :
+                              result.TickByTickErrorCode.HasValue ? $"[T:{result.TickByTickErrorCode}]" :
+                              "";
+
+                Console.WriteLine($"║ {icon} {result.Symbol,-6} → {tier,-17} {errorMsg,-20} ║");
+            }
+            Console.WriteLine("╚════════════════════════════════════════════════════════════╝");
+
+            // Export JSON
+            var outputPath = Path.Combine(artifactsDir, "subscription-test-results.json");
+            var json = System.Text.Json.JsonSerializer.Serialize(results, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(outputPath, json);
+            Console.WriteLine($"\nResults exported to: {outputPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error during subscription test: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+        }
     }
 }
 
