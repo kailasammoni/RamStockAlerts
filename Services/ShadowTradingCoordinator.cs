@@ -39,6 +39,18 @@ public sealed class ShadowTradingCoordinator
     private static readonly TimeSpan InactiveSymbolLogThrottle = TimeSpan.FromMinutes(5);
     private readonly GateRejectionCounter _rejectionCounter = new();
     private readonly System.Threading.Timer _summaryTimer;
+    
+    // Phase 3.1: Post-Signal Quality Monitoring
+    private readonly ConcurrentDictionary<string, AcceptedSignalTracker> _acceptedSignals = new(StringComparer.OrdinalIgnoreCase);
+    private readonly bool _postSignalMonitoringEnabled;
+    private readonly double _tapeSlowdownThreshold; // 50% = 0.5
+    private readonly double _spreadBlowoutThreshold; // 50% = 0.5
+    
+    // Phase 3.2: Tape Warm-up Watchlist
+    private readonly ConcurrentDictionary<string, TapeWarmupWatchlistEntry> _tapeWarmupWatchlist = new(StringComparer.OrdinalIgnoreCase);
+    private readonly bool _tapeWatchlistEnabled;
+    private readonly long _tapeWatchlistRecheckIntervalMs; // 5000ms = 5 sec
+    private readonly System.Threading.Timer _watchlistTimer;
 
     public ShadowTradingCoordinator(
         IConfiguration configuration,
@@ -69,12 +81,28 @@ public sealed class ShadowTradingCoordinator
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
         _emitGateTrace = configuration.GetValue("ShadowTradeJournal:EmitGateTrace", true);
         
+        // Phase 3.1: Post-Signal Quality Monitoring configuration
+        _postSignalMonitoringEnabled = configuration.GetValue("ShadowTrading:PostSignalMonitoringEnabled", true);
+        _tapeSlowdownThreshold = configuration.GetValue("ShadowTrading:TapeSlowdownThreshold", 0.5); // 50%
+        _spreadBlowoutThreshold = configuration.GetValue("ShadowTrading:SpreadBlowoutThreshold", 0.5); // 50%
+        
+        // Phase 3.2: Tape Warm-up Watchlist configuration
+        _tapeWatchlistEnabled = configuration.GetValue("ShadowTrading:TapeWatchlistEnabled", true);
+        _tapeWatchlistRecheckIntervalMs = configuration.GetValue("ShadowTrading:TapeWatchlistRecheckIntervalMs", 5000L); // 5 sec
+        
         // Start periodic rejection summary timer (every 60s)
         _summaryTimer = new System.Threading.Timer(
             _ => LogRejectionSummaries(),
             null,
             TimeSpan.FromSeconds(60),
             TimeSpan.FromSeconds(60));
+        
+        // Phase 3.2: Start tape watchlist re-check timer (every 5s default)
+        _watchlistTimer = new System.Threading.Timer(
+            _ => RecheckTapeWarmupWatchlist(),
+            null,
+            TimeSpan.FromMilliseconds(_tapeWatchlistRecheckIntervalMs),
+            TimeSpan.FromMilliseconds(_tapeWatchlistRecheckIntervalMs));
 
         if (_enabled)
         {
@@ -97,6 +125,9 @@ public sealed class ShadowTradingCoordinator
             LogInactiveSymbolSkipThrottled(book.Symbol, nowMs);
             return;
         }
+
+        // Phase 3.1: Monitor post-signal quality for accepted signals
+        MonitorPostSignalQuality(book, nowMs);
 
         // Evaluation throttle: Prevent signal spam by limiting evaluations per symbol
         if (_lastEvaluationMs.TryGetValue(book.Symbol, out var lastEval))
@@ -166,6 +197,13 @@ public sealed class ShadowTradingCoordinator
                 MapReason(tapeRejectionReason),
                 tapeStatusReadyCheck);
             TryLogGatingRejection(book.Symbol, tapeRejectionReason, decisionResult, tapeStatusReadyCheck);
+            
+            // Phase 3.2: Add to watchlist if TapeNotWarmedUp
+            if (tapeRejectionReason == "NotReady_TapeNotWarmedUp")
+            {
+                AddToTapeWarmupWatchlist(book.Symbol, nowMs);
+            }
+            
             return;
         }
 
@@ -1017,6 +1055,11 @@ public sealed class ShadowTradingCoordinator
                 if (!string.IsNullOrWhiteSpace(entry.Symbol))
                 {
                     _validator.RecordAcceptedSignal(entry.Symbol, pending.TimestampMsUtc);
+                    
+                    // Phase 3.1: Track accepted signal for post-signal quality monitoring
+                    var baselineSpread = entry.ObservedMetrics?.Spread ?? 0m;
+                    var baselineTapeVelocity = entry.ObservedMetrics?.TapeAcceleration ?? 0m; // Using tape acceleration as proxy for velocity
+                    TrackAcceptedSignal(entry.Symbol, entry.Direction ?? "Unknown", entry.DecisionId, baselineSpread, baselineTapeVelocity, pending.TimestampMsUtc);
                 }
                 _logger.LogInformation("[Shadow] Signal accepted for {Symbol} ({Direction}) Score={Score}",
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
@@ -1557,5 +1600,222 @@ public sealed class ShadowTradingCoordinator
         }
 
         return true;
+    }
+    
+    // Phase 3.1: Post-Signal Quality Monitoring
+    
+    /// <summary>
+    /// Monitors tape velocity and spread after a signal is accepted.
+    /// Detects degradation (tape slowdown >50%, spread blowout >50%) and journals cancellation.
+    /// </summary>
+    public void MonitorPostSignalQuality(OrderBookState book, long nowMs)
+    {
+        if (!_postSignalMonitoringEnabled || !_acceptedSignals.TryGetValue(book.Symbol, out var tracker))
+        {
+            return;
+        }
+
+        // Already canceled - no further monitoring
+        if (tracker.IsCanceled)
+        {
+            return;
+        }
+
+        var currentSpread = book.BestAsk - book.BestBid;
+        var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
+        var currentTapeVelocity = snapshot?.TapeAcceleration ?? 0m;
+
+        // Tape slowdown check (velocity drops by >50%)
+        if (tracker.BaselineTapeVelocity > 0m && currentTapeVelocity < tracker.BaselineTapeVelocity * (1m - (decimal)_tapeSlowdownThreshold))
+        {
+            CancelSignal(tracker, "TapeSlowdown", currentTapeVelocity, tracker.BaselineTapeVelocity, nowMs);
+            return;
+        }
+
+        // Spread blowout check (spread increases by >50%)
+        if (tracker.BaselineSpread > 0m && currentSpread > tracker.BaselineSpread * (1m + (decimal)_spreadBlowoutThreshold))
+        {
+            CancelSignal(tracker, "SpreadBlowout", currentSpread, tracker.BaselineSpread, nowMs);
+            return;
+        }
+    }
+
+    private void CancelSignal(AcceptedSignalTracker tracker, string reason, decimal currentValue, decimal baselineValue, long nowMs)
+    {
+        tracker.IsCanceled = true;
+        tracker.CancellationReason = reason;
+        tracker.CancellationTimestampMs = nowMs;
+
+        _logger.LogWarning(
+            "[Shadow] Post-signal quality degradation: {Symbol} canceled due to {Reason}. Current={Current:F4}, Baseline={Baseline:F4}",
+            tracker.Symbol, reason, currentValue, baselineValue);
+
+        // Journal the cancellation
+        var cancellationEntry = new ShadowTradeJournalEntry
+        {
+            SchemaVersion = 2,
+            DecisionId = tracker.DecisionId,
+            SessionId = _sessionId,
+            Symbol = tracker.Symbol,
+            Direction = tracker.Direction,
+            DecisionOutcome = "Canceled",
+            RejectionReason = reason,
+            DecisionTimestampUtc = DateTimeOffset.FromUnixTimeMilliseconds(nowMs),
+            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot
+            {
+                Score = 0m // Post-signal cancellation has no score
+            },
+            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+            {
+                Spread = currentValue, // Current degraded value
+                QueueImbalance = 0m,
+                TapeAcceleration = 0m
+            },
+            DecisionTrace = new List<string>
+            {
+                $"PostSignalCancel:{reason}",
+                $"Baseline={baselineValue:F4}",
+                $"Current={currentValue:F4}",
+                $"AcceptedAt={DateTimeOffset.FromUnixTimeMilliseconds(tracker.AcceptanceTimestampMs):O}"
+            }
+        };
+
+        EnqueueEntry(cancellationEntry);
+    }
+
+    /// <summary>
+    /// Tracks an accepted signal for post-signal quality monitoring.
+    /// </summary>
+    private void TrackAcceptedSignal(string symbol, string direction, Guid decisionId, decimal baselineSpread, decimal baselineTapeVelocity, long nowMs)
+    {
+        if (!_postSignalMonitoringEnabled)
+        {
+            return;
+        }
+
+        var tracker = new AcceptedSignalTracker
+        {
+            Symbol = symbol,
+            Direction = direction,
+            DecisionId = decisionId,
+            BaselineSpread = baselineSpread,
+            BaselineTapeVelocity = baselineTapeVelocity,
+            AcceptanceTimestampMs = nowMs,
+            IsCanceled = false
+        };
+
+        _acceptedSignals[symbol] = tracker;
+        
+        _logger.LogDebug(
+            "[Shadow] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, BaselineTape={Tape:F2} tps",
+            symbol, direction, baselineSpread, baselineTapeVelocity);
+    }
+
+    /// <summary>
+    /// Phase 3.2: Adds a symbol to the tape warmup watchlist with spam prevention.
+    /// </summary>
+    private void AddToTapeWarmupWatchlist(string symbol, long nowMs)
+    {
+        if (!_tapeWatchlistEnabled)
+        {
+            return;
+        }
+
+        // Spam prevention: if already exists and checked recently, skip
+        if (_tapeWarmupWatchlist.TryGetValue(symbol, out var existing))
+        {
+            var timeSinceLastCheck = nowMs - existing.LastRecheckMs;
+            if (timeSinceLastCheck < _tapeWatchlistRecheckIntervalMs)
+            {
+                // Too soon since last check, skip
+                return;
+            }
+        }
+
+        // Add or update entry
+        var entry = new TapeWarmupWatchlistEntry
+        {
+            Symbol = symbol,
+            FirstRejectionMs = existing?.FirstRejectionMs ?? nowMs,
+            LastRecheckMs = nowMs
+        };
+        _tapeWarmupWatchlist[symbol] = entry;
+
+        _logger.LogDebug(
+            "[Shadow] Added {Symbol} to tape warmup watchlist. FirstRejection={FirstRejection}, LastRecheck={LastRecheck}",
+            symbol, entry.FirstRejectionMs, entry.LastRecheckMs);
+    }
+
+    /// <summary>
+    /// Phase 3.2: Periodically re-checks symbols in tape warmup watchlist.
+    /// </summary>
+    private void RecheckTapeWarmupWatchlist()
+    {
+        if (!_tapeWatchlistEnabled || _tapeWarmupWatchlist.IsEmpty)
+        {
+            return;
+        }
+
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var symbols = _tapeWarmupWatchlist.Keys.ToArray();
+
+        foreach (var symbol in symbols)
+        {
+            // Get latest book state
+            var book = _metrics.GetOrderBookSnapshot(symbol);
+            if (book == null)
+            {
+                // No book state, remove from watchlist
+                _tapeWarmupWatchlist.TryRemove(symbol, out _);
+                continue;
+            }
+
+            // Check if tape is now warmed up
+            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, _tapeGateConfig);
+            if (tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready)
+            {
+                // Tape is warmed up, trigger re-evaluation
+                _logger.LogInformation(
+                    "[Shadow] Tape warmup watchlist: {Symbol} tape is now warmed up. Triggering re-evaluation.",
+                    symbol);
+
+                // Remove from watchlist
+                _tapeWarmupWatchlist.TryRemove(symbol, out _);
+
+                // Trigger ProcessSnapshot to re-evaluate
+                ProcessSnapshot(book, nowMs);
+            }
+            else
+            {
+                // Still not ready, update last recheck time
+                if (_tapeWarmupWatchlist.TryGetValue(symbol, out var entry))
+                {
+                    entry.LastRecheckMs = nowMs;
+                }
+            }
+        }
+    }
+
+    private sealed class AcceptedSignalTracker
+    {
+        public required string Symbol { get; init; }
+        public required string Direction { get; init; }
+        public required Guid DecisionId { get; init; }
+        public required decimal BaselineSpread { get; init; }
+        public required decimal BaselineTapeVelocity { get; init; }
+        public required long AcceptanceTimestampMs { get; init; }
+        public bool IsCanceled { get; set; }
+        public string? CancellationReason { get; set; }
+        public long CancellationTimestampMs { get; set; }
+    }
+
+    /// <summary>
+    /// Phase 3.2: Tracks symbols rejected for TapeNotWarmedUp that need periodic re-checks
+    /// </summary>
+    private sealed class TapeWarmupWatchlistEntry
+    {
+        public required string Symbol { get; init; }
+        public required long FirstRejectionMs { get; init; }
+        public long LastRecheckMs { get; set; }
     }
 }

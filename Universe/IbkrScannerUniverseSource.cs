@@ -1,6 +1,7 @@
 using System;
 using IBApi;
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Services;
@@ -17,12 +18,14 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private DateTime _lastScanTimeUtc = DateTime.MinValue;
+    private bool _lastUniverseIsStale = false;
     private static readonly TimeSpan MinScanInterval = TimeSpan.FromMinutes(5);
     private readonly int _startHourEt;
     private readonly int _startMinuteEt;
     private readonly int _endHourEt;
     private readonly int _endMinuteEt;
     private readonly TimeZoneInfo _eastern;
+    private readonly string _cacheFilePath;
 
     public IbkrScannerUniverseSource(
         IConfiguration configuration,
@@ -35,6 +38,22 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         _endHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:EndHour", 16), 0, 23);
         _endMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:EndMinute", 0), 0, 59);
         _eastern = TryGetEasternTimeZone();
+        
+        _cacheFilePath = configuration["Universe:IbkrScanner:CacheFilePath"] ?? "logs/universe-cache.jsonl";
+        
+        // Ensure cache directory exists
+        try
+        {
+            var cacheDir = Path.GetDirectoryName(_cacheFilePath);
+            if (!string.IsNullOrEmpty(cacheDir) && !Directory.Exists(cacheDir))
+            {
+                Directory.CreateDirectory(cacheDir);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[IBKR Scanner] Failed to create cache directory for {CacheFile}", _cacheFilePath);
+        }
 
         _configuration = configuration;
         _logger = logger;
@@ -131,7 +150,11 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                     {
                         _lastUniverse = universe;
                         _lastScanTimeUtc = DateTime.UtcNow;
+                        _lastUniverseIsStale = false;
                     }
+                    
+                    // Save to persistent cache
+                    _ = SaveUniverseCacheAsync(universe);
                 }
 
                 LogUniverse(universe);
@@ -144,7 +167,27 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             }
         }
 
-        throw lastException ?? new InvalidOperationException("IBKR scanner request failed.");
+        // Scanner failed on all attempts - try cache fallback
+        _logger.LogWarning("[IBKR Scanner] All {MaxRetries} attempts failed. Loading from persistent cache for fallback recovery.", maxRetries);
+        var cachedUniverse = await LoadUniverseCacheAsync();
+        
+        if (cachedUniverse.Count > 0)
+        {
+            lock (_cacheLock)
+            {
+                _lastUniverse = cachedUniverse;
+                _lastUniverseIsStale = true;
+            }
+            
+            _logger.LogWarning(
+                "[IBKR Scanner] Cache fallback SUCCESS: recovered {Count} symbols from persistent cache (stale). IBKR resilience: universe source via fallback. Real-time scanning will retry on next refresh.",
+                cachedUniverse.Count);
+            LogUniverse(cachedUniverse);
+            return cachedUniverse;
+        }
+        
+        _logger.LogError("[IBKR Scanner] Cache fallback FAILED: No cache available and all {MaxRetries} scan attempts failed. IBKR resilience: universe source exhausted.", maxRetries);
+        throw lastException ?? new InvalidOperationException("IBKR scanner request failed and no cache available.");
     }
 
     private async Task<IReadOnlyList<string>> ExecuteScannerAttemptAsync(
@@ -304,6 +347,106 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         lock (_cacheLock)
         {
             return _lastUniverse;
+        }
+    }
+
+    /// <summary>
+    /// Saves universe to persistent cache file as JSONL.
+    /// Each line is JSON with timestamp and symbols array.
+    /// </summary>
+    private async Task SaveUniverseCacheAsync(IReadOnlyList<string> universe)
+    {
+        try
+        {
+            var cacheEntry = new
+            {
+                timestamp = DateTime.UtcNow.ToString("O"),
+                count = universe.Count,
+                symbols = universe
+            };
+
+            var json = JsonSerializer.Serialize(cacheEntry);
+            
+            // Append to JSONL file
+            await File.AppendAllTextAsync(
+                _cacheFilePath,
+                json + Environment.NewLine);
+
+            _logger.LogDebug("[IBKR Scanner] Saved universe to cache: {File} ({Count} symbols)", _cacheFilePath, universe.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[IBKR Scanner] Failed to save universe cache to {File}", _cacheFilePath);
+        }
+    }
+
+    /// <summary>
+    /// Loads latest universe from persistent cache file.
+    /// Returns empty if no cache exists or file is corrupted.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> LoadUniverseCacheAsync()
+    {
+        try
+        {
+            if (!File.Exists(_cacheFilePath))
+            {
+                _logger.LogDebug("[IBKR Scanner] Cache file does not exist: {File}", _cacheFilePath);
+                return Array.Empty<string>();
+            }
+
+            var lines = await File.ReadAllLinesAsync(_cacheFilePath);
+            if (lines.Length == 0)
+            {
+                _logger.LogDebug("[IBKR Scanner] Cache file is empty: {File}", _cacheFilePath);
+                return Array.Empty<string>();
+            }
+
+            // Load latest (last) entry from JSONL
+            var lastLine = lines[^1];
+            var doc = JsonDocument.Parse(lastLine);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("symbols", out var symbolsElement))
+            {
+                var symbols = new List<string>();
+                foreach (var symbol in symbolsElement.EnumerateArray())
+                {
+                    if (symbol.GetString() is string s && !string.IsNullOrEmpty(s))
+                    {
+                        symbols.Add(s);
+                    }
+                }
+
+                var timestamp = root.TryGetProperty("timestamp", out var ts) ? ts.GetString() : "unknown";
+                _logger.LogInformation(
+                    "[IBKR Scanner] Loaded cache from {File}: {Count} symbols (timestamp={Timestamp})",
+                    _cacheFilePath,
+                    symbols.Count,
+                    timestamp);
+
+                return symbols.AsReadOnly();
+            }
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "[IBKR Scanner] Cache file corrupted or invalid JSON: {File}", _cacheFilePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[IBKR Scanner] Failed to load universe cache from {File}", _cacheFilePath);
+        }
+
+        return Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// Indicates if last universe from cache is stale (from scanner failure).
+    /// </summary>
+    public bool IsUniverseStale()
+    {
+        lock (_cacheLock)
+        {
+            return _lastUniverseIsStale;
         }
     }
 

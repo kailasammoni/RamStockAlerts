@@ -58,8 +58,38 @@ if (dailyRollupRequested)
     Log.Information("Running daily rollup report for {JournalPath} (writeToFile={WriteToFile})",
         journalPath, writeToFile);
 
-    var reporter = new DailyRollupReporter();
-    await reporter.RunAsync(journalPath, writeToFile, outputPath);
+    // Phase 2.4: Build DI container for outcomes + rotation (or use no-arg constructor if disabled)
+    var outcomesEnabled = initialConfig.GetValue("Outcomes:Enabled", true);
+    var rotationEnabled = initialConfig.GetValue("JournalRotation:Enabled", true);
+
+    if (outcomesEnabled || rotationEnabled)
+    {
+        // Build services for full integration
+        var reporterServices = new ServiceCollection();
+        
+        // Register outcome services
+        var reporterOutcomesFilePath = initialConfig.GetValue<string>("Outcomes:FilePath")
+            ?? Path.Combine("logs", "trade-outcomes.jsonl");
+        reporterServices.AddSingleton<ITradeOutcomeLabeler, TradeOutcomeLabeler>();
+        reporterServices.AddSingleton<IOutcomeSummaryStore>(sp => new FileBasedOutcomeSummaryStore(reporterOutcomesFilePath));
+        
+        // Register rotation service
+        reporterServices.AddSingleton<IJournalRotationService, FileBasedJournalRotationService>();
+        
+        var sp = reporterServices.BuildServiceProvider();
+        var labeler = sp.GetRequiredService<ITradeOutcomeLabeler>();
+        var store = sp.GetRequiredService<IOutcomeSummaryStore>();
+        var rotationService = sp.GetRequiredService<IJournalRotationService>();
+
+        var reporter = new DailyRollupReporter(labeler, store, rotationService);
+        await reporter.RunAsync(journalPath, writeToFile, outputPath);
+    }
+    else
+    {
+        // Fallback: no outcomes or rotation
+        var reporter = new DailyRollupReporter();
+        await reporter.RunAsync(journalPath, writeToFile, outputPath);
+    }
     return;
 }
 
@@ -90,6 +120,7 @@ if (mode == "diagnostics")
         .ConfigureServices((context, services) =>
         {
             // Add required services for diagnostics
+            services.AddSingleton<IRequestIdSource>(sp => new IbkrRequestIdSource(sp.GetRequiredService<IConfiguration>()));
             services.AddSingleton<ContractClassificationCache>();
             services.AddSingleton<ContractClassificationService>();
             services.AddHostedService<SubscriptionDiagnosticsHostedService>();
@@ -210,6 +241,7 @@ builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();
 builder.Services.AddSingleton<ShadowTradingCoordinator>();
 builder.Services.AddSingleton<PreviewSignalEmitter>();
+builder.Services.AddSingleton<IRequestIdSource>(sp => new IbkrRequestIdSource(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<ContractClassificationCache>();
 builder.Services.AddSingleton<ContractClassificationService>();
 builder.Services.AddSingleton<DepthEligibilityCache>();
@@ -262,6 +294,17 @@ else
 // Register order flow metrics and signal validation (IBKR Phase 3-4)
 builder.Services.AddSingleton<OrderFlowMetrics>();
 builder.Services.AddSingleton<OrderFlowSignalValidator>();
+
+// Register outcome labeling and summary services (Phase 1)
+var outcomesFilePath = builder.Configuration.GetValue<string>("Outcomes:FilePath")
+    ?? Path.Combine("logs", "trade-outcomes.jsonl");
+builder.Services.AddSingleton<ITradeOutcomeLabeler, TradeOutcomeLabeler>();
+builder.Services.AddSingleton<IOutcomeSummaryStore>(sp => new FileBasedOutcomeSummaryStore(outcomesFilePath));
+Log.Information("Outcome labeling services registered. Outcomes file: {Path}", outcomesFilePath);
+
+// Register journal rotation service (Phase 2.3)
+builder.Services.AddSingleton<IJournalRotationService, FileBasedJournalRotationService>();
+Log.Information("Journal rotation service registered");
 
 // Register Execution module (F0-F3)
 var executionEnabled = builder.Configuration.GetValue("Execution:Enabled", false);

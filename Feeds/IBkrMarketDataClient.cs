@@ -56,6 +56,18 @@ public class IBkrMarketDataClient : BackgroundService
     /// Default: 15 seconds. Configurable via MarketData:TickByTickReceiptTimeoutMs
     /// </summary>
     private int _tickByTickReceiptTimeoutMs = 15_000;
+
+    /// <summary>
+    /// Reconnect configuration: exponential backoff (2s, 4s, 8s, 16s, 32s, max 60s), max 5 attempts
+    /// </summary>
+    private int _reconnectMaxAttempts = 5;
+    private int _reconnectMaxDelayMs = 60_000;
+    
+    /// <summary>
+    /// Tracks in-flight reconnect operation to prevent concurrent reconnects
+    /// </summary>
+    private bool _isReconnecting = false;
+    private readonly SemaphoreSlim _reconnectLock = new(1, 1);
     
     public IBkrMarketDataClient(
         ILogger<IBkrMarketDataClient> logger,
@@ -83,6 +95,8 @@ public class IBkrMarketDataClient : BackgroundService
         // Initialize receipt timeout configuration
         _l1ReceiptTimeoutMs = Math.Max(5_000, configuration.GetValue("MarketData:L1ReceiptTimeoutMs", 15_000));
         _tickByTickReceiptTimeoutMs = Math.Max(5_000, configuration.GetValue("MarketData:TickByTickReceiptTimeoutMs", 15_000));
+        _reconnectMaxAttempts = configuration.GetValue("IBKR:ReconnectMaxAttempts", 5);
+        _reconnectMaxDelayMs = configuration.GetValue("IBKR:ReconnectMaxDelayMs", 60_000);
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -712,6 +726,276 @@ public class IBkrMarketDataClient : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Gets the age in seconds of the last received tick across all subscribed symbols.
+    /// Returns null if no ticks have been received yet.
+    /// Used for heartbeat/disconnect detection.
+    /// </summary>
+    public double? GetLastTickAgeSeconds()
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long? mostRecentTickMs = null;
+
+        foreach (var kvp in _orderBooks)
+        {
+            var book = kvp.Value;
+            
+            // Check last trade timestamp
+            if (book.RecentTrades.Count > 0)
+            {
+                var lastTrade = book.RecentTrades.Last();
+                if (mostRecentTickMs is null || lastTrade.ReceiptTimestampMs > mostRecentTickMs.Value)
+                {
+                    mostRecentTickMs = lastTrade.ReceiptTimestampMs;
+                }
+            }
+            
+            // Also check last depth update
+            if (book.LastDepthUpdateUtcMs > 0)
+            {
+                if (mostRecentTickMs is null || book.LastDepthUpdateUtcMs > mostRecentTickMs.Value)
+                {
+                    mostRecentTickMs = book.LastDepthUpdateUtcMs;
+                }
+            }
+        }
+
+        if (mostRecentTickMs is null)
+        {
+            return null;
+        }
+
+        var ageMs = nowMs - mostRecentTickMs.Value;
+        return ageMs / 1000.0;
+    }
+
+    /// <summary>
+    /// Initiates a disconnect from IBKR with reconnect logic.
+    /// Clears all subscriptions and socket state. Intended to be called before ConnectAsync.
+    /// </summary>
+    public async Task<bool> DisconnectAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (_eClientSocket?.IsConnected() != true)
+            {
+                _logger.LogInformation("[IBKR] Already disconnected or socket null.");
+                return true;
+            }
+
+            var subscriptionCount = _activeSubscriptions.Count;
+            _logger.LogWarning("[IBKR] Disconnecting from TWS. Clearing {SubscriptionCount} active subscriptions. IBKR resilience: disconnect phase initiated.", subscriptionCount);
+
+            // Cancel all active subscriptions
+            var symbols = _activeSubscriptions.Keys.ToList();
+            foreach (var symbol in symbols)
+            {
+                if (_activeSubscriptions.TryRemove(symbol, out var sub))
+                {
+                    if (_eClientSocket?.IsConnected() == true)
+                    {
+                        if (sub.MktDataRequestId.HasValue)
+                            _eClientSocket.cancelMktData(sub.MktDataRequestId.Value);
+                        if (sub.DepthRequestId.HasValue)
+                            _eClientSocket.cancelMktDepth(sub.DepthRequestId.Value, false);
+                        if (sub.TickByTickRequestId.HasValue)
+                            _eClientSocket.cancelTickByTickData(sub.TickByTickRequestId.Value);
+                    }
+
+                    if (sub.MktDataRequestId.HasValue)
+                        _tickerIdMap.TryRemove(sub.MktDataRequestId.Value, out _);
+                    if (sub.DepthRequestId.HasValue)
+                        _tickerIdMap.TryRemove(sub.DepthRequestId.Value, out _);
+                    if (sub.TickByTickRequestId.HasValue)
+                        _tickerIdMap.TryRemove(sub.TickByTickRequestId.Value, out _);
+                }
+            }
+
+            // Disconnect socket
+            _eClientSocket?.eDisconnect();
+            await Task.Delay(500, cancellationToken); // Brief delay to allow cleanup
+
+            _logger.LogWarning(
+                "[IBKR] Disconnected from TWS. Cleared {SymbolCount} subscriptions. IBKR resilience: disconnect phase complete.",
+                symbols.Count);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[IBKR] Error during disconnect.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Reconnects to IBKR with exponential backoff (2s, 4s, 8s, 16s, 32s, max 60s).
+    /// Max 5 retry attempts. Logs all attempts and outcomes with resilience context.
+    /// </summary>
+    public async Task<bool> ConnectAsync(CancellationToken cancellationToken)
+    {
+        await _reconnectLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_isReconnecting)
+            {
+                _logger.LogInformation("[IBKR] Reconnect already in progress.");
+                return false;
+            }
+
+            if (_eClientSocket?.IsConnected() == true)
+            {
+                _logger.LogInformation("[IBKR] Already connected.");
+                return true;
+            }
+
+            _isReconnecting = true;
+            var attempt = 0;
+            var startTime = DateTimeOffset.UtcNow;
+
+            while (attempt < _reconnectMaxAttempts && !cancellationToken.IsCancellationRequested)
+            {
+                attempt++;
+
+                // Calculate exponential backoff: 2s, 4s, 8s, 16s, 32s (capped at 60s)
+                var delayMs = (int)Math.Min(_reconnectMaxDelayMs, Math.Pow(2, attempt + 1) * 1000);
+                
+                _logger.LogInformation(
+                    "[IBKR] Reconnect attempt {Attempt}/{Max} - exponential backoff {DelayMs}ms. IBKR resilience: reconnect phase active.",
+                    attempt,
+                    _reconnectMaxAttempts,
+                    delayMs);
+
+                await Task.Delay(delayMs, cancellationToken);
+
+                try
+                {
+                    var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
+                    var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7497;
+                    var clientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
+
+                    // Reinitialize socket
+                    _wrapper = new IBkrWrapperImpl(
+                        _logger,
+                        _tickerIdMap,
+                        _orderBooks,
+                        _metrics,
+                        _shadowTradingCoordinator,
+                        _previewSignalEmitter,
+                        IsTickByTickActive,
+                        _subscriptionManager.RecordActivity,
+                        HandleIbkrError,
+                        MarkDepthEligible,
+                        _subscriptionManager.RecordDepthSubscribeUpdateReceived);
+
+                    _readerSignal = new EReaderMonitorSignal();
+                    _eClientSocket = new EClientSocket(_wrapper, _readerSignal);
+
+                    _eClientSocket.eConnect(host, port, clientId);
+
+                    if (!_eClientSocket.IsConnected())
+                    {
+                        _logger.LogWarning("[IBKR] Connection attempt {Attempt} failed.", attempt);
+                        continue;
+                    }
+
+                    _eClientSocket.startApi();
+
+                    var elapsedMs = (long)(DateTimeOffset.UtcNow - startTime).TotalMilliseconds;
+                    _logger.LogInformation(
+                        "[IBKR] Reconnected successfully on attempt {Attempt} after {TotalMs}ms. IBKR resilience: reconnection successful.",
+                        attempt,
+                        elapsedMs);
+
+                    // Start message processing loop
+                    _ = Task.Run(() => ProcessMessages(_eClientSocket, _readerSignal, cancellationToken), cancellationToken);
+
+                    _isReconnecting = false;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[IBKR] Reconnect attempt {Attempt} failed with exception.", attempt);
+                }
+            }
+
+            var totalElapsedMs = (long)(DateTimeOffset.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogError(
+                "[IBKR] Reconnect FAILED after {MaxAttempts} attempts over {TotalMs}ms. IBKR resilience: reconnection exhausted. System will retry via heartbeat.",
+                _reconnectMaxAttempts,
+                totalElapsedMs);
+            _isReconnecting = false;
+            return false;
+        }
+        finally
+        {
+            _reconnectLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Re-subscribes to all active symbols after reconnection.
+    /// Must be called after ConnectAsync succeeds.
+    /// </summary>
+    public async Task<int> ReSubscribeActiveSymbolsAsync(CancellationToken cancellationToken)
+    {
+        if (_eClientSocket?.IsConnected() != true)
+        {
+            _logger.LogWarning("[IBKR] Cannot re-subscribe: not connected. IBKR resilience: re-subscription blocked.");
+            return 0;
+        }
+
+        var symbols = _activeSubscriptions.Keys.ToList();
+        var resubscribeCount = 0;
+        var startTime = DateTimeOffset.UtcNow;
+
+        _logger.LogInformation("[IBKR] Starting re-subscription of {SymbolCount} symbols after reconnect. IBKR resilience: recovery phase initiated.", symbols.Count);
+
+        foreach (var symbol in symbols)
+        {
+            try
+            {
+                // Re-subscribe with same parameters as original subscription
+                // For simplicity in Phase 4.2, we subscribe to depth (primary need for trading)
+                var subscription = await SubscribeSymbolAsync(symbol, requestDepth: true, cancellationToken);
+                if (subscription is not null)
+                {
+                    resubscribeCount++;
+                    _logger.LogDebug("[IBKR] Re-subscribed to {Symbol} mktDataId={MktDataId} depthId={DepthId}", symbol, subscription.MktDataRequestId, subscription.DepthRequestId);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[IBKR] Failed to re-subscribe {Symbol}", symbol);
+            }
+        }
+
+        var elapsedMs = (long)(DateTimeOffset.UtcNow - startTime).TotalMilliseconds;
+        _logger.LogInformation(
+            "[IBKR] Re-subscription complete: {ResubscribedCount}/{TotalCount} symbols recovered in {ElapsedMs}ms. IBKR resilience: recovery phase result={Result}.",
+            resubscribeCount,
+            symbols.Count,
+            elapsedMs,
+            resubscribeCount == symbols.Count ? "SUCCESS" : "PARTIAL");
+
+        return resubscribeCount;
+    }
+
+    /// <summary>
+    /// Checks if reconnect is currently in progress.
+    /// </summary>
+    public bool IsReconnecting()
+    {
+        return _isReconnecting;
+    }
+
+    /// <summary>
+    /// Checks if currently connected to IBKR TWS/Gateway.
+    /// </summary>
+    public bool IsConnected()
+    {
+        return _eClientSocket?.IsConnected() == true;
+    }
+
     private bool IsTickByTickActive(string symbol)
     {
         if (string.IsNullOrWhiteSpace(symbol))
@@ -984,7 +1268,7 @@ public class IBkrMarketDataClient : BackgroundService
         var primaryExchange = classification?.PrimaryExchange;
 
         _logger.LogWarning(
-            "DepthIneligible: symbol={Symbol} conId={ConId} exch={Exchange} primaryExch={PrimaryExchange} secType={SecType} localSymbol={LocalSymbol} tradingClass={TradingClass} lastTradeDateOrContractMonth={LastTradeDateOrContractMonth} multiplier={Multiplier} code={Code} msg={Msg}",
+            "DepthSubscriptionError: symbol={Symbol} conId={ConId} exch={Exchange} primaryExch={PrimaryExchange} secType={SecType} localSymbol={LocalSymbol} tradingClass={TradingClass} lastTradeDateOrContractMonth={LastTradeDateOrContractMonth} multiplier={Multiplier} code={Code} msg={Msg}. IBKR resilience: depth ineligibility detected. Market data will fall back to L1 only.",
             symbol,
             conId,
             exchange ?? "SMART",

@@ -98,6 +98,9 @@ public sealed class MarketDataSubscriptionManager
     private bool _tickByTickCapReached;
     private int? _tickByTickEffectiveCap;
     private DateTimeOffset? _tickByTickCapCooldownUntil;
+    
+    // Phase 3.3: PartialBook retry configuration
+    private readonly int _partialBookMaxRetries;
     private readonly HashSet<string> _activeUniverse = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyCollection<string> _lastActiveUniverseSnapshot = Array.Empty<string>();
     private string _lastTriageLog = string.Empty;
@@ -131,14 +134,19 @@ public sealed class MarketDataSubscriptionManager
         _depthEligibilityCache = depthEligibilityCache;
         _metrics = metrics;
         _journal = journal;
+        
+        // Phase 3.3: PartialBook retry configuration
+        _partialBookMaxRetries = _configuration.GetValue("MarketData:PartialBookMaxRetries", 2);
+        
         var maxLines = _configuration.GetValue("MarketData:MaxLines", 95);
         var tickByTickMaxSymbols = _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10);
         var depthRows = _configuration.GetValue("MarketData:DepthRows", 5);
         _logger.LogInformation(
-            "[MarketData] Caps maxLines={MaxLines} tickByTickMaxSymbols={TickByTickMaxSymbols} depthRows={DepthRows}",
+            "[MarketData] Caps maxLines={MaxLines} tickByTickMaxSymbols={TickByTickMaxSymbols} depthRows={DepthRows} partialBookMaxRetries={PartialBookMaxRetries}",
             maxLines,
             tickByTickMaxSymbols,
-            depthRows);
+            depthRows,
+            _partialBookMaxRetries);
     }
 
     public SubscriptionStats GetSubscriptionStats()
@@ -2309,6 +2317,9 @@ public sealed class MarketDataSubscriptionManager
         public bool DepthRetryAttempted { get; set; }
         public string? DepthExchange { get; set; }
         public List<string> DepthAttemptedExchanges { get; } = new();
+        
+        // Phase 3.3: PartialBook retry tracking
+        public int PartialBookRetryAttempts { get; set; }
         public DateTimeOffset SubscribedAtUtc { get; }
         public DateTimeOffset LastSeenUtc { get; set; }
         public DateTimeOffset LastActivityUtc { get; set; }
@@ -2482,6 +2493,83 @@ public sealed class MarketDataSubscriptionManager
         _depthDisabledUntil[symbol] = now.Add(DepthCooldown);
         var classification = _classificationService.TryGetCached(symbol);
         _depthEligibilityCache.MarkIneligible(classification, symbol, reason, now.Add(DepthCooldown));
+    }
+
+    /// <summary>
+    /// Phase 3.3: Handles PartialBook detection by triggering depth re-subscription with retry logic.
+    /// Called by ShadowTradingCoordinator when PartialBook flag is detected.
+    /// </summary>
+    public async Task<bool> HandlePartialBookAsync(
+        string symbol,
+        Func<string, bool, CancellationToken, Task<MarketDataSubscription?>> subscribeAsync,
+        Func<string, CancellationToken, Task<bool>> disableDepthAsync,
+        CancellationToken cancellationToken)
+    {
+        if (!_active.TryGetValue(symbol, out var state))
+        {
+            return false;
+        }
+
+        // Check if we've exceeded retry limit
+        if (state.PartialBookRetryAttempts >= _partialBookMaxRetries)
+        {
+            _logger.LogWarning(
+                "[MarketData] PartialBook retry limit reached for {Symbol} (attempts={Attempts}, max={Max}). Skipping retry.",
+                symbol,
+                state.PartialBookRetryAttempts,
+                _partialBookMaxRetries);
+            return false;
+        }
+
+        await _sync.WaitAsync(cancellationToken);
+        try
+        {
+            // Increment retry counter
+            state.PartialBookRetryAttempts++;
+
+            _logger.LogInformation(
+                "[MarketData] PartialBook detected for {Symbol}. Triggering depth retry (attempt {Attempt}/{Max}).",
+                symbol,
+                state.PartialBookRetryAttempts,
+                _partialBookMaxRetries);
+
+            // Cancel existing depth subscription
+            if (state.DepthRequestId.HasValue)
+            {
+                if (await disableDepthAsync(symbol, cancellationToken))
+                {
+                    UntrackRequest(state.DepthRequestId.Value);
+                    state.DepthRequestId = null;
+                }
+            }
+
+            // Re-subscribe to depth
+            RecordDepthSubscribeAttempt(symbol);
+            var newSubscription = await subscribeAsync(symbol, true, cancellationToken);
+            if (newSubscription?.DepthRequestId != null)
+            {
+                state.DepthRequestId = newSubscription.DepthRequestId;
+                state.DepthExchange = newSubscription.DepthExchange;
+                state.DepthUpdateReceived = false;
+                
+                _logger.LogInformation(
+                    "[MarketData] PartialBook retry successful for {Symbol}. New depthId={DepthId}.",
+                    symbol,
+                    newSubscription.DepthRequestId);
+                return true;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "[MarketData] PartialBook retry failed for {Symbol}. Re-subscription returned null.",
+                    symbol);
+                return false;
+            }
+        }
+        finally
+        {
+            _sync.Release();
+        }
     }
 
     private static string? ResolveDepthRetryExchange(string previousExchange, ContractClassification classification)

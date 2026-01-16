@@ -9,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Universe;
+using RamStockAlerts.Feeds;
 
 namespace RamStockAlerts.Services;
 
@@ -19,8 +20,11 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
     private readonly UniverseService _universeService;
     private readonly OrderFlowMetrics _metrics;
     private readonly ILogger<ShadowJournalHeartbeatService> _logger;
+    private readonly IBkrMarketDataClient _ibkrClient;
     private readonly bool _enabled;
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
+    private readonly double _disconnectThresholdSeconds;
+    private readonly TimeSpan _disconnectCheckInterval;
 
     public ShadowJournalHeartbeatService(
         IConfiguration configuration,
@@ -28,14 +32,18 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         MarketDataSubscriptionManager subscriptionManager,
         UniverseService universeService,
         OrderFlowMetrics metrics,
+        IBkrMarketDataClient ibkrClient,
         ILogger<ShadowJournalHeartbeatService> logger)
     {
         _journal = journal;
         _subscriptionManager = subscriptionManager;
         _universeService = universeService;
         _metrics = metrics;
+        _ibkrClient = ibkrClient;
         _logger = logger;
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
+        _disconnectThresholdSeconds = configuration.GetValue("IBKR:DisconnectThresholdSeconds", 30.0);
+        _disconnectCheckInterval = TimeSpan.FromSeconds(configuration.GetValue("IBKR:DisconnectCheckIntervalSeconds", 10.0));
 
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
@@ -48,7 +56,13 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
             return;
         }
 
-        _logger.LogInformation("[ShadowHeartbeat] Heartbeat service running every 60s.");
+        _logger.LogInformation(
+            "[ShadowHeartbeat] Heartbeat service running. Heartbeat: 60s, Disconnect check: {CheckInterval}s (threshold: {Threshold}s)",
+            _disconnectCheckInterval.TotalSeconds,
+            _disconnectThresholdSeconds);
+
+        // Start disconnect monitoring task
+        var disconnectMonitorTask = Task.Run(() => MonitorIbkrConnectionAsync(stoppingToken), stoppingToken);
 
         var interval = TimeSpan.FromSeconds(60);
         while (!stoppingToken.IsCancellationRequested)
@@ -56,6 +70,8 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
             await WriteHeartbeatAsync(stoppingToken);
             await Task.Delay(interval, stoppingToken);
         }
+
+        await disconnectMonitorTask;
     }
 
     private async Task WriteHeartbeatAsync(CancellationToken stoppingToken)
@@ -153,5 +169,108 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         }
 
         return (minDepthAge, minTapeAge, bookValidAny, tapeRecentAny);
+    }
+
+    private async Task MonitorIbkrConnectionAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(_disconnectCheckInterval, stoppingToken);
+                await CheckIbkrHealthAsync(stoppingToken);
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "[ShadowHeartbeat] IBKR health check failed.");
+            }
+        }
+    }
+
+    private async Task CheckIbkrHealthAsync(CancellationToken stoppingToken)
+    {
+        // Check if we're connected
+        var isConnected = _ibkrClient.IsConnected();
+        if (!isConnected)
+        {
+            _logger.LogWarning("[ShadowHeartbeat] IBKR not connected. Triggering reconnect.");
+            await TriggerReconnectAsync(stoppingToken);
+            return;
+        }
+
+        // Skip staleness check outside market hours
+        if (!IsMarketHours())
+        {
+            return;
+        }
+
+        // Check last tick age
+        var lastTickAge = _ibkrClient.GetLastTickAgeSeconds();
+        if (lastTickAge is null)
+        {
+            // No ticks received yet - normal on startup
+            return;
+        }
+
+        if (lastTickAge.Value > _disconnectThresholdSeconds)
+        {
+            _logger.LogWarning(
+                "[ShadowHeartbeat] IBKR data stale: last tick age={AgeSeconds:F1}s, threshold={Threshold}s. Triggering reconnect.",
+                lastTickAge.Value,
+                _disconnectThresholdSeconds);
+            await TriggerReconnectAsync(stoppingToken);
+        }
+    }
+
+    private bool IsMarketHours()
+    {
+        // US market hours: 9:30 AM - 4:00 PM ET (14:30-21:00 UTC)
+        // Check Mon-Fri only
+        var nowUtc = DateTime.UtcNow;
+        if (nowUtc.DayOfWeek == DayOfWeek.Saturday || nowUtc.DayOfWeek == DayOfWeek.Sunday)
+        {
+            return false;
+        }
+
+        var hour = nowUtc.Hour;
+        var minute = nowUtc.Minute;
+        var totalMinutes = hour * 60 + minute;
+        var marketOpenMinutes = 14 * 60 + 30;  // 14:30 UTC
+        var marketCloseMinutes = 21 * 60;       // 21:00 UTC
+
+        return totalMinutes >= marketOpenMinutes && totalMinutes < marketCloseMinutes;
+    }
+
+    private async Task TriggerReconnectAsync(CancellationToken stoppingToken)
+    {
+        if (_ibkrClient.IsReconnecting())
+        {
+            _logger.LogInformation("[ShadowHeartbeat] Reconnect already in progress.");
+            return;
+        }
+
+        _logger.LogWarning("[ShadowHeartbeat] Triggering IBKR reconnect sequence...");
+
+        // Disconnect
+        var disconnected = await _ibkrClient.DisconnectAsync(stoppingToken);
+        if (!disconnected)
+        {
+            _logger.LogError("[ShadowHeartbeat] Disconnect failed.");
+            return;
+        }
+
+        // Reconnect with exponential backoff
+        var connected = await _ibkrClient.ConnectAsync(stoppingToken);
+        if (!connected)
+        {
+            _logger.LogError("[ShadowHeartbeat] Reconnect failed after max attempts.");
+            return;
+        }
+
+        _logger.LogInformation("[ShadowHeartbeat] Reconnect succeeded. Re-subscribing active symbols...");
+
+        // Re-subscribe to active symbols
+        var resubscribed = await _ibkrClient.ReSubscribeActiveSymbolsAsync(stoppingToken);
+        _logger.LogInformation("[ShadowHeartbeat] Re-subscription complete: {Count} symbols", resubscribed);
     }
 }
