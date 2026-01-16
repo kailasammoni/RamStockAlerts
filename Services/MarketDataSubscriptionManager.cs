@@ -61,6 +61,8 @@ public sealed class MarketDataSubscriptionManager
 {
     private static readonly TimeSpan DepthCooldown = TimeSpan.FromDays(1);
     private static readonly TimeSpan TickByTickCooldown = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan TickByTickRebalanceDebounce = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan TickByTickCapCooldown = TimeSpan.FromMinutes(2);
 
     private readonly IConfiguration _configuration;
     private readonly ILogger<MarketDataSubscriptionManager> _logger;
@@ -93,6 +95,9 @@ public sealed class MarketDataSubscriptionManager
     private static readonly TimeSpan PendingCancelTtl = TimeSpan.FromMinutes(2);
     private bool _skipTickByTickEnableThisCycle;
     private bool _tickByTickCapLogged;
+    private bool _tickByTickCapReached;
+    private int? _tickByTickEffectiveCap;
+    private DateTimeOffset? _tickByTickCapCooldownUntil;
     private readonly HashSet<string> _activeUniverse = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyCollection<string> _lastActiveUniverseSnapshot = Array.Empty<string>();
     private string _lastTriageLog = string.Empty;
@@ -670,6 +675,9 @@ public sealed class MarketDataSubscriptionManager
                 disableDepthAsync,
                 maxLines,
                 now,
+                cancellationToken,
+                "UniverseRefresh");
+            LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
                 cancellationToken);
 
             LogTapeDepthPairingIfChanged(maxDepthSymbols);
@@ -1086,13 +1094,28 @@ public sealed class MarketDataSubscriptionManager
 
         if (errorCode == 10190 && mapping.Kind == MarketDataRequestKind.TickByTick)
         {
-            if (!_tickByTickCapLogged)
+            _tickByTickCapReached = true;
+            _skipTickByTickEnableThisCycle = true;
+            _tickByTickCapCooldownUntil = now.Add(TickByTickCapCooldown);
+
+            var configuredCap = Math.Max(0, _configuration.GetValue("MarketData:TickByTickMaxSymbols", 10));
+            var activeTickByTick = _active.Values.Count(active => active.TickByTickRequestId.HasValue);
+            var effectiveCap = Math.Max(0, activeTickByTick - (state.TickByTickRequestId == requestId ? 1 : 0));
+            var previousEffectiveCap = _tickByTickEffectiveCap;
+            if (!previousEffectiveCap.HasValue || previousEffectiveCap.Value != effectiveCap)
             {
-                _tickByTickCapLogged = true;
-                _logger.LogWarning("TickByTickCapHit: disabling further tick-by-tick enables until next refresh");
+                _tickByTickEffectiveCap = effectiveCap;
             }
 
-            _skipTickByTickEnableThisCycle = true;
+            if (!_tickByTickCapLogged || previousEffectiveCap != effectiveCap)
+            {
+                _tickByTickCapLogged = true;
+                _logger.LogWarning(
+                    "TickByTickCapReached: configuredCap={ConfiguredCap} effectiveCap={EffectiveCap}",
+                    configuredCap,
+                    effectiveCap);
+            }
+
             if (IsTickByTickDisabled(symbol, now))
             {
                 return;
@@ -1107,6 +1130,7 @@ public sealed class MarketDataSubscriptionManager
                 MarkPendingCancel(requestId, now);
                 UntrackRequest(requestId);
                 state.TickByTickRequestId = null;
+                state.TickByTickLastDisabledUtc = now;
             }
             else
             {
@@ -1173,6 +1197,21 @@ public sealed class MarketDataSubscriptionManager
             {
                 MarkPendingCancel(state.TickByTickRequestId.Value, now);
                 state.TickByTickRequestId = null;
+                state.TickByTickLastDisabledUtc = now;
+            }
+
+            if (_lastUniverse.Count > 0 && _lastTickByTickMaxSymbols > 0)
+            {
+                var focusSet = SelectFocusSet(_lastUniverse, _lastTickByTickMaxSymbols, now);
+                await ApplyTickByTickAsync(
+                    focusSet,
+                    _lastTickByTickMaxSymbols,
+                    _lastMaxLines,
+                    enableTickByTickAsync,
+                    disableTickByTickAsync,
+                    now,
+                    cancellationToken,
+                    "DepthIneligible");
             }
 
             // Update ActiveUniverse since this symbol lost depth + tick-by-tick
@@ -1204,6 +1243,122 @@ public sealed class MarketDataSubscriptionManager
         _lastDepthIneligibleSymbols.Add(new DepthIneligibleEntry(normalized, timestamp));
         while (_lastDepthIneligibleSymbols.Count > LastDepthIneligibleSymbolsLimit)
         {
+            _lastDepthIneligibleSymbols.Dequeue();
+        }
+    }
+
+    private async Task<int> ApplyTickByTickAsync(
+        List<string> focusSet,
+        int tickByTickMaxSymbols,
+        int maxLines,
+        Func<string, CancellationToken, Task<int?>> enableTickByTickAsync,
+        Func<string, CancellationToken, Task<bool>> disableTickByTickAsync,
+        DateTimeOffset now,
+        CancellationToken cancellationToken,
+        string reason)
+    {
+        CleanupPendingCancels(now);
+        if (tickByTickMaxSymbols <= 0)
+        {
+            return 0;
+        }
+
+        if (focusSet.Count > tickByTickMaxSymbols)
+        {
+            focusSet = focusSet.Take(tickByTickMaxSymbols).ToList();
+        }
+
+        var focus = new HashSet<string>(focusSet, StringComparer.OrdinalIgnoreCase);
+
+        var disabled = new List<string>();
+        foreach (var state in _active.Values)
+        {
+            if (!state.TickByTickRequestId.HasValue)
+            {
+                continue;
+            }
+
+            if (!focus.Contains(state.Symbol) || IsTickByTickDisabled(state.Symbol, now))
+            {
+                if (ShouldDebounceTickByTickDisable(state, now))
+                {
+                    continue;
+                }
+
+                if (await disableTickByTickAsync(state.Symbol, cancellationToken))
+                {
+                    MarkPendingCancel(state.TickByTickRequestId.Value, now);
+                    state.TickByTickRequestId = null;
+                    state.TickByTickLastDisabledUtc = now;
+                    disabled.Add(state.Symbol);
+                }
+            }
+        }
+
+        var activeTickByTick = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
+        if (activeTickByTick >= tickByTickMaxSymbols)
+        {
+            return activeTickByTick;
+        }
+        if (_skipTickByTickEnableThisCycle)
+        {
+            return activeTickByTick;
+        }
+        if (IsTickByTickCapCooldownActive(now))
+        {
+            return activeTickByTick;
+        }
+
+        var enabled = new List<string>();
+        foreach (var symbol in focusSet)
+        {
+            if (activeTickByTick >= tickByTickMaxSymbols)
+            {
+                break;
+            }
+
+            if (!_active.TryGetValue(symbol, out var state))
+            {
+                continue;
+            }
+
+            if (state.TickByTickRequestId.HasValue || IsTickByTickDisabled(symbol, now))
+            {
+                continue;
+            }
+
+            if (ShouldDebounceTickByTickEnable(state, now))
+            {
+                continue;
+            }
+
+            if (GetTotalLines() + 1 > maxLines)
+            {
+                break;
+            }
+
+            var requestId = await enableTickByTickAsync(symbol, cancellationToken);
+            if (!requestId.HasValue)
+            {
+                _skipTickByTickEnableThisCycle = true;
+                break;
+            }
+
+            state.TickByTickRequestId = requestId.Value;
+            state.LastActivityUtc = now;
+            state.TickByTickLastEnabledUtc = now;
+            TrackRequest(requestId.Value, symbol, MarketDataRequestKind.TickByTick);
+            activeTickByTick++;
+            enabled.Add(symbol);
+        }
+
+        if (enabled.Count > 0 || disabled.Count > 0)
+        {
+            _logger.LogInformation(
+                "TickByTickRebalance: enabled=[{Enabled}] disabled=[{Disabled}] reason={Reason}",
+                string.Join(",", enabled),
+                string.Join(",", disabled),
+                reason);
             _lastDepthIneligibleSymbols.RemoveAt(0);
         }
     }
@@ -1361,6 +1516,7 @@ public sealed class MarketDataSubscriptionManager
             {
                 UntrackRequest(candidate.TickByTickRequestId.Value);
                 candidate.TickByTickRequestId = null;
+                candidate.TickByTickLastDisabledUtc = now;
                 freed++;
             }
         }
@@ -1957,6 +2113,36 @@ public sealed class MarketDataSubscriptionManager
         return false;
     }
 
+    private bool IsTickByTickCapCooldownActive(DateTimeOffset now)
+    {
+        if (!_tickByTickCapReached || !_tickByTickCapCooldownUntil.HasValue)
+        {
+            return false;
+        }
+
+        return _tickByTickCapCooldownUntil.Value > now;
+    }
+
+    private static bool ShouldDebounceTickByTickEnable(SubscriptionState state, DateTimeOffset now)
+    {
+        if (state.TickByTickLastDisabledUtc == DateTimeOffset.MinValue)
+        {
+            return false;
+        }
+
+        return now - state.TickByTickLastDisabledUtc < TickByTickRebalanceDebounce;
+    }
+
+    private static bool ShouldDebounceTickByTickDisable(SubscriptionState state, DateTimeOffset now)
+    {
+        if (state.TickByTickLastEnabledUtc == DateTimeOffset.MinValue)
+        {
+            return false;
+        }
+
+        return now - state.TickByTickLastEnabledUtc < TickByTickRebalanceDebounce;
+    }
+
     private void TrackRequests(SubscriptionState state)
     {
         TrackRequest(state.MktDataRequestId, state.Symbol, MarketDataRequestKind.MktData);
@@ -2080,6 +2266,8 @@ public sealed class MarketDataSubscriptionManager
         public DateTimeOffset SubscribedAtUtc { get; }
         public DateTimeOffset LastSeenUtc { get; set; }
         public DateTimeOffset LastActivityUtc { get; set; }
+        public DateTimeOffset TickByTickLastEnabledUtc { get; set; }
+        public DateTimeOffset TickByTickLastDisabledUtc { get; set; }
         public long FocusStartMs { get; set; }
         public long LastTapeReceiptMs { get; set; }
         public long LastDepthReceiptMs { get; set; }
