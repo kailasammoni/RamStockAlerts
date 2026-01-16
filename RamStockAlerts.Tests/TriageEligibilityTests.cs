@@ -190,7 +190,7 @@ public class TriageEligibilityTests
     }
 
     [Fact]
-    public void SymbolWithMixedTradeHistory_CorrectslyCountsWindowTrades()
+    public void SymbolWithMixedTradeHistory_CorrectlyCountsWindowTrades()
     {
         // Arrange: Create symbol with both old and recent trades
         var symbol = "MIXED";
