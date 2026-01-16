@@ -80,7 +80,7 @@ public class OrderFlowMetrics
     public MetricSnapshot UpdateMetrics(OrderBookState book, long currentTimeMs)
     {
         // HARD GATE: Absolute check - no exceptions
-        if (!book.IsBookValid(out var validityReason))
+        if (!book.IsBookValid(out var validityReason, currentTimeMs))
         {
             _logger.LogWarning("[Metrics GATE] Blocking metrics for {Symbol}: {Reason} (timestamp={TimestampMs})", 
                 book.Symbol, validityReason, currentTimeMs);

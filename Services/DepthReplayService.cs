@@ -188,7 +188,7 @@ public sealed class DepthReplayService
             }
 
             var ts = ParseTimestampMs(logLine.TimestampUtc);
-            var trade = new TradePrint(ts, logLine.Price, logLine.Size);
+            var trade = new TradePrint(ts, ts, logLine.Price, logLine.Size);
             result.Add(new ReplayEvent(ts, sequence++, ReplayEventKind.Tape, null, trade));
         }
 
