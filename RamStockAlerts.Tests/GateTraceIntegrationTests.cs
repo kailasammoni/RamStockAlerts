@@ -58,9 +58,9 @@ public class GateTraceIntegrationTests
         book.ApplyDepthUpdate(new DepthUpdate("AAPL", DepthSide.Ask, DepthOperation.Insert, 100.10m, 10m, 0, nowMs - 1000));
         
         // Add only 3 trades (warmup requires 5)
-        book.RecordTrade(nowMs - 5000, 100.05, 10m);
-        book.RecordTrade(nowMs - 3000, 100.06, 15m);
-        book.RecordTrade(nowMs - 1000, 100.07, 20m);
+        book.RecordTrade(nowMs - 5000, nowMs - 5000, 100.05, 10m);
+        book.RecordTrade(nowMs - 3000, nowMs - 3000, 100.06, 15m);
+        book.RecordTrade(nowMs - 1000, nowMs - 1000, 100.07, 20m);
 
         metrics.UpdateMetrics(book, nowMs);
 
@@ -123,7 +123,7 @@ public class GateTraceIntegrationTests
         
         book.ApplyDepthUpdate(new DepthUpdate("AAPL", DepthSide.Bid, DepthOperation.Insert, 100m, 10m, 0, nowMs - 1000));
         book.ApplyDepthUpdate(new DepthUpdate("AAPL", DepthSide.Ask, DepthOperation.Insert, 100.10m, 10m, 0, nowMs - 1000));
-        book.RecordTrade(nowMs - 1000, 100.05, 10m);
+        book.RecordTrade(nowMs - 1000, nowMs - 1000, 100.05, 10m);
 
         metrics.UpdateMetrics(book, nowMs);
 
@@ -178,7 +178,8 @@ public class GateTraceIntegrationTests
         // Tape is healthy
         for (int i = 0; i < 10; i++)
         {
-            book.RecordTrade(nowMs - (10 - i) * 100, 100.0 + i * 0.01, 10m);
+            var ts = nowMs - (10 - i) * 100;
+            book.RecordTrade(ts, ts, 100.0 + i * 0.01, 10m);
         }
 
         metrics.UpdateMetrics(book, nowMs);

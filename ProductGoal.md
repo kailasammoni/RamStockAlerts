@@ -1,14 +1,14 @@
-What you are building is an **order-flow intelligence platform**. Below is the **complete professional requirements specification** for reaching your stated goal: extracting a small, repeatable daily edge from liquidity dislocations.
+# RamStockAlerts – Order-Flow Intelligence Platform
+
+An **order-flow intelligence platform** designed to extract a small, repeatable daily edge from liquidity dislocations.
+
+## System Objective
+
+Detect **transient order-book imbalances** that statistically precede short-term price continuation and deliver **actionable, human-executed trade blueprints** with strict quality control.
 
 ---
 
-# SYSTEM OBJECTIVE
-
-Detect **transient order-book imbalances** that statistically precede short-term price continuation, and deliver **actionable, human-executed trade blueprints** with strict quality control.
-
----
-
-# FUNCTIONAL REQUIREMENTS
+# Functional Requirements
 
 ## 1. Dynamic Trading Universe
 
@@ -126,7 +126,7 @@ Alert only if **Score ≥ 7.5**.
 
 ---
 
-# NON-FUNCTIONAL REQUIREMENTS
+# Non-Functional Requirements
 
 | Area          | Requirement               |
 | ------------- | ------------------------- |
@@ -138,7 +138,7 @@ Alert only if **Score ≥ 7.5**.
 
 ---
 
-# SUCCESS CRITERIA
+# Success Criteria
 
 | Metric       | Target                |
 | ------------ | --------------------- |
@@ -150,37 +150,21 @@ Alert only if **Score ≥ 7.5**.
 
 ---
 
-# FINAL TRUTH
+# Core Principles
 
-This system does not predict price.
+**This system does not predict price.**
 
-It detects **liquidity failure points** — moments where institutions cannot hide their intent.
+It detects **liquidity failure points** — moments where institutions cannot hide their intent. That is where small, repeatable profits live.
 
-That is where small, repeatable profits live.
-
-
-Update on 1/14/2026
-
-
-# PRODUCT_GOAL.md
-
-## 🎯 Product Vision
-
-Build a scarce, high-trust alert engine for human traders using market microstructure.
-
-**Core focus:**
-- Scarcity over volume (max 3–6 trades/day)
-- Detect dislocations, not trends
-- Use book + tape as primary signal drivers
+**Scarcity over volume:** Max 3–6 high-quality trades/day. Detect dislocations, not trends. Use book + tape as primary signal drivers.
 
 ---
 
-## 🧠 Engine Logic
+# Implementation Details
 
-### 🔍 Trade Signal Criteria
-- Quantitative score system (0–10) with live weights
+## Trade Signal Criteria (Quantitative Score 0–10)
 - Accept if score ≥ 7.5
-- Includes:
+- Components:
   - Queue Imbalance (QI)
   - Absorption (fill vs cancel at ask)
   - Tape speed (volume/time accel)
@@ -188,55 +172,39 @@ Build a scarce, high-trust alert engine for human traders using market microstru
   - VWAP reclaim bonus (+0.5)
   - Spread penalty
 
-### ❌ Post-Signal Filters
-- Spoofing rejection: large cancel near ask
-- Replenishment rejection: refill after fill
-- Tape stall: no recent prints
-- (Planned): spread blowout, tape freeze filter
+## Post-Signal Filters
+- **Spoofing rejection:** large cancel near ask
+- **Replenishment rejection:** refill after fill
+- **Tape stall:** no recent prints
+- **(Planned):** spread blowout, tape freeze filter
 
 ---
 
-## 📏 Blueprint Generation
+## Blueprint Generation
 - Entry = Ask
 - Stop = Entry − 4×Spread
 - Target = Entry + 8×Spread
 - Stored per signal in shadow journal
 
----
-
-## 📦 Universe Construction
-
+## Universe Construction
 - IBKR Scanner live
   - Filters: Price $5–20, Float < 150M, common stocks only
   - Excludes: ETFs, ADRs, warrants, OTC
 - (Planned): enforce rel vol > 2, spread < $0.05
 
----
-
-## 📚 Journal / Replay
-
+## Journal & Replay
 - Every signal captured (accepted/rejected)
 - JSONL format with timestamp, ticker, score, rejection reason
-- Used for:
-  - Strategy audit
-  - Replay testing
-  - Outcome tracking
+- Used for: strategy audit, replay testing, outcome tracking
 
----
-
-## 📈 Performance Tracking (WIP)
+## Performance Tracking (WIP)
 - Shadow trades journaled but not yet scored as wins/losses
 - Outcome tagging (TP/hit/SL/miss) needed
 - Profit factor, drawdown, hit rate → not implemented yet
 
-
-## Current Status
-- Shadow mode is live: IBKR depth and tape subscriptions feed ShadowTradingCoordinator, blueprints are scored, and every accepted/rejected signal is journaled with the same book/tape context.
-- The shadow journal now writes SchemaVersion=2 entries, includes depth/tape snapshots and heartbeat markers, and keeps the format stable for replay and metric pipelines.
-- Tape and depth requests are paired by the subscription manager, duplicates are avoided, and HandleIbkrError plus DepthEligibilityCache log 10092 ineligibility patterns so depth gets disabled before new requests flood the same symbol.
-- The recorder tool (MODE=record / Ibkr:Mode=Record) is available to capture raw IBKR depth and tape JSONL files under logs/ibkr-* for debugging the live feed.
+---
 
 ## Next Steps
 - Build the outcome pipeline that turns SchemaVersion=2 journal entries into tagged wins, losses, and misses so PerformanceTracker can compute the actual win rate, avg gain/loss, and accuracy targets.
 - Surface those metrics (win rate, avg gain/loss, max drawdown, trades/day) in dashboards or health checks to understand how close we are to the 0.45% avg win, 62% accuracy goals.
-- Use the emerging analytics to refine scarcity gating (drop weaker signals, enforce 3-6 trades/day) and prioritize tuning absorption/tape filters toward a repeatable win-rate edge.
+- Use the emerging analytics to refine scarcity gating (drop weaker signals, enforce 3–6 trades/day) and prioritize tuning absorption/tape filters toward a repeatable win-rate edge.

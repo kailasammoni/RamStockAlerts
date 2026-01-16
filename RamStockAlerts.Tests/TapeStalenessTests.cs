@@ -138,8 +138,8 @@ public class TapeStalenessTests
             MaxDepthRows = 10
         };
         var nowMs = 1000010000L;
-        book.RecordTrade(nowMs - 5000, 100.0, 10m);
-        book.RecordTrade(nowMs - 3000, 100.5, 15m);
+        book.RecordTrade(nowMs - 5000, nowMs - 5000, 100.0, 10m);
+        book.RecordTrade(nowMs - 3000, nowMs - 3000, 100.5, 15m);
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 5, warmupWindowMs: 10000);
 
         // Act
@@ -160,11 +160,11 @@ public class TapeStalenessTests
             MaxDepthRows = 10
         };
         var nowMs = 1000020000L;
-        book.RecordTrade(nowMs - 15000, 100.0, 10m);
-        book.RecordTrade(nowMs - 14000, 100.1, 10m);
-        book.RecordTrade(nowMs - 13000, 100.2, 10m);
-        book.RecordTrade(nowMs - 12000, 100.3, 10m);
-        book.RecordTrade(nowMs - 11000, 100.4, 10m);
+        book.RecordTrade(nowMs - 15000, nowMs - 15000, 100.0, 10m);
+        book.RecordTrade(nowMs - 14000, nowMs - 14000, 100.1, 10m);
+        book.RecordTrade(nowMs - 13000, nowMs - 13000, 100.2, 10m);
+        book.RecordTrade(nowMs - 12000, nowMs - 12000, 100.3, 10m);
+        book.RecordTrade(nowMs - 11000, nowMs - 11000, 100.4, 10m);
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 3, warmupWindowMs: 10000);
 
         // Act
@@ -182,7 +182,7 @@ public class TapeStalenessTests
         {
             MaxDepthRows = 10
         };
-        book.RecordTrade(tradeTimestampMs, 100.0, 10m);
+        book.RecordTrade(tradeTimestampMs, tradeTimestampMs, 100.0, 10m);
         return book;
     }
 

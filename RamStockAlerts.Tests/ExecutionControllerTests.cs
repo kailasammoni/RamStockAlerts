@@ -208,7 +208,7 @@ public class ExecutionControllerTests
     }
 
     [Fact]
-    public void GetLedger_AfterExecutions_ReturnsIntentsAndResults()
+    public async Task GetLedger_AfterExecutions_ReturnsIntentsAndResults()
     {
         // Arrange - execute an order first
         var dto = new OrderIntentDto
@@ -219,7 +219,7 @@ public class ExecutionControllerTests
             Type = "Market",
             Quantity = 75m
         };
-        _controller.ExecuteOrder(dto).Wait();
+        await _controller.ExecuteOrder(dto);
 
         // Act
         var result = _controller.GetLedger();

@@ -35,7 +35,7 @@ public class PolygonRestClient : BackgroundService
 
     private readonly Dictionary<string, decimal> _lastSpreads = new();
 
-    private readonly string _apiKey;
+    private readonly string? _apiKey;
     private IReadOnlyCollection<string> _tickers;
     private readonly TimeSpan _pollInterval = TimeSpan.FromSeconds(60); // Poll once per minute to respect API quotas
     private readonly string _universeSource;

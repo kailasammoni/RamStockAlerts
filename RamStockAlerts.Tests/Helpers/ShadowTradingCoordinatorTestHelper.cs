@@ -140,7 +140,8 @@ internal static class ShadowTradingCoordinatorTestHelper
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new TestRequestIdSource();
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
 

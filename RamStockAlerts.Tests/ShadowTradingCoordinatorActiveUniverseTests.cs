@@ -6,6 +6,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
 using RamStockAlerts.Services.Universe;
+using RamStockAlerts.Tests.TestDoubles;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -158,10 +159,12 @@ public class ShadowTradingCoordinatorActiveUniverseTests
         var classificationCache = new ContractClassificationCache(
             config,
             NullLogger<ContractClassificationCache>.Instance);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(
             config,
             NullLogger<ContractClassificationService>.Instance,
-            classificationCache);
+            classificationCache,
+            requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(
             config,
             NullLogger<DepthEligibilityCache>.Instance);
@@ -189,7 +192,7 @@ public class ShadowTradingCoordinatorActiveUniverseTests
         var book = new OrderBookState(symbol);
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Bid, DepthOperation.Insert, 100.00m, 200m, 0, nowMs));
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Ask, DepthOperation.Insert, 100.05m, 200m, 0, nowMs));
-        book.RecordTrade(nowMs - 1000, 100.02, 10m); // Trade 1 second ago
+        book.RecordTrade(nowMs - 1000, nowMs - 1000, 100.02, 10m); // Trade 1 second ago
         return book;
     }
 

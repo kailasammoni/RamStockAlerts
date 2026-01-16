@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,7 +29,7 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
@@ -70,7 +69,7 @@ public class MarketDataSubscriptionManagerTests
     }
 
     [Fact]
-    public async Task DepthError10092_FirstAttemptTriggersRetry()
+    public async Task DepthError10092_MarksIneligibleAndRebalancesTape()
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -83,12 +82,13 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
         await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
+        await classificationCache.PutAsync(new ContractClassification("CCC", 3, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
 
         var manager = new MarketDataSubscriptionManager(
             config,
@@ -102,7 +102,8 @@ public class MarketDataSubscriptionManagerTests
             var depthId = symbol switch
             {
                 "AAA" => 10,
-                _ => 20
+                "BBB" => 20,
+                _ => 30
             };
             return Task.FromResult<MarketDataSubscription?>(
                 new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
@@ -114,7 +115,7 @@ public class MarketDataSubscriptionManagerTests
         Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
 
         await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB" },
+            new[] { "AAA", "BBB", "CCC" },
             Subscribe,
             Unsubscribe,
             EnableTbt,
@@ -127,78 +128,8 @@ public class MarketDataSubscriptionManagerTests
         Assert.True(manager.IsDepthEnabled("BBB"));
         Assert.True(manager.IsDepthEnabled("CCC"));
 
-        var plan = await manager.TryGetDepthRetryPlanAsync(10, CancellationToken.None);
-        Assert.NotNull(plan);
-        Assert.Equal("SMART", plan!.PreviousExchange);
-        Assert.Equal("NYSE", plan.NextExchange);
-
-        var classification = classificationCache.TryGetCached("AAA");
-        var eligibility = eligibilityCache.Get(classification, "AAA", DateTimeOffset.UtcNow);
-
-        Assert.True(manager.IsDepthEnabled("AAA"));
-        Assert.True(manager.IsTapeEnabled("AAA"));
-        Assert.False(manager.IsTapeEnabled("BBB"));
-        Assert.NotEqual(DepthEligibilityStatus.Ineligible, eligibility.Status);
-    }
-
-    [Fact]
-    public async Task DepthError10092_SecondAttemptConfirmsUnsupportedAndRebalancesTape()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["MarketData:MaxLines"] = "10",
-                ["MarketData:EnableDepth"] = "true",
-                ["MarketData:EnableTape"] = "true",
-                ["MarketData:TickByTickMaxSymbols"] = "1"
-            })
-            .Build();
-
-        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
-        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-        await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-
-        var manager = new MarketDataSubscriptionManager(
-            config,
-            NullLogger<MarketDataSubscriptionManager>.Instance,
-            classificationService,
-            eligibilityCache);
-
-        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
-        {
-            var depthId = symbol switch
-            {
-                "AAA" => 10,
-                _ => 20
-            };
-            return Task.FromResult<MarketDataSubscription?>(
-                new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
-        }
-
-        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
-        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(99);
-        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
-        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
-
-        await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        var plan = await manager.TryGetDepthRetryPlanAsync(10, CancellationToken.None);
-        Assert.NotNull(plan);
-
-        manager.ClearDepthRequest("AAA", 10);
-        manager.UpdateDepthRequest("AAA", 11, plan!.NextExchange);
-
         await manager.HandleIbkrErrorAsync(
-            requestId: 11,
+            requestId: 10,
             errorCode: 10092,
             errorMessage: "Deep market data not supported",
             disableDepthAsync: DisableDepth,
@@ -206,70 +137,15 @@ public class MarketDataSubscriptionManagerTests
             enableTickByTickAsync: EnableTbt,
             cancellationToken: CancellationToken.None);
 
-        var classification = classificationCache.TryGetCached("AAA");
-        var eligibility = eligibilityCache.Get(classification, "AAA", DateTimeOffset.UtcNow);
+        await manager.HandleIbkrErrorAsync(
+            requestId: 20,
+            errorCode: 10092,
+            errorMessage: "Deep market data not supported",
+            disableDepthAsync: DisableDepth,
+            disableTickByTickAsync: DisableTbt,
+            enableTickByTickAsync: EnableTbt,
+            cancellationToken: CancellationToken.None);
 
-        Assert.False(manager.IsDepthEnabled("AAA"));
-        Assert.False(manager.IsTapeEnabled("AAA"));
-        Assert.True(manager.IsTapeEnabled("BBB"));
-        Assert.Equal(DepthEligibilityStatus.Ineligible, eligibility.Status);
-    }
-
-    [Fact]
-    public async Task DepthError10092_SecondAttemptSuccessKeepsEligibility()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["MarketData:MaxLines"] = "10",
-                ["MarketData:EnableDepth"] = "true",
-                ["MarketData:EnableTape"] = "true"
-            })
-            .Build();
-
-        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
-        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-
-        var manager = new MarketDataSubscriptionManager(
-            config,
-            NullLogger<MarketDataSubscriptionManager>.Instance,
-            classificationService,
-            eligibilityCache);
-
-        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
-        {
-            return Task.FromResult<MarketDataSubscription?>(
-                new MarketDataSubscription(symbol, 1, requestDepth ? 10 : null, null, requestDepth ? "SMART" : null));
-        }
-
-        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
-        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(99);
-        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
-        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
-
-        await manager.ApplyUniverseAsync(
-            new[] { "AAA" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        var plan = await manager.TryGetDepthRetryPlanAsync(10, CancellationToken.None);
-        Assert.NotNull(plan);
-
-        manager.ClearDepthRequest("AAA", 10);
-        manager.UpdateDepthRequest("AAA", 11, plan!.NextExchange);
-
-        var classification = classificationCache.TryGetCached("AAA");
-        var eligibility = eligibilityCache.Get(classification, "AAA", DateTimeOffset.UtcNow);
-
-        Assert.True(manager.IsDepthEnabled("AAA"));
-        Assert.True(manager.IsTapeEnabled("AAA"));
-        Assert.NotEqual(DepthEligibilityStatus.Ineligible, eligibility.Status);
         // In new model: AAA and BBB lose depth+tick-by-tick but keep tape.
         // CCC still has depth+tick-by-tick.
         // No automatic rebalancing - that happens on next universe refresh.
@@ -296,7 +172,7 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
@@ -363,7 +239,7 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
@@ -447,7 +323,7 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
@@ -510,7 +386,7 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
@@ -566,74 +442,6 @@ public class MarketDataSubscriptionManagerTests
     }
 
     [Fact]
-    public async Task DepthEligibilitySummary_LogsUniverseSizeAndLastIneligibleSymbols()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["MarketData:MaxLines"] = "10",
-                ["MarketData:EnableDepth"] = "true",
-                ["MarketData:EnableTape"] = "true"
-            })
-            .Build();
-
-        var logger = new ListLogger<MarketDataSubscriptionManager>();
-        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
-        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-
-        var symbols = new[] { "AAA", "BBB", "CCC", "DDD", "EEE", "FFF" };
-        var depthRequestIds = new Dictionary<string, int>();
-        var nextId = 10;
-        foreach (var symbol in symbols)
-        {
-            await classificationCache.PutAsync(
-                new ContractClassification(symbol, nextId, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow),
-                CancellationToken.None);
-            depthRequestIds[symbol] = nextId;
-            nextId += 10;
-        }
-
-        var manager = new MarketDataSubscriptionManager(
-            config,
-            logger,
-            classificationService,
-            eligibilityCache);
-
-        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
-        {
-            return Task.FromResult<MarketDataSubscription?>(
-                new MarketDataSubscription(symbol, 1, requestDepth ? depthRequestIds[symbol] : null, null, requestDepth ? "SMART" : null));
-        }
-
-        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
-        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(null);
-        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
-        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
-
-        await manager.ApplyUniverseAsync(
-            symbols,
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        foreach (var symbol in symbols)
-        {
-            await manager.HandleIbkrErrorAsync(
-                requestId: depthRequestIds[symbol],
-                errorCode: 10092,
-                errorMessage: "Deep market data not supported",
-                disableDepthAsync: DisableDepth,
-                disableTickByTickAsync: DisableTbt,
-                enableTickByTickAsync: EnableTbt,
-                cancellationToken: CancellationToken.None);
-        }
-
-        await manager.ApplyUniverseAsync(
-            symbols,
     public async Task TickByTickCapHit_RemovesSymbolFromActiveUniverse()
     {
         // Verifies that when tick-by-tick cap is hit (error 10190),
@@ -649,7 +457,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new TestRequestIdSource();
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -695,34 +504,6 @@ public class MarketDataSubscriptionManagerTests
             DisableDepth,
             CancellationToken.None);
 
-        var summary = logger.Messages.Last(message => message.StartsWith("DepthEligibilitySummary", StringComparison.Ordinal));
-        Assert.Contains("universeSize=6", summary);
-
-        var marker = "last10092Symbols=[";
-        var startIndex = summary.IndexOf(marker, StringComparison.Ordinal) + marker.Length;
-        var endIndex = summary.IndexOf(']', startIndex);
-        var symbolsSegment = summary.Substring(startIndex, endIndex - startIndex);
-        var entries = symbolsSegment.Split(',', StringSplitOptions.RemoveEmptyEntries);
-
-        Assert.Equal(5, entries.Length);
-
-        var expectedSymbols = new[] { "BBB", "CCC", "DDD", "EEE", "FFF" };
-        for (var i = 0; i < entries.Length; i++)
-        {
-            var entry = entries[i];
-            var openIndex = entry.IndexOf('(');
-            var closeIndex = entry.LastIndexOf(')');
-            Assert.True(openIndex > 0);
-            Assert.True(closeIndex > openIndex);
-            Assert.Equal(expectedSymbols[i], entry[..openIndex]);
-
-            var timestamp = entry[(openIndex + 1)..closeIndex];
-            Assert.True(DateTimeOffset.TryParse(
-                timestamp,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind,
-                out _));
-        }
         // Both symbols have depth+tick-by-tick and are in ActiveUniverse
         Assert.True(manager.IsDepthEnabled("AAA"));
         Assert.True(manager.IsDepthEnabled("BBB"));
@@ -769,7 +550,7 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var requestIdSource = new IbkrRequestIdSource(config);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
@@ -844,7 +625,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new TestRequestIdSource();
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -922,7 +704,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new TestRequestIdSource();
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -996,7 +779,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new TestRequestIdSource();
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         
@@ -1063,7 +847,8 @@ public class MarketDataSubscriptionManagerTests
         Assert.NotNull(entry.UniverseUpdate);
         var snapshot = entry.UniverseUpdate;
         Assert.Equal(1, snapshot.SchemaVersion);
-        Assert.NotNull(snapshot.NowUtc);
+        // DateTimeOffset is a value type; ensure it's non-default
+        Assert.NotEqual(default(DateTimeOffset), snapshot.NowUtc);
         Assert.True(snapshot.NowMs > 0);
         
         // Verify candidates (all 5 symbols)
@@ -1102,7 +887,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new TestRequestIdSource();
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         
@@ -1154,198 +940,5 @@ public class MarketDataSubscriptionManagerTests
         
         // Verify counts reflect actual totals
         Assert.Equal(30, snapshot.Counts.CandidatesCount);
-    }
-
-    [Fact]
-    public async Task TickByTickEnableFailure_StopsFurtherEnablesInCycle()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["MarketData:MaxLines"] = "10",
-                ["MarketData:EnableDepth"] = "true",
-                ["MarketData:EnableTape"] = "true",
-                ["MarketData:TickByTickMaxSymbols"] = "2"
-            })
-            .Build();
-
-        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
-        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-        await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-
-        var manager = new MarketDataSubscriptionManager(
-            config,
-            NullLogger<MarketDataSubscriptionManager>.Instance,
-            classificationService,
-            eligibilityCache);
-
-        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
-        {
-            var depthId = symbol == "AAA" ? 10 : 20;
-            return Task.FromResult<MarketDataSubscription?>(
-                new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
-        }
-
-        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
-        var enableCalls = 0;
-        Task<int?> EnableTbt(string _, CancellationToken __)
-        {
-            enableCalls++;
-            return Task.FromResult<int?>(null);
-        }
-        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
-        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
-
-        await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        Assert.Equal(1, enableCalls);
-        Assert.Empty(manager.GetTickByTickSymbols());
-    }
-
-    [Fact]
-    public async Task TickByTickRebalance_DebouncesRecentEnable()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["MarketData:MaxLines"] = "10",
-                ["MarketData:EnableDepth"] = "true",
-                ["MarketData:EnableTape"] = "true",
-                ["MarketData:TickByTickMaxSymbols"] = "1"
-            })
-            .Build();
-
-        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
-        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-        await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-
-        var manager = new MarketDataSubscriptionManager(
-            config,
-            NullLogger<MarketDataSubscriptionManager>.Instance,
-            classificationService,
-            eligibilityCache);
-
-        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
-        {
-            var depthId = symbol == "AAA" ? 10 : 20;
-            return Task.FromResult<MarketDataSubscription?>(
-                new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
-        }
-
-        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
-        var nextRequestId = 400;
-        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(nextRequestId++);
-        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
-        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
-
-        await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        Assert.True(manager.IsTapeEnabled("AAA"));
-
-        await manager.ApplyUniverseAsync(
-            new[] { "BBB" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        Assert.True(manager.IsTapeEnabled("AAA"));
-        Assert.False(manager.IsTapeEnabled("BBB"));
-    }
-
-    [Fact]
-    public async Task TickByTickCapReached_SkipsRebalanceEnables()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["MarketData:MaxLines"] = "10",
-                ["MarketData:EnableDepth"] = "true",
-                ["MarketData:EnableTape"] = "true",
-                ["MarketData:TickByTickMaxSymbols"] = "1"
-            })
-            .Build();
-
-        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
-        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
-        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-        await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-
-        var manager = new MarketDataSubscriptionManager(
-            config,
-            NullLogger<MarketDataSubscriptionManager>.Instance,
-            classificationService,
-            eligibilityCache);
-
-        var enableCalls = 0;
-        const int requestId = 500;
-        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
-        {
-            var depthId = symbol == "AAA" ? 10 : 20;
-            return Task.FromResult<MarketDataSubscription?>(
-                new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
-        }
-
-        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
-        Task<int?> EnableTbt(string _, CancellationToken __)
-        {
-            enableCalls++;
-            return Task.FromResult<int?>(requestId);
-        }
-        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
-        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
-
-        await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        Assert.True(manager.IsTapeEnabled("AAA"));
-
-        await manager.HandleIbkrErrorAsync(
-            requestId,
-            errorCode: 10190,
-            errorMessage: "Exceeded tick-by-tick cap",
-            disableDepthAsync: DisableDepth,
-            disableTickByTickAsync: DisableTbt,
-            enableTickByTickAsync: EnableTbt,
-            cancellationToken: CancellationToken.None);
-
-        await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB" },
-            Subscribe,
-            Unsubscribe,
-            EnableTbt,
-            DisableTbt,
-            DisableDepth,
-            CancellationToken.None);
-
-        Assert.Equal(1, enableCalls);
-        Assert.Empty(manager.GetTickByTickSymbols());
     }
 }

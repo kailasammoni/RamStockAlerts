@@ -25,7 +25,7 @@ public class ShadowTradingHelpersTapeStatusTests
         var config = new ShadowTradingHelpers.TapeGateConfig(WarmupMinTrades: 1, WarmupWindowMs: 60000, StaleWindowMs: 30000);
         var nowMs = 100_000L;
         var book = new OrderBookState("TEST");
-        book.RecordTrade(nowMs - 40_000, 100.10, 1m);
+        book.RecordTrade(nowMs - 40_000, nowMs - 40_000, 100.10, 1m);
 
         var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
@@ -38,7 +38,7 @@ public class ShadowTradingHelpersTapeStatusTests
         var config = ShadowTradingHelpers.TapeGateConfig.Default;
         var nowMs = 100_000L;
         var book = new OrderBookState("TEST");
-        book.RecordTrade(nowMs - 1_000, 100.10, 1m);
+        book.RecordTrade(nowMs - 1_000, nowMs - 1_000, 100.10, 1m);
 
         var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 

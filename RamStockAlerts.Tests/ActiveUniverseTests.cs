@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Services;
 using RamStockAlerts.Services.Universe;
+using RamStockAlerts.Tests.TestDoubles;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -270,10 +271,12 @@ public class ActiveUniverseTests
         var classificationCache = new ContractClassificationCache(
             config,
             NullLogger<ContractClassificationCache>.Instance);
+        var requestIdSource = new TestRequestIdSource();
         var classificationService = new ContractClassificationService(
             config,
             NullLogger<ContractClassificationService>.Instance,
-            classificationCache);
+            classificationCache,
+            requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(
             config,
             NullLogger<DepthEligibilityCache>.Instance);
