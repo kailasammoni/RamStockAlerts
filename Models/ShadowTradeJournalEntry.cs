@@ -181,14 +181,24 @@ public sealed class ShadowTradeJournalEntry
         /// <summary>Top 20 candidate symbols from UniverseService</summary>
         public List<string> Candidates { get; set; } = new();
         
-        /// <summary>Symbols currently in ActiveUniverse (<=3 by design)</summary>
-        public List<string> ActiveUniverse { get; set; } = new();
+        /// <summary>Symbols currently in ActiveUniverse with diagnostic details (<=3 by design)</summary>
+        public List<ActiveSymbolDetail> ActiveSymbols { get; set; } = new();
         
         /// <summary>Symbols excluded from ActiveUniverse with reasons</summary>
         public List<UniverseExclusion> Exclusions { get; set; } = new();
         
         /// <summary>Subscription counts for verification</summary>
         public UniverseCounts Counts { get; set; } = new();
+    }
+
+    public sealed class ActiveSymbolDetail
+    {
+        public string Symbol { get; set; } = string.Empty;
+        public long? LastTapeRecvAgeMs { get; set; }
+        public int? TradesInWarmupWindow { get; set; }
+        public bool? WarmedUp { get; set; }
+        public long? LastDepthRecvAgeMs { get; set; }
+        public decimal? TriageScore { get; set; }
     }
 
     public sealed class UniverseExclusion

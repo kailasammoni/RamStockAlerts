@@ -138,6 +138,18 @@ public sealed class OrderBookState
     public long LastDepthUpdateUtcMs { get; private set; }
 
     /// <summary>
+    /// Timestamp (ms since epoch) of last depth update RECEIPT TIME (local clock).
+    /// Used for depth staleness diagnostics in journal and summaries.
+    /// </summary>
+    public long? LastDepthRecvMs { get; set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last L1 (quote/level 1) update RECEIPT TIME (local clock).
+    /// Used for L1 staleness gating and triage eligibility.
+    /// </summary>
+    public long? LastL1RecvMs { get; set; }
+
+    /// <summary>
     /// Timestamp (ms since epoch) of last tape event RECEIPT TIME (local clock).
     /// Used for tape staleness gating - NOT event time which can lag.
     /// </summary>

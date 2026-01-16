@@ -252,9 +252,11 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             var universe = await completion.Task;
 
             // Preload classifications so downstream filters have stock type + primary exchange.
+            _logger.LogInformation("[IBKR Scanner] Starting classification prefetch for {Count} symbols", universe.Count);
             try
             {
                 await _classificationService.GetClassificationsAsync(universe, cancellationToken);
+                _logger.LogInformation("[IBKR Scanner] Classification prefetch completed for {Count} symbols", universe.Count);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -423,7 +425,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
             var top = result.Take(10).ToArray();
             var topDisplay = top.Length == 0 ? "n/a" : string.Join(", ", top);
-            _logger.LogInformation("[IBKR Scanner] Received {Count} symbols (top10={Top})", result.Count, topDisplay);
+            _logger.LogInformation("[IBKR Scanner] Scanner subscription completed with {Count} symbols (top10={Top})", result.Count, topDisplay);
 
             _completion.TrySetResult(result);
         }
@@ -453,7 +455,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
                 var top = result.Take(10).ToArray();
                 var topDisplay = top.Length == 0 ? "n/a" : string.Join(", ", top);
-                _logger.LogInformation("[IBKR Scanner] Connection closed after receiving {Count} symbols (top10={Top})", result.Count, topDisplay);
+                _logger.LogInformation("[IBKR Scanner] Connection closed, scanner returned {Count} symbols (top10={Top})", result.Count, topDisplay);
 
                 _completion.TrySetResult(result);
             }

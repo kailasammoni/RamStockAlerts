@@ -37,6 +37,8 @@ public sealed class ShadowTradingCoordinator
     private readonly bool _emitGateTrace;
     private readonly ConcurrentDictionary<string, long> _lastInactiveSymbolLogMs = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan InactiveSymbolLogThrottle = TimeSpan.FromMinutes(5);
+    private readonly GateRejectionCounter _rejectionCounter = new();
+    private readonly System.Threading.Timer _summaryTimer;
 
     public ShadowTradingCoordinator(
         IConfiguration configuration,
@@ -64,6 +66,13 @@ public sealed class ShadowTradingCoordinator
         var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
         _emitGateTrace = configuration.GetValue("ShadowTradeJournal:EmitGateTrace", true);
+        
+        // Start periodic rejection summary timer (every 60s)
+        _summaryTimer = new System.Threading.Timer(
+            _ => LogRejectionSummaries(),
+            null,
+            TimeSpan.FromSeconds(60),
+            TimeSpan.FromSeconds(60));
 
         if (_enabled)
         {
@@ -1053,6 +1062,10 @@ public sealed class ShadowTradingCoordinator
         }
 
         var now = DateTimeOffset.UtcNow;
+        
+        // Always count rejections internally even if we don't log
+        _rejectionCounter.Increment(symbol, reason);
+        
         if (IsNotReadyRejection(reason) && !_gatingRejectionThrottle.ShouldLog(symbol, reason, now))
         {
             return;
@@ -1117,6 +1130,61 @@ public sealed class ShadowTradingCoordinator
 
     private static bool IsNotReadyRejection(string reason) =>
         reason.StartsWith("NotReady_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Emits periodic summary of gate rejections per symbol with diagnostic info.
+    /// Runs every 60s, resets counters after logging.
+    /// </summary>
+    private void LogRejectionSummaries()
+    {
+        try
+        {
+            var counts = _rejectionCounter.GetAndResetCounts();
+            if (counts.Count == 0)
+            {
+                return;
+            }
+
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            
+            foreach (var (symbol, reasonCounts) in counts)
+            {
+                var book = _metrics.GetOrderBookSnapshot(symbol);
+                if (book == null)
+                {
+                    continue;
+                }
+                
+                var tapeStatus = ShadowTradingHelpers.GetTapeStatus(
+                    book, 
+                    nowMs, 
+                    _subscriptionManager.IsTapeEnabled(symbol), 
+                    _tapeGateConfig);
+                
+                var notWarmedUpCount = reasonCounts.GetValueOrDefault("NotReady_TapeNotWarmedUp", 0);
+                var staleCount = reasonCounts.GetValueOrDefault("NotReady_TapeStale", 0);
+                var otherCount = reasonCounts.Where(kv => 
+                    kv.Key != "NotReady_TapeNotWarmedUp" && 
+                    kv.Key != "NotReady_TapeStale").Sum(kv => kv.Value);
+                
+                _logger.LogInformation(
+                    "[GateRejectionSummary] symbol={Symbol} NotWarmedUpCount={NotWarmedUp} StaleCount={Stale} OtherCount={Other} " +
+                    "lastTapeRecvAgeMs={TapeAge} tradesInWarmup={Trades} warmedUp={WarmedUp} lastDepthRecvAgeMs={DepthAge}",
+                    symbol,
+                    notWarmedUpCount,
+                    staleCount,
+                    otherCount,
+                    tapeStatus.AgeMs ?? -1,
+                    tapeStatus.TradesInWarmupWindow,
+                    tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready,
+                    book.LastDepthRecvMs.HasValue ? nowMs - book.LastDepthRecvMs.Value : -1);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[GateRejectionSummary] Failed to log rejection summaries");
+        }
+    }
 
     /// <summary>
     /// Logs structured details of gate rejections, with throttling to prevent spam.
@@ -1316,6 +1384,33 @@ public sealed class ShadowTradingCoordinator
                 return string.Equals(Reason, reason, StringComparison.OrdinalIgnoreCase)
                        && TapeStatusKind == tapeStatusKind;
             }
+        }
+    }
+
+    private sealed class GateRejectionCounter
+    {
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, int>> _counts = new(StringComparer.OrdinalIgnoreCase);
+        
+        public void Increment(string symbol, string reason)
+        {
+            var symbolCounts = _counts.GetOrAdd(symbol, _ => new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase));
+            symbolCounts.AddOrUpdate(reason, 1, (_, count) => count + 1);
+        }
+        
+        public Dictionary<string, Dictionary<string, int>> GetAndResetCounts()
+        {
+            var snapshot = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var symbolPair in _counts)
+            {
+                var reasonCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var reasonPair in symbolPair.Value)
+                {
+                    reasonCounts[reasonPair.Key] = reasonPair.Value;
+                }
+                snapshot[symbolPair.Key] = reasonCounts;
+            }
+            _counts.Clear();
+            return snapshot;
         }
     }
 
