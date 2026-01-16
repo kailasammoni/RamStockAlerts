@@ -1206,7 +1206,14 @@ public class IBkrMarketDataClient : BackgroundService
             {
                 _eClientSocket!.cancelTickByTickData(sub.TickByTickRequestId.Value);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "[IBKR] Failed to cancel tick-by-tick data for {Symbol} requestId={RequestId}",
+                    symbol,
+                    sub.TickByTickRequestId.Value);
+            }
         }
         
         // Resubscribe with SMART
