@@ -1507,8 +1507,9 @@ public sealed class MarketDataSubscriptionManager
             var rate3Score = Clamp01(rate3s / 5m);
             var rate15Score = Clamp01(rate15s / 2m);
             var dollarScore = Clamp01((decimal)Math.Log10((double)(1m + dollarVol15s)) / 4m);
-            // spread.HasValue && mid > 0m is guaranteed by the check at line 1470
-            var spreadScore = Clamp01((0.02m - (spread.Value / mid)) / 0.02m);
+            var spreadScore = spread.HasValue
+                ? Clamp01((0.02m - (spread.Value / mid)) / 0.02m)
+                : 0.5m;
             var volatilityScore = Clamp01(volatilityRangePct / 0.005m); // saturate around 50 bps move
             var burstScore = Clamp01(burst / 3m); // saturate around 3x acceleration
 

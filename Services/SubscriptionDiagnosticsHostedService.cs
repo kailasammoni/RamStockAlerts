@@ -349,7 +349,7 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
             return "L1 working but no tick-by-tick - may need different subscription or entitlement";
         }
 
-        if (!result.GotL1)
+        if (result.GotTape) // GotL1 is false here, GotTape is true
         {
             // GotTape must be true here (since !GotL1 && !GotTape was handled above)
             return "Tick-by-tick working but no L1 - unusual, check subscription";

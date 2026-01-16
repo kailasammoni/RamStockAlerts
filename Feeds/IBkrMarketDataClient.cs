@@ -48,13 +48,13 @@ public class IBkrMarketDataClient : BackgroundService
     /// Time to wait for L1/tape receipt after initial subscription before falling back to SMART (ms).
     /// Default: 15 seconds. Configurable via MarketData:L1ReceiptTimeoutMs
     /// </summary>
-    private readonly int _l1ReceiptTimeoutMs;
+    private readonly int _l1ReceiptTimeoutMs = 15_000;
     
     /// <summary>
     /// Time to wait for tick-by-tick receipt after initial subscription before falling back to SMART (ms).
     /// Default: 15 seconds. Configurable via MarketData:TickByTickReceiptTimeoutMs
     /// </summary>
-    private readonly int _tickByTickReceiptTimeoutMs;
+    private readonly int _tickByTickReceiptTimeoutMs = 15_000;
     
     public IBkrMarketDataClient(
         ILogger<IBkrMarketDataClient> logger,
