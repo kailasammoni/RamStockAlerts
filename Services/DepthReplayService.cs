@@ -81,7 +81,8 @@ public sealed class DepthReplayService
 
                     case ReplayEventKind.Tape when evt.TradePrint.HasValue:
                         var trade = evt.TradePrint.Value;
-                        orderBook.RecordTrade(trade.TimestampMs, trade.Price, trade.Size);
+                        // Use separate event and receipt times per Authoritative Policy
+                        orderBook.RecordTrade(trade.TimestampMs, trade.TimestampMs, trade.Price, trade.Size);
                         tapeVelocityTracker.AddTrade(trade.TimestampMs, trade.Price, trade.Size);
                         break;
                 }

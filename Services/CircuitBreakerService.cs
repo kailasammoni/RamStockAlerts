@@ -49,8 +49,6 @@ public class CircuitBreakerService
 
     public bool ShouldThrottle(decimal spread, decimal printsPerSecond, DateTime timestampUtc)
     {
-        return false; // Disabled for testing
-
         // Liquidity collapse detection
         if (spread >= 0.1m)
         {

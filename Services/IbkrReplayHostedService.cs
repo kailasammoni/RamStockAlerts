@@ -251,8 +251,9 @@ public sealed class IbkrReplayHostedService : BackgroundService
                     return;
                 }
 
-                orderBook.RecordTrade(evt.TimestampUtc.ToUnixTimeMilliseconds(), (double)tapePayload.Price, tapePayload.Size);
-                tapeVelocityTracker.AddTrade(evt.TimestampUtc.ToUnixTimeMilliseconds(), (double)tapePayload.Price, tapePayload.Size);
+                var recvMs = evt.TimestampUtc.ToUnixTimeMilliseconds();
+                orderBook.RecordTrade(recvMs, recvMs, (double)tapePayload.Price, tapePayload.Size);
+                tapeVelocityTracker.AddTrade(recvMs, (double)tapePayload.Price, tapePayload.Size);
                 velocityWindow.Enqueue(tapePayload);
                 PruneVelocityWindow(velocityWindow, eventSecond, tapeVelocityTracker.Window);
                 lastTapeSecond = eventSecond;

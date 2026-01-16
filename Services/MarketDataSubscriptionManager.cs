@@ -398,7 +398,6 @@ public sealed class MarketDataSubscriptionManager
         Func<string, CancellationToken, Task<bool>> disableDepthAsync,
         CancellationToken cancellationToken)
     {
-        var universeSize = universe.Count;
         // Candidate Model: The input 'candidates' represents all symbols eligible for consideration.
         // ActiveUniverse will be computed as the strict subset with tape + depth + tick-by-tick subscriptions.
         
@@ -675,15 +674,11 @@ public sealed class MarketDataSubscriptionManager
                 disableDepthAsync,
                 maxLines,
                 now,
-                cancellationToken,
-                "UniverseRefresh");
-            LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
                 cancellationToken);
 
-            LogTapeDepthPairingIfChanged(maxDepthSymbols);
+            LogTapeDepthPairingIfChanged(tickByTickMaxSymbols);
             LogTapeGateConfigIfChanged();
-            LogDepthEligibilitySummary(universeSize, normalizedUniverse, classifications, now);
-            LogDepthEligibilitySummary(normalizedCandidates, classifications, now);
+            LogDepthEligibilitySummary(normalizedCandidates.Count, normalizedCandidates, classifications, now);
             
             // Log detailed universe refresh snapshot with focus rotation state
             LogUniverseRefreshSnapshot(normalizedCandidates, triageScores, now);
@@ -1243,7 +1238,7 @@ public sealed class MarketDataSubscriptionManager
         _lastDepthIneligibleSymbols.Add(new DepthIneligibleEntry(normalized, timestamp));
         while (_lastDepthIneligibleSymbols.Count > LastDepthIneligibleSymbolsLimit)
         {
-            _lastDepthIneligibleSymbols.Dequeue();
+            _lastDepthIneligibleSymbols.RemoveAt(0);
         }
     }
 
@@ -1361,6 +1356,8 @@ public sealed class MarketDataSubscriptionManager
                 reason);
             _lastDepthIneligibleSymbols.RemoveAt(0);
         }
+
+        return activeTickByTick;
     }
 
     private void MarkPendingCancel(int requestId, DateTimeOffset now)
@@ -1382,6 +1379,55 @@ public sealed class MarketDataSubscriptionManager
                 UntrackRequest(entry.Key);
             }
         }
+    }
+
+    /// <summary>
+    /// Selects a focus set for tick-by-tick rebalance based on current depth symbols,
+    /// backfilled with tape-enabled candidates from the provided universe, up to the cap.
+    /// </summary>
+    private List<string> SelectFocusSet(IReadOnlyList<string> universe, int tickByTickMaxSymbols, DateTimeOffset now)
+    {
+        var focus = new List<string>();
+
+        // Prefer currently depth-enabled symbols
+        foreach (var state in _active.Values.Where(s => s.DepthRequestId.HasValue))
+        {
+            if (focus.Count >= tickByTickMaxSymbols)
+            {
+                break;
+            }
+            if (!focus.Contains(state.Symbol))
+            {
+                focus.Add(state.Symbol);
+            }
+        }
+
+        // Backfill with tape-enabled symbols from the universe
+        if (focus.Count < tickByTickMaxSymbols)
+        {
+            foreach (var symbol in universe)
+            {
+                if (focus.Count >= tickByTickMaxSymbols)
+                {
+                    break;
+                }
+                if (!_active.TryGetValue(symbol, out var state))
+                {
+                    continue;
+                }
+                if (!state.MktDataRequestId.HasValue)
+                {
+                    continue;
+                }
+                if (focus.Contains(symbol))
+                {
+                    continue;
+                }
+                focus.Add(symbol);
+            }
+        }
+
+        return focus.Take(tickByTickMaxSymbols).ToList();
     }
 
     private void LogDepthEligibilitySummary(

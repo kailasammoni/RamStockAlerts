@@ -40,12 +40,6 @@ string ResolveMode(IConfiguration config)
     return modeValue?.Trim() ?? string.Empty;
 }
 
-string ResolveSymbol(IConfiguration config)
-{
-    return Environment.GetEnvironmentVariable("SYMBOL")?.Trim() ??
-           config["IBKR:Symbol"] ??
-           "AAPL";
-}
 
 var mode = ResolveMode(initialConfig).ToLowerInvariant();
 
@@ -216,7 +210,6 @@ builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();
 builder.Services.AddSingleton<ShadowTradingCoordinator>();
 builder.Services.AddSingleton<PreviewSignalEmitter>();
-builder.Services.AddSingleton<IRequestIdSource, IbkrRequestIdSource>();
 builder.Services.AddSingleton<ContractClassificationCache>();
 builder.Services.AddSingleton<ContractClassificationService>();
 builder.Services.AddSingleton<DepthEligibilityCache>();
