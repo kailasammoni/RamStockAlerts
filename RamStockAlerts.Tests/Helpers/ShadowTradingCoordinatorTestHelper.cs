@@ -71,11 +71,14 @@ internal static class ShadowTradingCoordinatorTestHelper
             new ContractClassification(symbol, 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow),
             CancellationToken.None);
 
+        var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
+
         var manager = new MarketDataSubscriptionManager(
             config,
             NullLogger<MarketDataSubscriptionManager>.Instance,
             classificationService,
-            eligibilityCache);
+            eligibilityCache,
+            metrics);
 
         Task<MarketDataSubscription?> Subscribe(string s, bool requestDepth, CancellationToken token)
         {
@@ -97,6 +100,11 @@ internal static class ShadowTradingCoordinatorTestHelper
             DisableDepth,
             CancellationToken.None);
 
+        // For testing gate rejection behavior, ensure symbol is in ActiveUniverse
+        // even if subscriptions are incomplete. This allows tests to verify
+        // specific gate rejection logic without being blocked by ActiveUniverse gate.
+        manager.SetActiveUniverse(new[] { symbol }, "TestSetup");
+
         return manager;
     }
 
@@ -106,5 +114,41 @@ internal static class ShadowTradingCoordinatorTestHelper
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Bid, DepthOperation.Insert, 100.00m, 200m, 0, nowMs));
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Ask, DepthOperation.Insert, 100.05m, 200m, 0, nowMs));
         return book;
+    }
+
+    public static ScarcityController CreateScarcityController()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Scarcity:MaxBlueprintsPerDay"] = "100",
+                ["Scarcity:MaxPerSymbolPerDay"] = "10"
+            })
+            .Build();
+        return new ScarcityController(config);
+    }
+
+    public static MarketDataSubscriptionManager CreateSubscriptionManager(bool depthEnabled = true, bool tapeEnabled = true)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MarketData:EnableDepth"] = depthEnabled.ToString(),
+                ["MarketData:EnableTape"] = tapeEnabled.ToString(),
+                ["MarketData:MaxLines"] = "10"
+            })
+            .Build();
+
+        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+        var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
+
+        return new MarketDataSubscriptionManager(
+            config,
+            NullLogger<MarketDataSubscriptionManager>.Instance,
+            classificationService,
+            eligibilityCache,
+            metrics);
     }
 }

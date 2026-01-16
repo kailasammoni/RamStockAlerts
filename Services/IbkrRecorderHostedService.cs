@@ -679,7 +679,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     public void updateAccountTime(string timeStamp) { }
     public void accountDownloadEnd(string account) { }
     public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
-    public void execDetails(int reqId, Contract contract, Execution execution) { }
+    public void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
     public void execDetailsEnd(int reqId) { }
     public void updateNewsBulletin(int msgId, int msgType, string message, string origExchange) { }
     public void managedAccounts(string accountsList) { }
