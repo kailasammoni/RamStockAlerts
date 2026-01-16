@@ -1138,7 +1138,14 @@ public class IBkrMarketDataClient : BackgroundService
             {
                 _eClientSocket!.cancelMktData(sub.MktDataRequestId.Value);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "[IBKR] Failed to cancel L1 market data for {Symbol} (requestId={RequestId}) during fallback.",
+                    symbol,
+                    sub.MktDataRequestId.Value);
+            }
         }
         
         // Resubscribe with SMART
