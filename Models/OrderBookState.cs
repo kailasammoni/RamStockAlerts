@@ -61,12 +61,19 @@ public readonly record struct DepthUpdate(
 
 /// <summary>
 /// Trade print used for optional tape bookkeeping.
+/// Stores both event time (IB-provided, may lag) and local receipt time (authoritative for gating).
 /// </summary>
-/// <param name="TimestampMs">Event timestamp from IB (can lag)</param>
-/// <param name="ReceiptMs">Local receipt timestamp (UtcNow when callback arrived)</param>
+/// <param name="EventTimestampMs">IB-provided trade event timestamp (can lag or be delayed)</param>
+/// <param name="ReceiptTimestampMs">Local receipt timestamp (UtcNow when callback executed)</param>
 /// <param name="Price">Trade price</param>
 /// <param name="Size">Trade size</param>
-public readonly record struct TradePrint(long TimestampMs, long ReceiptMs, double Price, decimal Size);
+public readonly record struct TradePrint(long EventTimestampMs, long ReceiptTimestampMs, double Price, decimal Size)
+{
+    /// <summary>
+    /// Backwards-compatible alias (maps to receipt time going forward).
+    /// </summary>
+    public long TimestampMs => ReceiptTimestampMs;
+}
 
 /// <summary>
 /// Single depth level: price with size and timestamp.
@@ -121,7 +128,7 @@ public sealed class OrderBookState
     public long LastResetMs { get; private set; }
 
     /// <summary>
-    /// Timestamp of the last applied update or trade (ms since epoch).
+    /// Timestamp of the last applied update or trade (ms since epoch, receipt clock for trades).
     /// </summary>
     public long LastUpdateMs { get; private set; }
 
@@ -129,6 +136,18 @@ public sealed class OrderBookState
     /// Timestamp of the last applied depth update (ms since epoch). Used for staleness check.
     /// </summary>
     public long LastDepthUpdateUtcMs { get; private set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last depth update RECEIPT TIME (local clock).
+    /// Used for depth staleness diagnostics in journal and summaries.
+    /// </summary>
+    public long? LastDepthRecvMs { get; set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last L1 (quote/level 1) update RECEIPT TIME (local clock).
+    /// Used for L1 staleness gating and triage eligibility.
+    /// </summary>
+    public long? LastL1RecvMs { get; set; }
 
     /// <summary>
     /// Timestamp (ms since epoch) of last tape event RECEIPT TIME (local clock).
@@ -501,7 +520,8 @@ public sealed class OrderBookState
         _recentTrades.Enqueue(new TradePrint(eventMs, recvMs, price, size));
         _vwapTracker.OnTrade(price, size, eventMs);
         TrimTrades();
-        LastUpdateMs = Math.Max(LastUpdateMs, eventMs);
+        // Strategy evaluation should follow receipt time; keep event time only for analytics
+        LastUpdateMs = Math.Max(LastUpdateMs, recvMs);
         LastTapeRecvMs = Math.Max(LastTapeRecvMs, recvMs);
     }
 
@@ -520,7 +540,7 @@ public sealed class OrderBookState
     /// </summary>
     public void PruneTrades(long windowStartMs)
     {
-        while (_recentTrades.Count > 0 && _recentTrades.Peek().TimestampMs < windowStartMs)
+        while (_recentTrades.Count > 0 && _recentTrades.Peek().ReceiptTimestampMs < windowStartMs)
         {
             _recentTrades.Dequeue();
         }

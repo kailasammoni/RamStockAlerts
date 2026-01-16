@@ -72,7 +72,7 @@ internal static class ShadowTradingHelpers
 
         // Count trades in warmup window based on RECEIPT TIME, not event time
         var warmupStart = nowMs - warmupWindowMs;
-        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.ReceiptMs >= warmupStart);
+        var tradesInWarmupWindow = book.RecentTrades.Count(trade => trade.ReceiptTimestampMs >= warmupStart);
         if (tradesInWarmupWindow < warmupMinTrades)
         {
             return new TapeStatus(

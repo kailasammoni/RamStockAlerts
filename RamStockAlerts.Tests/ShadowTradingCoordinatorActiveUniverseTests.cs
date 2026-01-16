@@ -169,7 +169,8 @@ public class ShadowTradingCoordinatorActiveUniverseTests
             config,
             NullLogger<MarketDataSubscriptionManager>.Instance,
             classificationService,
-            eligibilityCache);
+            eligibilityCache,
+            metrics);
 
         var coordinator = new ShadowTradingCoordinator(
             config,

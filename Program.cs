@@ -86,6 +86,26 @@ if (mode == "record")
     return;
 }
 
+if (mode == "diagnostics")
+{
+    // DIAGNOSTICS MODE: Test subscription health for symbols on various exchanges
+    Log.Information("Starting in DIAGNOSTICS mode - testing subscription health");
+    
+    var hostBuilder = Host.CreateDefaultBuilder(args)
+        .UseSerilog()
+        .ConfigureServices((context, services) =>
+        {
+            // Add required services for diagnostics
+            services.AddSingleton<ContractClassificationCache>();
+            services.AddSingleton<ContractClassificationService>();
+            services.AddHostedService<SubscriptionDiagnosticsHostedService>();
+        });
+    
+    var host = hostBuilder.Build();
+    await host.RunAsync();
+    return;
+}
+
 if (mode == "replay")
 {
     Log.Information("Starting in REPLAY mode - deterministic state reconstruction");
@@ -209,6 +229,7 @@ builder.Services.AddSingleton<MarketDataSubscriptionManager>(sp =>
         sp.GetRequiredService<ILogger<MarketDataSubscriptionManager>>(),
         sp.GetRequiredService<ContractClassificationService>(),
         sp.GetRequiredService<DepthEligibilityCache>(),
+        sp.GetRequiredService<OrderFlowMetrics>(),
         sp.GetService<IShadowTradeJournal>()));
 
 if (!isShadowMode && isLegacyUniverse)

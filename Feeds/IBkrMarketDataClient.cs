@@ -44,6 +44,18 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly SemaphoreSlim _subscriptionLock = new(1, 1);
     private int _nextRequestId = 1000;
     
+    /// <summary>
+    /// Time to wait for L1/tape receipt after initial subscription before falling back to SMART (ms).
+    /// Default: 15 seconds. Configurable via MarketData:L1ReceiptTimeoutMs
+    /// </summary>
+    private readonly int _l1ReceiptTimeoutMs = 15_000;
+    
+    /// <summary>
+    /// Time to wait for tick-by-tick receipt after initial subscription before falling back to SMART (ms).
+    /// Default: 15 seconds. Configurable via MarketData:TickByTickReceiptTimeoutMs
+    /// </summary>
+    private readonly int _tickByTickReceiptTimeoutMs = 15_000;
+    
     public IBkrMarketDataClient(
         ILogger<IBkrMarketDataClient> logger,
         IConfiguration configuration,
@@ -64,6 +76,10 @@ public class IBkrMarketDataClient : BackgroundService
         _previewSignalEmitter = previewSignalEmitter;
         _classificationService = classificationService;
         _depthEligibilityCache = depthEligibilityCache;
+        
+        // Initialize receipt timeout configuration
+        _l1ReceiptTimeoutMs = Math.Max(5_000, configuration.GetValue("MarketData:L1ReceiptTimeoutMs", 15_000));
+        _tickByTickReceiptTimeoutMs = Math.Max(5_000, configuration.GetValue("MarketData:TickByTickReceiptTimeoutMs", 15_000));
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -108,6 +124,9 @@ public class IBkrMarketDataClient : BackgroundService
             
             // Start message processing loop
             _ = Task.Run(() => ProcessMessages(_eClientSocket, _readerSignal, stoppingToken), stoppingToken);
+            
+            // Start fallback monitoring loop
+            _ = Task.Run(() => MonitorExchangeFallbacksAsync(stoppingToken), stoppingToken);
             
             _logger.LogInformation("[IBKR] Market data client ready. Managing subscriptions...");
 
@@ -155,6 +174,24 @@ public class IBkrMarketDataClient : BackgroundService
         {
             Cleanup();
         }
+    }
+
+    /// <summary>
+    /// Select L1 exchange: primary first (if available) → fallback to SMART.
+    /// Allowed primary exchanges: NASDAQ, NYSE
+    /// </summary>
+    private string SelectL1Exchange(ContractClassification? classification)
+    {
+        if (classification?.PrimaryExchange != null)
+        {
+            var primary = classification.PrimaryExchange.Trim().ToUpperInvariant();
+            if (primary == "NASDAQ" || primary == "NYSE" || primary == "AMEX" || primary == "CBOE" || primary == "BOX")
+            {
+                return primary;
+            }
+        }
+        
+        return "SMART";
     }
 
     public async Task<MarketDataSubscription?> SubscribeSymbolAsync(string symbol, bool requestDepth, CancellationToken cancellationToken)
@@ -250,13 +287,21 @@ public class IBkrMarketDataClient : BackgroundService
                 requestDepth,
                 isNewSubscription ? "NEW" : isDepthUpgrade ? "UPGRADE_TO_DEPTH" : "UNKNOWN");
 
+            // Select L1 exchange: primary first → fallback to SMART
+            var l1Exchange = SelectL1Exchange(classification);
             var baseContract = new Contract
             {
                 Symbol = normalized,
                 SecType = classification?.SecType ?? "STK",
-                Exchange = "SMART",
+                Exchange = l1Exchange,
                 Currency = classification?.Currency ?? "USD"
             };
+            
+            _logger.LogInformation(
+                "[IBKR] MarketDataExchangePolicy: symbol={Symbol} l1Exchange={L1Exchange} primaryExchange={PrimaryExchange} policy=primary-first-smart-fallback",
+                normalized,
+                l1Exchange,
+                classification?.PrimaryExchange ?? "unknown");
 
             // Request tape only for NEW subscriptions
             if (isNewSubscription && enableTape)
@@ -264,6 +309,13 @@ public class IBkrMarketDataClient : BackgroundService
                 mktDataRequestId = Interlocked.Increment(ref _nextRequestId);
                 _eClientSocket.reqMktData(mktDataRequestId.Value, baseContract, string.Empty, false, false, null);
                 _tickerIdMap[mktDataRequestId.Value] = normalized;
+                
+                _logger.LogDebug(
+                    "[IBKR] L1Request: symbol={Symbol} mktDataId={MktDataId} exchange={Exchange} subscribedAt={Now}",
+                    normalized,
+                    mktDataRequestId.Value,
+                    l1Exchange,
+                    DateTimeOffset.UtcNow);
             }
             else if (isDepthUpgrade)
             {
@@ -309,6 +361,7 @@ public class IBkrMarketDataClient : BackgroundService
 
             // Create or update subscription record
             MarketDataSubscription subscription;
+            var now = DateTimeOffset.UtcNow;
             if (isNewSubscription)
             {
                 // New subscription - create full record
@@ -317,7 +370,11 @@ public class IBkrMarketDataClient : BackgroundService
                     mktDataRequestId,
                     depthRequestId,
                     null, // No tick-by-tick yet
-                    actualDepthExchange);
+                    actualDepthExchange,
+                    l1Exchange,                    // L1 exchange (primary or SMART)
+                    null,                          // TickByTick exchange set on EnableTickByTickAsync
+                    mktDataRequestId.HasValue ? now : null,  // Record subscription time for fallback monitoring
+                    null);
             }
             else if (isDepthUpgrade)
             {
@@ -327,7 +384,11 @@ public class IBkrMarketDataClient : BackgroundService
                     existing!.MktDataRequestId,     // Preserve existing
                     depthRequestId,                 // New depth request
                     existing.TickByTickRequestId,   // Preserve existing
-                    actualDepthExchange);           // Actual exchange from depth contract
+                    actualDepthExchange,            // Actual exchange from depth contract
+                    existing.MktDataExchange,       // Preserve L1 exchange
+                    existing.TickByTickExchange,    // Preserve tick-by-tick exchange
+                    existing.MktDataFirstReceiptMs,    // Preserve L1 receipt time
+                    existing.TickByTickFirstReceiptMs);  // Preserve tick-by-tick receipt time
             }
             else
             {
@@ -423,11 +484,15 @@ public class IBkrMarketDataClient : BackgroundService
                 return null;
             }
 
+            // Get classification for exchange selection
+            var classification = _classificationService.TryGetCached(normalized);
+            var tbtExchange = SelectL1Exchange(classification); // Use same exchange selection policy as L1
+            
             var contract = new Contract
             {
                 Symbol = normalized,
                 SecType = "STK",
-                Exchange = "SMART",
+                Exchange = tbtExchange,
                 Currency = "USD"
             };
 
@@ -435,10 +500,21 @@ public class IBkrMarketDataClient : BackgroundService
             _eClientSocket.reqTickByTickData(requestId.Value, contract, "Last", 0, false);
             _tickerIdMap[requestId.Value] = normalized;
 
-            var updated = existing with { TickByTickRequestId = requestId.Value };
+            var now = DateTimeOffset.UtcNow;
+            var updated = existing with 
+            { 
+                TickByTickRequestId = requestId.Value,
+                TickByTickExchange = tbtExchange,
+                TickByTickFirstReceiptMs = now
+            };
             _activeSubscriptions[normalized] = updated;
 
-            _logger.LogInformation("[IBKR] Enabled tick-by-tick for {Symbol} tickByTickId={TickByTickId}", normalized, requestId);
+            _logger.LogInformation(
+                "[IBKR] Enabled tick-by-tick for {Symbol} tickByTickId={TickByTickId} exchange={Exchange} primaryExchange={PrimaryExchange} policy=primary-first-smart-fallback",
+                normalized,
+                requestId,
+                tbtExchange,
+                classification?.PrimaryExchange ?? "unknown");
             return requestId;
         }
         catch (Exception ex)
@@ -966,6 +1042,217 @@ public class IBkrMarketDataClient : BackgroundService
         }
     }
     
+    /// <summary>
+    /// Monitor active subscriptions for data receipt and trigger fallback to SMART if timeouts occur.
+    /// Runs periodically to check L1 and tick-by-tick subscriptions for staleness.
+    /// </summary>
+    private async Task MonitorExchangeFallbacksAsync(CancellationToken stoppingToken)
+    {
+        var checkInterval = TimeSpan.FromSeconds(5);
+        
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(checkInterval, stoppingToken);
+                
+                if (_eClientSocket?.IsConnected() != true)
+                {
+                    continue;
+                }
+                
+                var now = DateTimeOffset.UtcNow;
+                
+                // Check each active subscription for L1 and tick-by-tick timeouts
+                foreach (var kvp in _activeSubscriptions.ToList())
+                {
+                    var symbol = kvp.Key;
+                    var sub = kvp.Value;
+                    
+                    // Check L1 receipt timeout
+                    if (sub.MktDataRequestId.HasValue && 
+                        sub.MktDataExchange != null && 
+                        sub.MktDataExchange != "SMART" &&
+                        sub.MktDataFirstReceiptMs.HasValue)
+                    {
+                        var ageMs = (now - sub.MktDataFirstReceiptMs.Value).TotalMilliseconds;
+                        
+                        // Check if we've received activity on this L1 subscription (via recordActivity callback)
+                        var hasReceivedL1Data = _orderBooks.TryGetValue(symbol, out var book) && 
+                                                book.RecentTrades.Count > 0;
+                        
+                        if (!hasReceivedL1Data && ageMs > _l1ReceiptTimeoutMs)
+                        {
+                            await TriggerL1Fallback(symbol, sub, ageMs);
+                        }
+                    }
+                    
+                    // Check tick-by-tick receipt timeout
+                    if (sub.TickByTickRequestId.HasValue && 
+                        sub.TickByTickExchange != null && 
+                        sub.TickByTickExchange != "SMART" &&
+                        sub.TickByTickFirstReceiptMs.HasValue)
+                    {
+                        var ageMs = (now - sub.TickByTickFirstReceiptMs.Value).TotalMilliseconds;
+                        
+                        // Check if we've received any tick-by-tick data (OrderBook would have recorded trades)
+                        var hasReceivedTbtData = _orderBooks.TryGetValue(symbol, out var tbtBook) && 
+                                                 tbtBook.RecentTrades.Count > 0;
+                        
+                        if (!hasReceivedTbtData && ageMs > _tickByTickReceiptTimeoutMs)
+                        {
+                            await TriggerTickByTickFallback(symbol, sub, ageMs);
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[IBKR] Error in fallback monitoring loop");
+            }
+        }
+    }
+    
+    private async Task TriggerL1Fallback(string symbol, MarketDataSubscription sub, double ageMs)
+    {
+        if (_eClientSocket?.IsConnected() != true)
+        {
+            return;
+        }
+        
+        _logger.LogInformation(
+            "[IBKR] L1ExchangeFallback: symbol={Symbol} primaryExchange={PrimaryExchange} reason=NoDataReceived timeoutMs={TimeoutMs} ageMs={AgeMs} fallbackExchange=SMART",
+            symbol,
+            sub.MktDataExchange,
+            _l1ReceiptTimeoutMs,
+            (long)ageMs);
+        
+        // Cancel current L1 subscription
+        if (sub.MktDataRequestId.HasValue)
+        {
+            try
+            {
+                _eClientSocket!.cancelMktData(sub.MktDataRequestId.Value);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "[IBKR] Failed to cancel L1 market data for {Symbol} (requestId={RequestId}) during fallback.",
+                    symbol,
+                    sub.MktDataRequestId.Value);
+            }
+        }
+        
+        // Resubscribe with SMART
+        try
+        {
+            var contract = new Contract
+            {
+                Symbol = symbol,
+                SecType = "STK",
+                Exchange = "SMART",
+                Currency = "USD"
+            };
+            
+            var newRequestId = Interlocked.Increment(ref _nextRequestId);
+            _eClientSocket!.reqMktData(newRequestId, contract, string.Empty, false, false, null);
+            _tickerIdMap[newRequestId] = symbol;
+            
+            // Update subscription with new request ID and SMART exchange
+            var now = DateTimeOffset.UtcNow;
+            var updated = sub with 
+            { 
+                MktDataRequestId = newRequestId,
+                MktDataExchange = "SMART",
+                MktDataFirstReceiptMs = now  // Reset timeout counter
+            };
+            _activeSubscriptions[symbol] = updated;
+            
+            _logger.LogDebug(
+                "[IBKR] L1Resubscribed: symbol={Symbol} oldRequestId={OldId} newRequestId={NewId} exchange=SMART",
+                symbol,
+                sub.MktDataRequestId,
+                newRequestId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[IBKR] Error during L1 fallback resubscription for {Symbol}", symbol);
+        }
+    }
+    
+    private async Task TriggerTickByTickFallback(string symbol, MarketDataSubscription sub, double ageMs)
+    {
+        if (_eClientSocket?.IsConnected() != true)
+        {
+            return;
+        }
+        
+        _logger.LogInformation(
+            "[IBKR] TickByTickExchangeFallback: symbol={Symbol} primaryExchange={PrimaryExchange} reason=NoDataReceived timeoutMs={TimeoutMs} ageMs={AgeMs} fallbackExchange=SMART",
+            symbol,
+            sub.TickByTickExchange,
+            _tickByTickReceiptTimeoutMs,
+            (long)ageMs);
+        
+        // Cancel current tick-by-tick subscription
+        if (sub.TickByTickRequestId.HasValue)
+        {
+            try
+            {
+                _eClientSocket!.cancelTickByTickData(sub.TickByTickRequestId.Value);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "[IBKR] Failed to cancel tick-by-tick data for {Symbol} requestId={RequestId}",
+                    symbol,
+                    sub.TickByTickRequestId.Value);
+            }
+        }
+        
+        // Resubscribe with SMART
+        try
+        {
+            var contract = new Contract
+            {
+                Symbol = symbol,
+                SecType = "STK",
+                Exchange = "SMART",
+                Currency = "USD"
+            };
+            
+            var newRequestId = Interlocked.Increment(ref _nextRequestId);
+            _eClientSocket!.reqTickByTickData(newRequestId, contract, "Last", 0, false);
+            _tickerIdMap[newRequestId] = symbol;
+            
+            // Update subscription with new request ID and SMART exchange
+            var now = DateTimeOffset.UtcNow;
+            var updated = sub with 
+            { 
+                TickByTickRequestId = newRequestId,
+                TickByTickExchange = "SMART",
+                TickByTickFirstReceiptMs = now  // Reset timeout counter
+            };
+            _activeSubscriptions[symbol] = updated;
+            
+            _logger.LogDebug(
+                "[IBKR] TickByTickResubscribed: symbol={Symbol} oldRequestId={OldId} newRequestId={NewId} exchange=SMART",
+                symbol,
+                sub.TickByTickRequestId,
+                newRequestId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[IBKR] Error during tick-by-tick fallback resubscription for {Symbol}", symbol);
+        }
+    }
+    
     private void Cleanup()
     {
         try
@@ -1002,6 +1289,7 @@ public class IBkrMarketDataClient : BackgroundService
             _logger.LogError(ex, "[IBKR] Error during cleanup");
         }
     }
+
 }
 
 /// <summary>
@@ -1101,6 +1389,7 @@ internal class IBkrWrapperImpl : EWrapper
                 sz,
                 position,
                 nowMs);
+            book.LastDepthRecvMs = nowMs;  // Track depth receipt time for diagnostics
             book.ApplyDepthUpdate(depthUpdate);
             MarkDepthEligibleOnce(book.Symbol);
 
@@ -1150,6 +1439,7 @@ internal class IBkrWrapperImpl : EWrapper
                 (decimal)size,
                 position,
                 nowMs);
+            book.LastDepthRecvMs = nowMs;  // Track depth receipt time for diagnostics
             book.ApplyDepthUpdate(depthUpdate);
             MarkDepthEligibleOnce(book.Symbol);
             _markDepthEligible?.Invoke(book.Symbol);
@@ -1232,6 +1522,10 @@ internal class IBkrWrapperImpl : EWrapper
         }
 
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        
+        // Track L1 receipt time for triage eligibility
+        book.LastL1RecvMs = nowMs;
+        
         // Market data callbacks don't provide event time, so use receipt time for both
         book.RecordTrade(nowMs, nowMs, price, size);
         _recordActivity?.Invoke(book.Symbol);
@@ -1264,7 +1558,7 @@ internal class IBkrWrapperImpl : EWrapper
 
     public void error(int id, int errorCode, string errorMsg)
     {
-        if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
+        if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158 || errorCode == 2176)
         {
             _logger.LogDebug("[IBKR Info {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
             return;
@@ -1280,8 +1574,7 @@ internal class IBkrWrapperImpl : EWrapper
         {
             _errorHandler?.Invoke(id, errorCode, errorMsg);
         }
-
-        // Log all errors with ID at Info level for visibility during testing
+        
         if (id > 0)
         {
             _logger.LogInformation("[IBKR Error {ErrorCode}] ID={Id}: {Message}", errorCode, id, errorMsg);
