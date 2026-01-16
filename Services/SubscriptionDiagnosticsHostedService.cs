@@ -351,9 +351,11 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
 
         if (result.GotTape) // GotL1 is false here, GotTape is true
         {
+            // GotTape must be true here (since !GotL1 && !GotTape was handled above)
             return "Tick-by-tick working but no L1 - unusual, check subscription";
         }
 
+        // Both GotL1 and GotTape are true
         return $"Working on {result.UsedExchange} - L1: {result.L1Count}, Tape: {result.TapeCount}";
     }
 
