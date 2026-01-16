@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -565,6 +566,74 @@ public class MarketDataSubscriptionManagerTests
     }
 
     [Fact]
+    public async Task DepthEligibilitySummary_LogsUniverseSizeAndLastIneligibleSymbols()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MarketData:MaxLines"] = "10",
+                ["MarketData:EnableDepth"] = "true",
+                ["MarketData:EnableTape"] = "true"
+            })
+            .Build();
+
+        var logger = new ListLogger<MarketDataSubscriptionManager>();
+        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+
+        var symbols = new[] { "AAA", "BBB", "CCC", "DDD", "EEE", "FFF" };
+        var depthRequestIds = new Dictionary<string, int>();
+        var nextId = 10;
+        foreach (var symbol in symbols)
+        {
+            await classificationCache.PutAsync(
+                new ContractClassification(symbol, nextId, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow),
+                CancellationToken.None);
+            depthRequestIds[symbol] = nextId;
+            nextId += 10;
+        }
+
+        var manager = new MarketDataSubscriptionManager(
+            config,
+            logger,
+            classificationService,
+            eligibilityCache);
+
+        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
+        {
+            return Task.FromResult<MarketDataSubscription?>(
+                new MarketDataSubscription(symbol, 1, requestDepth ? depthRequestIds[symbol] : null, null, requestDepth ? "SMART" : null));
+        }
+
+        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
+        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(null);
+        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
+        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
+
+        await manager.ApplyUniverseAsync(
+            symbols,
+            Subscribe,
+            Unsubscribe,
+            EnableTbt,
+            DisableTbt,
+            DisableDepth,
+            CancellationToken.None);
+
+        foreach (var symbol in symbols)
+        {
+            await manager.HandleIbkrErrorAsync(
+                requestId: depthRequestIds[symbol],
+                errorCode: 10092,
+                errorMessage: "Deep market data not supported",
+                disableDepthAsync: DisableDepth,
+                disableTickByTickAsync: DisableTbt,
+                enableTickByTickAsync: EnableTbt,
+                cancellationToken: CancellationToken.None);
+        }
+
+        await manager.ApplyUniverseAsync(
+            symbols,
     public async Task TickByTickCapHit_RemovesSymbolFromActiveUniverse()
     {
         // Verifies that when tick-by-tick cap is hit (error 10190),
@@ -626,6 +695,34 @@ public class MarketDataSubscriptionManagerTests
             DisableDepth,
             CancellationToken.None);
 
+        var summary = logger.Messages.Last(message => message.StartsWith("DepthEligibilitySummary", StringComparison.Ordinal));
+        Assert.Contains("universeSize=6", summary);
+
+        var marker = "last10092Symbols=[";
+        var startIndex = summary.IndexOf(marker, StringComparison.Ordinal) + marker.Length;
+        var endIndex = summary.IndexOf(']', startIndex);
+        var symbolsSegment = summary.Substring(startIndex, endIndex - startIndex);
+        var entries = symbolsSegment.Split(',', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(5, entries.Length);
+
+        var expectedSymbols = new[] { "BBB", "CCC", "DDD", "EEE", "FFF" };
+        for (var i = 0; i < entries.Length; i++)
+        {
+            var entry = entries[i];
+            var openIndex = entry.IndexOf('(');
+            var closeIndex = entry.LastIndexOf(')');
+            Assert.True(openIndex > 0);
+            Assert.True(closeIndex > openIndex);
+            Assert.Equal(expectedSymbols[i], entry[..openIndex]);
+
+            var timestamp = entry[(openIndex + 1)..closeIndex];
+            Assert.True(DateTimeOffset.TryParse(
+                timestamp,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out _));
+        }
         // Both symbols have depth+tick-by-tick and are in ActiveUniverse
         Assert.True(manager.IsDepthEnabled("AAA"));
         Assert.True(manager.IsDepthEnabled("BBB"));

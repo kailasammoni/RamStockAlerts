@@ -87,7 +87,7 @@ public sealed class MarketDataSubscriptionManager
     private int _lastTickByTickMaxSymbols;
     private ShadowTradingHelpers.TapeGateConfig? _lastTapeGateConfig;
     private readonly ConcurrentDictionary<string, byte> _depthIneligibleLogged = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Queue<string> _lastDepthIneligibleSymbols = new();
+    private readonly List<DepthIneligibleEntry> _lastDepthIneligibleSymbols = new();
     private const int LastDepthIneligibleSymbolsLimit = 5;
     private readonly ConcurrentDictionary<int, DateTimeOffset> _pendingTickByTickCancels = new();
     private static readonly TimeSpan PendingCancelTtl = TimeSpan.FromMinutes(2);
@@ -393,6 +393,7 @@ public sealed class MarketDataSubscriptionManager
         Func<string, CancellationToken, Task<bool>> disableDepthAsync,
         CancellationToken cancellationToken)
     {
+        var universeSize = universe.Count;
         // Candidate Model: The input 'candidates' represents all symbols eligible for consideration.
         // ActiveUniverse will be computed as the strict subset with tape + depth + tick-by-tick subscriptions.
         
@@ -673,6 +674,7 @@ public sealed class MarketDataSubscriptionManager
 
             LogTapeDepthPairingIfChanged(maxDepthSymbols);
             LogTapeGateConfigIfChanged();
+            LogDepthEligibilitySummary(universeSize, normalizedUniverse, classifications, now);
             LogDepthEligibilitySummary(normalizedCandidates, classifications, now);
             
             // Log detailed universe refresh snapshot with focus rotation state
@@ -1152,7 +1154,7 @@ public sealed class MarketDataSubscriptionManager
                     errorMessage);
             }
 
-            EnqueueDepthIneligibleSymbol(symbol);
+            EnqueueDepthIneligibleSymbol(symbol, now);
 
             MarkDepthUnsupported(symbol, $"DepthUnsupported:{errorCode}", now);
             _logger.LogWarning(
@@ -1184,7 +1186,7 @@ public sealed class MarketDataSubscriptionManager
         }
     }
 
-    private void EnqueueDepthIneligibleSymbol(string symbol)
+    private void EnqueueDepthIneligibleSymbol(string symbol, DateTimeOffset timestamp)
     {
         if (string.IsNullOrWhiteSpace(symbol))
         {
@@ -1192,15 +1194,17 @@ public sealed class MarketDataSubscriptionManager
         }
 
         var normalized = symbol.Trim().ToUpperInvariant();
-        if (_lastDepthIneligibleSymbols.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        var existingIndex = _lastDepthIneligibleSymbols.FindIndex(entry =>
+            entry.Symbol.Equals(normalized, StringComparison.OrdinalIgnoreCase));
+        if (existingIndex >= 0)
         {
-            return;
+            _lastDepthIneligibleSymbols.RemoveAt(existingIndex);
         }
 
-        _lastDepthIneligibleSymbols.Enqueue(normalized);
+        _lastDepthIneligibleSymbols.Add(new DepthIneligibleEntry(normalized, timestamp));
         while (_lastDepthIneligibleSymbols.Count > LastDepthIneligibleSymbolsLimit)
         {
-            _lastDepthIneligibleSymbols.Dequeue();
+            _lastDepthIneligibleSymbols.RemoveAt(0);
         }
     }
 
@@ -1226,6 +1230,7 @@ public sealed class MarketDataSubscriptionManager
     }
 
     private void LogDepthEligibilitySummary(
+        int universeSize,
         IReadOnlyList<string> universe,
         IReadOnlyDictionary<string, ContractClassification> classifications,
         DateTimeOffset now)
@@ -1243,11 +1248,11 @@ public sealed class MarketDataSubscriptionManager
         }
 
         _logger.LogInformation(
-            "DepthEligibilitySummary: universe={UniverseCount} depthEnabled={DepthEnabled} depthUnsupported={DepthUnsupported} last10092Symbols=[{LastSymbols}]",
-            universe.Count,
+            "DepthEligibilitySummary: universeSize={UniverseSize} depthEnabledCount={DepthEnabled} depthUnsupportedCount={DepthUnsupported} last10092Symbols=[{LastSymbols}]",
+            universeSize,
             depthEnabled,
             depthUnsupported,
-            string.Join(",", _lastDepthIneligibleSymbols));
+            string.Join(",", _lastDepthIneligibleSymbols.Select(entry => entry.ToString())));
     }
 
     private void LogTapeDepthPairingIfChanged(int tickByTickMaxSymbols)
@@ -2033,6 +2038,11 @@ public sealed class MarketDataSubscriptionManager
         }
 
         return normalized;
+    }
+
+    private sealed record DepthIneligibleEntry(string Symbol, DateTimeOffset Timestamp)
+    {
+        public override string ToString() => $"{Symbol}({Timestamp:O})";
     }
 
     private sealed class SubscriptionState
