@@ -264,11 +264,6 @@ public class SubscriptionDiagnosticsTests
             return "L1 working but no tick-by-tick - may need different subscription or entitlement";
         }
 
-        if (!result.GotL1 && result.GotTape)
-        {
-            return "Tick-by-tick working but no L1 - unusual, check subscription";
-        }
-
         return $"Working on {result.UsedExchange} - L1: {result.L1Count}, Tape: {result.TapeCount}";
     }
 
