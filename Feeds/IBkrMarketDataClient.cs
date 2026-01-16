@@ -33,6 +33,7 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly PreviewSignalEmitter _previewSignalEmitter;
     private readonly ContractClassificationService _classificationService;
     private readonly DepthEligibilityCache _depthEligibilityCache;
+    private readonly IRequestIdSource _requestIdSource;
     
     private EClientSocket? _eClientSocket;
     private EReaderSignal? _readerSignal;
@@ -42,7 +43,6 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly ConcurrentDictionary<string, OrderBookState> _orderBooks = new();
     private readonly ConcurrentDictionary<string, MarketDataSubscription> _activeSubscriptions = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _subscriptionLock = new(1, 1);
-    private int _nextRequestId = 1000;
     
     /// <summary>
     /// Time to wait for L1/tape receipt after initial subscription before falling back to SMART (ms).
@@ -65,7 +65,8 @@ public class IBkrMarketDataClient : BackgroundService
         ShadowTradingCoordinator shadowTradingCoordinator,
         PreviewSignalEmitter previewSignalEmitter,
         ContractClassificationService classificationService,
-        DepthEligibilityCache depthEligibilityCache)
+        DepthEligibilityCache depthEligibilityCache,
+        IRequestIdSource requestIdSource)
     {
         _logger = logger;
         _configuration = configuration;
@@ -76,6 +77,7 @@ public class IBkrMarketDataClient : BackgroundService
         _previewSignalEmitter = previewSignalEmitter;
         _classificationService = classificationService;
         _depthEligibilityCache = depthEligibilityCache;
+        _requestIdSource = requestIdSource;
         
         // Initialize receipt timeout configuration
         _l1ReceiptTimeoutMs = Math.Max(5_000, configuration.GetValue("MarketData:L1ReceiptTimeoutMs", 15_000));
@@ -306,7 +308,7 @@ public class IBkrMarketDataClient : BackgroundService
             // Request tape only for NEW subscriptions
             if (isNewSubscription && enableTape)
             {
-                mktDataRequestId = Interlocked.Increment(ref _nextRequestId);
+                mktDataRequestId = _requestIdSource.NextId();
                 _eClientSocket.reqMktData(mktDataRequestId.Value, baseContract, string.Empty, false, false, null);
                 _tickerIdMap[mktDataRequestId.Value] = normalized;
                 
@@ -329,7 +331,7 @@ public class IBkrMarketDataClient : BackgroundService
                 _subscriptionManager.RecordDepthSubscribeAttempt(normalized);
                 depthAttempted = true;
                 var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
-                depthRequestId = Interlocked.Increment(ref _nextRequestId);
+                depthRequestId = _requestIdSource.NextId();
                 var depthContract = BuildDepthContractForDepth(normalized, classification);
                 
                 // Capture the actual exchange used for depth request
@@ -496,7 +498,7 @@ public class IBkrMarketDataClient : BackgroundService
                 Currency = "USD"
             };
 
-            requestId = Interlocked.Increment(ref _nextRequestId);
+            requestId = _requestIdSource.NextId();
             _eClientSocket.reqTickByTickData(requestId.Value, contract, "Last", 0, false);
             _tickerIdMap[requestId.Value] = normalized;
 
@@ -808,7 +810,7 @@ public class IBkrMarketDataClient : BackgroundService
         _subscriptionManager.ClearDepthRequest(plan.Symbol, failedRequestId);
 
         var depthRows = Math.Clamp(_configuration.GetValue("MarketData:DepthRows", 5), 1, 10);
-        var depthRequestId = Interlocked.Increment(ref _nextRequestId);
+        var depthRequestId = _requestIdSource.NextId();
         var exchange = plan.PrimaryExchange ?? "SMART";
         var retryContract = BuildDepthContract(plan.Symbol, plan, exchange);
 

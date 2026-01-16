@@ -3,6 +3,7 @@ using IBApi;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using RamStockAlerts.Services;
 using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Universe;
@@ -12,7 +13,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private readonly IConfiguration _configuration;
     private readonly ILogger<IbkrScannerUniverseSource> _logger;
     private readonly ContractClassificationService _classificationService;
-    private static int _nextRequestId = 5000;
+    private readonly IRequestIdSource _requestIdSource;
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private DateTime _lastScanTimeUtc = DateTime.MinValue;
@@ -26,7 +27,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     public IbkrScannerUniverseSource(
         IConfiguration configuration,
         ILogger<IbkrScannerUniverseSource> logger,
-        ContractClassificationService classificationService)
+        ContractClassificationService classificationService,
+        IRequestIdSource requestIdSource)
     {
         _startHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartHour", 7), 0, 23);
         _startMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartMinute", 0), 0, 59);
@@ -37,6 +39,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         _configuration = configuration;
         _logger = logger;
         _classificationService = classificationService ?? throw new ArgumentNullException(nameof(classificationService));
+        _requestIdSource = requestIdSource ?? throw new ArgumentNullException(nameof(requestIdSource));
     }
 
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
@@ -160,7 +163,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         double? marketCapBelow,
         CancellationToken cancellationToken)
     {
-        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var requestId = _requestIdSource.NextId();
         var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<ScannerCandidate>();
         var completion = new TaskCompletionSource<IReadOnlyList<string>>(TaskCreationOptions.RunContinuationsAsynchronously);

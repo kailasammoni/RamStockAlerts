@@ -29,7 +29,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         await classificationCache.PutAsync(new ContractClassification("XYZ", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -81,7 +82,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -170,7 +172,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -236,7 +239,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -319,7 +323,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -381,7 +386,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
@@ -543,7 +549,8 @@ public class MarketDataSubscriptionManagerTests
             .Build();
 
         var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
-        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var requestIdSource = new IbkrRequestIdSource(config);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache, requestIdSource);
         var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
         var metrics = CreateMetrics();
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
