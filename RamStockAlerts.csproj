@@ -13,6 +13,13 @@
     <Compile Remove="RamStockAlerts.Tests/**" />
     <EmbeddedResource Remove="RamStockAlerts.Tests/**" />
     <None Remove="RamStockAlerts.Tests/**" />
+    <!-- Exclude Execution module test project files -->
+    <Compile Remove="RamStockAlerts.Execution/**" />
+    <EmbeddedResource Remove="RamStockAlerts.Execution/**" />
+    <None Remove="RamStockAlerts.Execution/**" />
+    <Compile Remove="RamStockAlerts.Execution.Tests/**" />
+    <EmbeddedResource Remove="RamStockAlerts.Execution.Tests/**" />
+    <None Remove="RamStockAlerts.Execution.Tests/**" />
     <!-- Exclude auto-generated assembly attributes to avoid duplicates -->
     <Compile Remove="obj/**/*.AssemblyAttributes.cs" />
   </ItemGroup>
@@ -40,6 +47,10 @@
 
   <ItemGroup>
     <PackageReference Include="IBApi" Version="1.0.0-preview-975" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="RamStockAlerts.Execution\RamStockAlerts.Execution.csproj" />
   </ItemGroup>
 
 </Project>

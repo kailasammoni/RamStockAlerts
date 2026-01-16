@@ -25,9 +25,9 @@ public class ShadowTradingCoordinatorTapeGateTests
 
         var entry = Assert.Single(journal.Entries);
         Assert.Equal("Rejected", entry.DecisionOutcome);
-        Assert.Equal("NotReady_TapeMissingSubscription", entry.RejectionReason);
-        Assert.Contains("GateReject:NotReady_TapeMissingSubscription", entry.DecisionTrace ?? new List<string>());
-        Assert.Contains("TapeMissingSubscription", entry.DataQualityFlags ?? new List<string>());
+        // Tape-only symbols (with mktData but no tick-by-tick) now pass tape check but fail on NoDepth
+        Assert.Equal("NotReady_NoDepth", entry.RejectionReason);
+        Assert.Contains("GateReject:NotReady_NoDepth", entry.DecisionTrace ?? new List<string>());
         Assert.Null(entry.DecisionInputs);
     }
 
@@ -67,7 +67,8 @@ public class ShadowTradingCoordinatorTapeGateTests
         coordinator.ProcessSnapshot(book, nowMs + 1);
 
         var entry = Assert.Single(journal.Entries);
-        Assert.Equal("NotReady_TapeMissingSubscription", entry.RejectionReason);
+        // Tape-only symbols now fail on NoDepth instead of TapeMissingSubscription
+        Assert.Equal("NotReady_NoDepth", entry.RejectionReason);
     }
 
     [Fact]
@@ -82,13 +83,15 @@ public class ShadowTradingCoordinatorTapeGateTests
 
         coordinator.ProcessSnapshot(invalidBook, nowMs);
 
-        var validBook = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs + 1);
-        metrics.UpdateMetrics(validBook, nowMs + 1);
-        coordinator.ProcessSnapshot(validBook, nowMs + 1);
+        // Allow enough time to bypass evaluation throttle (250ms)
+        var validBook = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs + 300);
+        metrics.UpdateMetrics(validBook, nowMs + 300);
+        coordinator.ProcessSnapshot(validBook, nowMs + 300);
 
         Assert.Equal(2, journal.Entries.Count);
         Assert.Contains(journal.Entries, entry => entry.RejectionReason == "NotReady_BookInvalid");
-        Assert.Contains(journal.Entries, entry => entry.RejectionReason == "NotReady_TapeMissingSubscription");
+        // Tape-only symbols now fail on NoDepth instead of TapeMissingSubscription
+        Assert.Contains(journal.Entries, entry => entry.RejectionReason == "NotReady_NoDepth");
     }
 
     [Fact]

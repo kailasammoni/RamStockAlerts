@@ -29,16 +29,16 @@ public sealed class TapeVelocityTracker
     /// <summary>
     /// Add a trade print into the rolling window.
     /// </summary>
-    public void AddTrade(long timestampMs, double price, decimal size)
+    public void AddTrade(long receiptTimestampMs, double price, decimal size)
     {
-        _prints.Enqueue(new TradePrint(timestampMs, price, size));
-        Prune(timestampMs);
+        _prints.Enqueue(new TradePrint(receiptTimestampMs, receiptTimestampMs, price, size));
+        Prune(receiptTimestampMs);
     }
 
     private void Prune(long nowMs)
     {
         var cutoff = nowMs - (long)_window.TotalMilliseconds;
-        while (_prints.Count > 0 && _prints.Peek().TimestampMs < cutoff)
+        while (_prints.Count > 0 && _prints.Peek().ReceiptTimestampMs < cutoff)
         {
             _prints.Dequeue();
         }

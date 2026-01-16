@@ -61,8 +61,19 @@ public readonly record struct DepthUpdate(
 
 /// <summary>
 /// Trade print used for optional tape bookkeeping.
+/// Stores both event time (IB-provided, may lag) and local receipt time (authoritative for gating).
 /// </summary>
-public readonly record struct TradePrint(long TimestampMs, double Price, decimal Size);
+/// <param name="EventTimestampMs">IB-provided trade event timestamp (can lag or be delayed)</param>
+/// <param name="ReceiptTimestampMs">Local receipt timestamp (UtcNow when callback executed)</param>
+/// <param name="Price">Trade price</param>
+/// <param name="Size">Trade size</param>
+public readonly record struct TradePrint(long EventTimestampMs, long ReceiptTimestampMs, double Price, decimal Size)
+{
+    /// <summary>
+    /// Backwards-compatible alias (maps to receipt time going forward).
+    /// </summary>
+    public long TimestampMs => ReceiptTimestampMs;
+}
 
 /// <summary>
 /// Single depth level: price with size and timestamp.
@@ -117,7 +128,7 @@ public sealed class OrderBookState
     public long LastResetMs { get; private set; }
 
     /// <summary>
-    /// Timestamp of the last applied update or trade (ms since epoch).
+    /// Timestamp of the last applied update or trade (ms since epoch, receipt clock for trades).
     /// </summary>
     public long LastUpdateMs { get; private set; }
 
@@ -125,6 +136,24 @@ public sealed class OrderBookState
     /// Timestamp of the last applied depth update (ms since epoch). Used for staleness check.
     /// </summary>
     public long LastDepthUpdateUtcMs { get; private set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last depth update RECEIPT TIME (local clock).
+    /// Used for depth staleness diagnostics in journal and summaries.
+    /// </summary>
+    public long? LastDepthRecvMs { get; set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last L1 (quote/level 1) update RECEIPT TIME (local clock).
+    /// Used for L1 staleness gating and triage eligibility.
+    /// </summary>
+    public long? LastL1RecvMs { get; set; }
+
+    /// <summary>
+    /// Timestamp (ms since epoch) of last tape event RECEIPT TIME (local clock).
+    /// Used for tape staleness gating - NOT event time which can lag.
+    /// </summary>
+    public long LastTapeRecvMs { get; private set; }
 
     /// <summary>
     /// Read-only bid levels in position order (index 0 = best bid).
@@ -282,9 +311,10 @@ public sealed class OrderBookState
             return false;
         }
 
-        if (nowUtcMs - LastDepthUpdateUtcMs > StaleDepthThresholdMs)
+        var depthAgeMs = nowUtcMs - LastDepthUpdateUtcMs;
+        if (depthAgeMs > StaleDepthThresholdMs)
         {
-            reason = "StaleDepthData";
+            reason = $"StaleDepthData (nowMs={nowUtcMs}, lastDepthMs={LastDepthUpdateUtcMs}, ageMs={depthAgeMs}, thresholdMs={StaleDepthThresholdMs}, timeSource=UnixEpoch)";
             return false;
         }
 
@@ -481,12 +511,28 @@ public sealed class OrderBookState
     /// <summary>
     /// Record a trade print for optional downstream metrics.
     /// </summary>
+    /// <param name="eventMs">Trade event timestamp (may be IB server time, can lag)</param>
+    /// <param name="recvMs">Receipt timestamp (local UtcNow when callback arrived)</param>
+    /// <param name="price">Trade price</param>
+    /// <param name="size">Trade size</param>
+    public void RecordTrade(long eventMs, long recvMs, double price, decimal size)
+    {
+        _recentTrades.Enqueue(new TradePrint(eventMs, recvMs, price, size));
+        _vwapTracker.OnTrade(price, size, eventMs);
+        TrimTrades();
+        // Strategy evaluation should follow receipt time; keep event time only for analytics
+        LastUpdateMs = Math.Max(LastUpdateMs, recvMs);
+        LastTapeRecvMs = Math.Max(LastTapeRecvMs, recvMs);
+    }
+
+    /// <summary>
+    /// Record a trade print using single timestamp for both event and receipt time.
+    /// Used when event time is unknown (e.g., market data LAST callbacks).
+    /// </summary>
+    [Obsolete("Use RecordTrade(eventMs, recvMs, price, size) to properly separate event and receipt times")]
     public void RecordTrade(long timestampMs, double price, decimal size)
     {
-        _recentTrades.Enqueue(new TradePrint(timestampMs, price, size));
-        _vwapTracker.OnTrade(price, size, timestampMs);
-        TrimTrades();
-        LastUpdateMs = Math.Max(LastUpdateMs, timestampMs);
+        RecordTrade(timestampMs, timestampMs, price, size);
     }
 
     /// <summary>
@@ -494,7 +540,7 @@ public sealed class OrderBookState
     /// </summary>
     public void PruneTrades(long windowStartMs)
     {
-        while (_recentTrades.Count > 0 && _recentTrades.Peek().TimestampMs < windowStartMs)
+        while (_recentTrades.Count > 0 && _recentTrades.Peek().ReceiptTimestampMs < windowStartMs)
         {
             _recentTrades.Dequeue();
         }

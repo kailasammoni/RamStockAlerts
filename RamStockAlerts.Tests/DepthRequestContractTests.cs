@@ -8,7 +8,7 @@ namespace RamStockAlerts.Tests;
 public class DepthRequestContractTests
 {
     [Fact]
-    public void BuildDepthContract_UsesPrimaryExchangeWhenPresent()
+    public void BuildDepthContract_UsesSmartExchangeWhenPrimaryPresent()
     {
         var classification = new ContractClassification(
             "AAA",
@@ -26,7 +26,8 @@ public class DepthRequestContractTests
 
         var contract = IBkrMarketDataClient.BuildDepthContractForDepth("AAA", classification);
 
-        Assert.Equal("NASDAQ", contract.Exchange);
+        Assert.Equal("SMART", contract.Exchange);
+        Assert.Equal("NASDAQ", contract.PrimaryExch);
     }
 
     [Fact]
