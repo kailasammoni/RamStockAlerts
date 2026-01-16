@@ -69,7 +69,7 @@ public class MarketDataSubscriptionManagerTests
     }
 
     [Fact]
-    public async Task DepthError10092_MarksIneligibleAndRebalancesTape()
+    public async Task DepthError10092_FirstAttemptTriggersRetry()
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -88,7 +88,6 @@ public class MarketDataSubscriptionManagerTests
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
         await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
-        await classificationCache.PutAsync(new ContractClassification("CCC", 3, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
 
         var manager = new MarketDataSubscriptionManager(
             config,
@@ -102,8 +101,7 @@ public class MarketDataSubscriptionManagerTests
             var depthId = symbol switch
             {
                 "AAA" => 10,
-                "BBB" => 20,
-                _ => 30
+                _ => 20
             };
             return Task.FromResult<MarketDataSubscription?>(
                 new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
@@ -115,7 +113,7 @@ public class MarketDataSubscriptionManagerTests
         Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
 
         await manager.ApplyUniverseAsync(
-            new[] { "AAA", "BBB", "CCC" },
+            new[] { "AAA", "BBB" },
             Subscribe,
             Unsubscribe,
             EnableTbt,
@@ -128,8 +126,78 @@ public class MarketDataSubscriptionManagerTests
         Assert.True(manager.IsDepthEnabled("BBB"));
         Assert.True(manager.IsDepthEnabled("CCC"));
 
+        var plan = await manager.TryGetDepthRetryPlanAsync(10, CancellationToken.None);
+        Assert.NotNull(plan);
+        Assert.Equal("SMART", plan!.PreviousExchange);
+        Assert.Equal("NYSE", plan.NextExchange);
+
+        var classification = classificationCache.TryGetCached("AAA");
+        var eligibility = eligibilityCache.Get(classification, "AAA", DateTimeOffset.UtcNow);
+
+        Assert.True(manager.IsDepthEnabled("AAA"));
+        Assert.True(manager.IsTapeEnabled("AAA"));
+        Assert.False(manager.IsTapeEnabled("BBB"));
+        Assert.NotEqual(DepthEligibilityStatus.Ineligible, eligibility.Status);
+    }
+
+    [Fact]
+    public async Task DepthError10092_SecondAttemptConfirmsUnsupportedAndRebalancesTape()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MarketData:MaxLines"] = "10",
+                ["MarketData:EnableDepth"] = "true",
+                ["MarketData:EnableTape"] = "true",
+                ["MarketData:TickByTickMaxSymbols"] = "1"
+            })
+            .Build();
+
+        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
+        await classificationCache.PutAsync(new ContractClassification("BBB", 2, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
+
+        var manager = new MarketDataSubscriptionManager(
+            config,
+            NullLogger<MarketDataSubscriptionManager>.Instance,
+            classificationService,
+            eligibilityCache);
+
+        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
+        {
+            var depthId = symbol switch
+            {
+                "AAA" => 10,
+                _ => 20
+            };
+            return Task.FromResult<MarketDataSubscription?>(
+                new MarketDataSubscription(symbol, 1, requestDepth ? depthId : null, null, requestDepth ? "SMART" : null));
+        }
+
+        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
+        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(99);
+        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
+        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
+
+        await manager.ApplyUniverseAsync(
+            new[] { "AAA", "BBB" },
+            Subscribe,
+            Unsubscribe,
+            EnableTbt,
+            DisableTbt,
+            DisableDepth,
+            CancellationToken.None);
+
+        var plan = await manager.TryGetDepthRetryPlanAsync(10, CancellationToken.None);
+        Assert.NotNull(plan);
+
+        manager.ClearDepthRequest("AAA", 10);
+        manager.UpdateDepthRequest("AAA", 11, plan!.NextExchange);
+
         await manager.HandleIbkrErrorAsync(
-            requestId: 10,
+            requestId: 11,
             errorCode: 10092,
             errorMessage: "Deep market data not supported",
             disableDepthAsync: DisableDepth,
@@ -137,15 +205,70 @@ public class MarketDataSubscriptionManagerTests
             enableTickByTickAsync: EnableTbt,
             cancellationToken: CancellationToken.None);
 
-        await manager.HandleIbkrErrorAsync(
-            requestId: 20,
-            errorCode: 10092,
-            errorMessage: "Deep market data not supported",
-            disableDepthAsync: DisableDepth,
-            disableTickByTickAsync: DisableTbt,
-            enableTickByTickAsync: EnableTbt,
-            cancellationToken: CancellationToken.None);
+        var classification = classificationCache.TryGetCached("AAA");
+        var eligibility = eligibilityCache.Get(classification, "AAA", DateTimeOffset.UtcNow);
 
+        Assert.False(manager.IsDepthEnabled("AAA"));
+        Assert.False(manager.IsTapeEnabled("AAA"));
+        Assert.True(manager.IsTapeEnabled("BBB"));
+        Assert.Equal(DepthEligibilityStatus.Ineligible, eligibility.Status);
+    }
+
+    [Fact]
+    public async Task DepthError10092_SecondAttemptSuccessKeepsEligibility()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MarketData:MaxLines"] = "10",
+                ["MarketData:EnableDepth"] = "true",
+                ["MarketData:EnableTape"] = "true"
+            })
+            .Build();
+
+        var classificationCache = new ContractClassificationCache(config, NullLogger<ContractClassificationCache>.Instance);
+        var classificationService = new ContractClassificationService(config, NullLogger<ContractClassificationService>.Instance, classificationCache);
+        var eligibilityCache = new DepthEligibilityCache(config, NullLogger<DepthEligibilityCache>.Instance);
+        await classificationCache.PutAsync(new ContractClassification("AAA", 1, "STK", "NYSE", "USD", "COMMON", DateTimeOffset.UtcNow), CancellationToken.None);
+
+        var manager = new MarketDataSubscriptionManager(
+            config,
+            NullLogger<MarketDataSubscriptionManager>.Instance,
+            classificationService,
+            eligibilityCache);
+
+        Task<MarketDataSubscription?> Subscribe(string symbol, bool requestDepth, CancellationToken token)
+        {
+            return Task.FromResult<MarketDataSubscription?>(
+                new MarketDataSubscription(symbol, 1, requestDepth ? 10 : null, null, requestDepth ? "SMART" : null));
+        }
+
+        Task<bool> Unsubscribe(string _, CancellationToken __) => Task.FromResult(true);
+        Task<int?> EnableTbt(string _, CancellationToken __) => Task.FromResult<int?>(99);
+        Task<bool> DisableTbt(string _, CancellationToken __) => Task.FromResult(true);
+        Task<bool> DisableDepth(string _, CancellationToken __) => Task.FromResult(true);
+
+        await manager.ApplyUniverseAsync(
+            new[] { "AAA" },
+            Subscribe,
+            Unsubscribe,
+            EnableTbt,
+            DisableTbt,
+            DisableDepth,
+            CancellationToken.None);
+
+        var plan = await manager.TryGetDepthRetryPlanAsync(10, CancellationToken.None);
+        Assert.NotNull(plan);
+
+        manager.ClearDepthRequest("AAA", 10);
+        manager.UpdateDepthRequest("AAA", 11, plan!.NextExchange);
+
+        var classification = classificationCache.TryGetCached("AAA");
+        var eligibility = eligibilityCache.Get(classification, "AAA", DateTimeOffset.UtcNow);
+
+        Assert.True(manager.IsDepthEnabled("AAA"));
+        Assert.True(manager.IsTapeEnabled("AAA"));
+        Assert.NotEqual(DepthEligibilityStatus.Ineligible, eligibility.Status);
         // In new model: AAA and BBB lose depth+tick-by-tick but keep tape.
         // CCC still has depth+tick-by-tick.
         // No automatic rebalancing - that happens on next universe refresh.
