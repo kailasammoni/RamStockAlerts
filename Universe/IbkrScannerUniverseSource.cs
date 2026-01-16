@@ -3,6 +3,7 @@ using IBApi;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using RamStockAlerts.Services;
 using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Universe;
@@ -12,9 +13,11 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private readonly IConfiguration _configuration;
     private readonly ILogger<IbkrScannerUniverseSource> _logger;
     private readonly ContractClassificationService _classificationService;
-    private static int _nextRequestId = 5000;
+    private readonly IRequestIdSource _requestIdSource;
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
+    private DateTime _lastScanTimeUtc = DateTime.MinValue;
+    private static readonly TimeSpan MinScanInterval = TimeSpan.FromMinutes(5);
     private readonly int _startHourEt;
     private readonly int _startMinuteEt;
     private readonly int _endHourEt;
@@ -24,7 +27,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     public IbkrScannerUniverseSource(
         IConfiguration configuration,
         ILogger<IbkrScannerUniverseSource> logger,
-        ContractClassificationService classificationService)
+        ContractClassificationService classificationService,
+        IRequestIdSource requestIdSource)
     {
         _startHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartHour", 7), 0, 23);
         _startMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartMinute", 0), 0, 59);
@@ -35,11 +39,27 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         _configuration = configuration;
         _logger = logger;
         _classificationService = classificationService ?? throw new ArgumentNullException(nameof(classificationService));
+        _requestIdSource = requestIdSource ?? throw new ArgumentNullException(nameof(requestIdSource));
     }
 
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Rate limit: Don't scan more than once per MinScanInterval
+        lock (_cacheLock)
+        {
+            var timeSinceLastScan = DateTime.UtcNow - _lastScanTimeUtc;
+            if (timeSinceLastScan < MinScanInterval && _lastUniverse.Count > 0)
+            {
+                _logger.LogInformation(
+                    "[IBKR Scanner] Rate limit: Last scan was {Seconds:F1}s ago (min {MinSeconds}s). Returning cached count={Count}.",
+                    timeSinceLastScan.TotalSeconds,
+                    MinScanInterval.TotalSeconds,
+                    _lastUniverse.Count);
+                return _lastUniverse;
+            }
+        }
 
         if (!IsWithinOperatingWindow())
         {
@@ -54,13 +74,9 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             return cached;
         }
 
-        var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
-        var port = _configuration.GetValue<int?>("IBKR:Port")
-                   ?? _configuration.GetValue<int?>("Ibkr:Port")
-                   ?? 7496;
-        var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId")
-                         ?? _configuration.GetValue<int?>("Ibkr:ClientId")
-                         ?? 1;
+        var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
+        var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
+        var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
         var clientId = _configuration.GetValue<int?>("Universe:IbkrScanner:ClientId") ?? baseClientId + 1;
 
         var instrument = _configuration["Universe:IbkrScanner:Instrument"] ?? "STK";
@@ -114,6 +130,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                     lock (_cacheLock)
                     {
                         _lastUniverse = universe;
+                        _lastScanTimeUtc = DateTime.UtcNow;
                     }
                 }
 
@@ -146,7 +163,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         double? marketCapBelow,
         CancellationToken cancellationToken)
     {
-        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var requestId = _requestIdSource.NextId();
         var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<ScannerCandidate>();
         var completion = new TaskCompletionSource<IReadOnlyList<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -238,9 +255,11 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             var universe = await completion.Task;
 
             // Preload classifications so downstream filters have stock type + primary exchange.
+            _logger.LogInformation("[IBKR Scanner] Starting classification prefetch for {Count} symbols", universe.Count);
             try
             {
                 await _classificationService.GetClassificationsAsync(universe, cancellationToken);
+                _logger.LogInformation("[IBKR Scanner] Classification prefetch completed for {Count} symbols", universe.Count);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -409,7 +428,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
             var top = result.Take(10).ToArray();
             var topDisplay = top.Length == 0 ? "n/a" : string.Join(", ", top);
-            _logger.LogInformation("[IBKR Scanner] Received {Count} symbols (top10={Top})", result.Count, topDisplay);
+            _logger.LogInformation("[IBKR Scanner] Scanner subscription completed with {Count} symbols (top10={Top})", result.Count, topDisplay);
 
             _completion.TrySetResult(result);
         }
@@ -439,7 +458,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
                 var top = result.Take(10).ToArray();
                 var topDisplay = top.Length == 0 ? "n/a" : string.Join(", ", top);
-                _logger.LogInformation("[IBKR Scanner] Connection closed after receiving {Count} symbols (top10={Top})", result.Count, topDisplay);
+                _logger.LogInformation("[IBKR Scanner] Connection closed, scanner returned {Count} symbols (top10={Top})", result.Count, topDisplay);
 
                 _completion.TrySetResult(result);
             }
@@ -502,7 +521,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
         public void contractDetailsEnd(int reqId) { }
 
-        public void execDetails(int reqId, Contract contract, Execution execution) { }
+        public void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
         public void execDetailsEnd(int reqId) { }
         public void commissionReport(CommissionReport commissionReport) { }
         public void fundamentalData(int reqId, string data) { }

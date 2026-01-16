@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using RamStockAlerts.Services;
 using RamStockAlerts.Services.Universe;
 using RamStockAlerts.Tests.Helpers;
 using RamStockAlerts.Tests.TestDoubles;
@@ -92,7 +93,8 @@ public class DepthUniverseFilterTests
             .AddInMemoryCollection(new Dictionary<string, string?>())
             .Build();
         var cache = new ContractClassificationCache(configDefault, NullLogger<ContractClassificationCache>.Instance);
-        var service = new ContractClassificationService(configDefault, NullLogger<ContractClassificationService>.Instance, cache);
+        var requestIdSource = new IbkrRequestIdSource(configDefault);
+        var service = new ContractClassificationService(configDefault, NullLogger<ContractClassificationService>.Instance, cache, requestIdSource);
         var filterDefault = new DepthUniverseFilter(service, configDefault, NullLogger<DepthUniverseFilter>.Instance);
 
         var now = DateTimeOffset.UtcNow;
@@ -108,7 +110,8 @@ public class DepthUniverseFilterTests
             })
             .Build();
         var cache2 = new ContractClassificationCache(configOverride, NullLogger<ContractClassificationCache>.Instance);
-        var service2 = new ContractClassificationService(configOverride, NullLogger<ContractClassificationService>.Instance, cache2);
+        var requestIdSource2 = new IbkrRequestIdSource(configOverride);
+        var service2 = new ContractClassificationService(configOverride, NullLogger<ContractClassificationService>.Instance, cache2, requestIdSource2);
         await cache2.PutAsync(new ContractClassification("UNK", 1, "STK", "NYSE", "USD", "UNKNOWN", now), CancellationToken.None);
         var filterOverride = new DepthUniverseFilter(service2, configOverride, NullLogger<DepthUniverseFilter>.Instance);
 

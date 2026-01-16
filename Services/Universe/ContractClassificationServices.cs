@@ -4,6 +4,7 @@ using System.Linq;
 using IBApi;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using RamStockAlerts.Services;
 
 namespace RamStockAlerts.Services.Universe;
 
@@ -201,11 +202,10 @@ public sealed class ContractClassificationCache
 
 public sealed class ContractClassificationService
 {
-    private static int _nextRequestId = 60_000;
-
     private readonly IConfiguration _configuration;
     private readonly ILogger<ContractClassificationService> _logger;
     private readonly ContractClassificationCache _cache;
+    private readonly IRequestIdSource _requestIdSource;
     private readonly TimeSpan _minInterval;
     private readonly SemaphoreSlim _throttle = new(1, 1);
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
@@ -214,11 +214,13 @@ public sealed class ContractClassificationService
     public ContractClassificationService(
         IConfiguration configuration,
         ILogger<ContractClassificationService> logger,
-        ContractClassificationCache cache)
+        ContractClassificationCache cache,
+        IRequestIdSource requestIdSource)
     {
         _configuration = configuration;
         _logger = logger;
         _cache = cache;
+        _requestIdSource = requestIdSource;
         var minSeconds = Math.Max(1, configuration.GetValue("Universe:ContractDetails:MinIntervalSeconds", 1));
         _minInterval = TimeSpan.FromSeconds(minSeconds);
     }
@@ -288,13 +290,9 @@ public sealed class ContractClassificationService
         
         await _connectionLock.WaitAsync(cancellationToken);
         var classifications = new List<ContractClassification>();
-        var host = _configuration["IBKR:Host"] ?? _configuration["Ibkr:Host"] ?? "127.0.0.1";
-        var port = _configuration.GetValue<int?>("IBKR:Port")
-                   ?? _configuration.GetValue<int?>("Ibkr:Port")
-                   ?? 7496;
-        var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId")
-                         ?? _configuration.GetValue<int?>("Ibkr:ClientId")
-                         ?? 1;
+        var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
+        var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
+        var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
         var clientId = _configuration.GetValue<int?>("Universe:IbkrContract:ClientId") ?? baseClientId + 2;
 
         var readerSignal = new EReaderMonitorSignal();
@@ -326,7 +324,7 @@ public sealed class ContractClassificationService
             {
                 await EnforceThrottleAsync(cancellationToken);
 
-                var requestId = Interlocked.Increment(ref _nextRequestId);
+                var requestId = _requestIdSource.NextId();
                 var task = wrapper.Register(requestId, symbol);
 
                 var contract = new Contract
@@ -560,7 +558,7 @@ public sealed class ContractClassificationService
         public void accountSummaryEnd(int reqId) { }
         public void nextValidId(int orderId) { }
         public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
-        public void execDetails(int reqId, Contract contract, Execution execution) { }
+        public void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
         public void execDetailsEnd(int reqId) { }
         public void commissionReport(CommissionReport commissionReport) { }
         public void fundamentalData(int reqId, string data) { }
