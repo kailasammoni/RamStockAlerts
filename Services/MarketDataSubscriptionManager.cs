@@ -1416,7 +1416,6 @@ public sealed class MarketDataSubscriptionManager
         var triageLookbackMs = _configuration.GetValue("MarketData:TriageLookbackMs", 15_000);
         var maxSpreadPct = _configuration.GetValue("MarketData:TriageMaxSpreadPct", 0.05m);
         var minTradesInWindow = _configuration.GetValue("MarketData:TriageMinTradesInWindow", 1);
-        var minQuoteUpdatesInWindow = _configuration.GetValue("MarketData:TriageMinQuoteUpdatesInWindow", 0);
 
         for (var i = 0; i < candidates.Count; i++)
         {
@@ -1508,7 +1507,7 @@ public sealed class MarketDataSubscriptionManager
             var rate3Score = Clamp01(rate3s / 5m);
             var rate15Score = Clamp01(rate15s / 2m);
             var dollarScore = Clamp01((decimal)Math.Log10((double)(1m + dollarVol15s)) / 4m);
-            var spreadScore = spread.HasValue && mid > 0m
+            var spreadScore = spread.HasValue
                 ? Clamp01((0.02m - (spread.Value / mid)) / 0.02m)
                 : 0.5m;
             var volatilityScore = Clamp01(volatilityRangePct / 0.005m); // saturate around 50 bps move
@@ -1834,17 +1833,11 @@ public sealed class MarketDataSubscriptionManager
             {
                 reason = "TapeDepthIdle";
             }
-            else if (!warmupMet && (tapeIdle || depthIdle))
-            {
-                reason = "WarmupNotMet";
-            }
-            else if (tapeIdle)
-            {
-                reason = "TapeIdle";
-            }
             else
             {
-                reason = "DepthIdle";
+                // Given the outer condition and the failed (tapeIdle && depthIdle) check,
+                // the only remaining reachable case is !warmupMet && (tapeIdle || depthIdle).
+                reason = "WarmupNotMet";
             }
             shouldEvict = true;
         }
