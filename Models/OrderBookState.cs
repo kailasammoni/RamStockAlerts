@@ -526,16 +526,7 @@ public sealed class OrderBookState
     }
 
     /// <summary>
-    /// Record a trade print using single timestamp for both event and receipt time.
-    /// Used when event time is unknown (e.g., market data LAST callbacks).
-    /// </summary>
-    [Obsolete("Use RecordTrade(eventMs, recvMs, price, size) to properly separate event and receipt times")]
-    public void RecordTrade(long timestampMs, double price, decimal size)
-    {
-        RecordTrade(timestampMs, timestampMs, price, size);
-    }
 
-    /// <summary>
     /// Remove trades older than a provided timestamp (inclusive).
     /// </summary>
     public void PruneTrades(long windowStartMs)

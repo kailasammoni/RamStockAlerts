@@ -75,7 +75,6 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = false };
 
     // Connection/subscription control flags
-    private volatile bool _connected;
     private volatile bool _connectedLogEmitted;
     private volatile bool _subscriptionsStarted;
     private volatile bool _everConnected;
@@ -442,7 +441,6 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
             _logger.LogInformation("[IBKR Recorder] Connected to TWS. nextValidId={orderId}", orderId);
         }
 
-        _connected = true;
         _everConnected = true;
 
         // Kick off one-time setup: contract details then subscriptions

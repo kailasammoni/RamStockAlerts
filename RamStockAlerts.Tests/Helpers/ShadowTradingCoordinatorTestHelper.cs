@@ -22,7 +22,10 @@ internal static class ShadowTradingCoordinatorTestHelper
             ["MarketData:EnableDepth"] = "true",
             ["MarketData:EnableTape"] = "true",
             ["MarketData:MaxLines"] = "10",
-            ["MarketData:TickByTickMaxSymbols"] = "1"
+            ["MarketData:TickByTickMaxSymbols"] = "1",
+            // Set longer triage lookback (30s) so symbols with old trades still pass triage eligibility,
+            // while keeping warmup window at 15s to test "TapeNotWarmedUp" scenarios
+            ["MarketData:TriageLookbackMs"] = "30000"
         };
 
         if (overrides != null)
@@ -40,9 +43,11 @@ internal static class ShadowTradingCoordinatorTestHelper
 
     public static (ShadowTradingCoordinator Coordinator, TestShadowTradeJournal Journal, OrderFlowMetrics Metrics) BuildCoordinator(
         IConfiguration config,
-        MarketDataSubscriptionManager manager)
+        MarketDataSubscriptionManager manager,
+        OrderFlowMetrics? sharedMetrics = null)
     {
-        var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
+        // Use shared metrics if provided (to share with subscription manager), otherwise create new instance
+        var metrics = sharedMetrics ?? new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
         var journal = new TestShadowTradeJournal();
         var scarcity = new ScarcityController(config);
@@ -58,7 +63,7 @@ internal static class ShadowTradingCoordinatorTestHelper
         return (coordinator, journal, metrics);
     }
 
-    public static async Task<MarketDataSubscriptionManager> CreateSubscriptionManagerAsync(
+    public static async Task<(MarketDataSubscriptionManager Manager, OrderFlowMetrics Metrics)> CreateSubscriptionManagerWithMetricsAsync(
         IConfiguration config,
         string symbol,
         bool enableTickByTick)
@@ -72,6 +77,17 @@ internal static class ShadowTradingCoordinatorTestHelper
             CancellationToken.None);
 
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
+        
+        // Populate metrics with a book snapshot so triage scoring can find it and mark symbol as eligible
+        // Use a trade that's old enough to pass triage (within TriageLookbackMs=30s by default in test config)
+        // but outside the warmup window (TapeWarmupWindowMs=15s) to test "TapeNotWarmedUp" scenarios
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var book = new OrderBookState(symbol);
+        book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Bid, DepthOperation.Insert, 100.00m, 200m, 0, nowMs));
+        book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Ask, DepthOperation.Insert, 100.05m, 200m, 0, nowMs));
+        // Add trade 20 seconds ago - passes triage (30s lookback) but fails warmup (15s window)
+        book.RecordTrade(nowMs - 20_000, nowMs - 20_000, 100.02, 100m);
+        metrics.UpdateMetrics(book, nowMs);
 
         var manager = new MarketDataSubscriptionManager(
             config,
@@ -105,6 +121,15 @@ internal static class ShadowTradingCoordinatorTestHelper
         // specific gate rejection logic without being blocked by ActiveUniverse gate.
         manager.SetActiveUniverse(new[] { symbol }, "TestSetup");
 
+        return (manager, metrics);
+    }
+
+    public static async Task<MarketDataSubscriptionManager> CreateSubscriptionManagerAsync(
+        IConfiguration config,
+        string symbol,
+        bool enableTickByTick)
+    {
+        var (manager, _) = await CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick);
         return manager;
     }
 
@@ -113,6 +138,8 @@ internal static class ShadowTradingCoordinatorTestHelper
         var book = new OrderBookState(symbol);
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Bid, DepthOperation.Insert, 100.00m, 200m, 0, nowMs));
         book.ApplyDepthUpdate(new DepthUpdate(symbol, DepthSide.Ask, DepthOperation.Insert, 100.05m, 200m, 0, nowMs));
+        // Add a trade to make the symbol eligible for depth subscriptions (triage eligibility check)
+        book.RecordTrade(nowMs - 5000, nowMs - 5000, 100.02, 100m);
         return book;
     }
 

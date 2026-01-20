@@ -76,7 +76,8 @@ if (dailyRollupRequested)
         // Register rotation service
         reporterServices.AddSingleton<IJournalRotationService, FileBasedJournalRotationService>();
         
-        var sp = reporterServices.BuildServiceProvider();
+        // Use DI container directly instead of building intermediate ServiceProvider
+        using var sp = reporterServices.BuildServiceProvider();
         var labeler = sp.GetRequiredService<ITradeOutcomeLabeler>();
         var store = sp.GetRequiredService<IOutcomeSummaryStore>();
         var rotationService = sp.GetRequiredService<IJournalRotationService>();
@@ -225,9 +226,6 @@ builder.Services.AddScoped<MultiChannelNotificationService>();
 builder.Services.AddScoped<SignalService>();
 builder.Services.AddScoped<AlertThrottlingService>();
 builder.Services.AddSingleton<AlpacaTradingClient>();
-// Keep DiscordNotificationService for backward compatibility (legacy code may use it)
-builder.Services.AddHttpClient<DiscordNotificationService>();
-builder.Services.AddScoped<DiscordNotificationService>();
 builder.Services.AddSingleton<SignalValidator>();
 builder.Services.AddSingleton<TradeBlueprint>();
 builder.Services.AddSingleton<CircuitBreakerService>();

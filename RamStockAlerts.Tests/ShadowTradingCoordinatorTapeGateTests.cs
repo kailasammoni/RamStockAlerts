@@ -15,8 +15,8 @@ public class ShadowTradingCoordinatorTapeGateTests
     {
         var config = ShadowTradingCoordinatorTestHelper.BuildConfig();
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: false);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -36,8 +36,8 @@ public class ShadowTradingCoordinatorTapeGateTests
     {
         var config = ShadowTradingCoordinatorTestHelper.BuildConfig();
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: true);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+        var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
+        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -61,8 +61,8 @@ public class ShadowTradingCoordinatorTapeGateTests
             ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: false);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -84,8 +84,8 @@ public class ShadowTradingCoordinatorTapeGateTests
             ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: false);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var invalidBook = new OrderBookState(symbol);
 
@@ -111,8 +111,8 @@ public class ShadowTradingCoordinatorTapeGateTests
             ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: true);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
+            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -137,8 +137,8 @@ public class ShadowTradingCoordinatorTapeGateTests
             ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: true);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
+            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -151,7 +151,7 @@ public class ShadowTradingCoordinatorTapeGateTests
         Assert.Contains("TapeNotWarmedUp:warmupMinTrades=1", entry.DataQualityFlags ?? new List<string>());
         Assert.Contains("TapeNotWarmedUp:warmupWindowMs=15000", entry.DataQualityFlags ?? new List<string>());
 
-        book.RecordTrade(nowMs - 1000, 100.10, 1m);
+        book.RecordTrade(nowMs - 1000, nowMs - 1000, 100.10, 1m);
         metrics.UpdateMetrics(book, nowMs);
 
         coordinator.ProcessSnapshot(book, nowMs);
@@ -168,8 +168,8 @@ public class ShadowTradingCoordinatorTapeGateTests
             ["ShadowTrading:GatingRejectSuppressionSeconds"] = "0.01"
         });
         var symbol = "TEST";
-        var manager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(config, symbol, enableTickByTick: false);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager);
+            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);

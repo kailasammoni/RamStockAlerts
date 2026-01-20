@@ -307,7 +307,7 @@ public class BracketTemplateBuilderTests
         Assert.Null(bracket.TakeProfit);
 
         // Check rejection reason in tags
-        Assert.True(bracket.Entry.Tags.ContainsKey("RejectionReason"));
+        Assert.True(bracket.Entry!.Tags.ContainsKey("RejectionReason"));
         Assert.Equal("SizingTooSmall", bracket.Entry.Tags["RejectionReason"]);
     }
 
@@ -337,7 +337,7 @@ public class BracketTemplateBuilderTests
         Assert.Equal(0m, bracket.Entry.Quantity);
         Assert.Null(bracket.StopLoss);
         Assert.Null(bracket.TakeProfit);
-        Assert.True(bracket.Entry.Tags.ContainsKey("RejectionReason"));
+        Assert.True(bracket.Entry!.Tags.ContainsKey("RejectionReason"));
     }
 
     #endregion
@@ -405,7 +405,7 @@ public class BracketTemplateBuilderTests
 
         // Assert - Check tags include template and distances
         Assert.NotNull(bracket.Entry);
-        Assert.True(bracket.Entry.Tags.ContainsKey("Template"));
+        Assert.True(bracket.Entry!.Tags.ContainsKey("Template"));
         Assert.Equal("VOL_B", bracket.Entry.Tags["Template"]);
         Assert.True(bracket.Entry.Tags.ContainsKey("StopDistance"));
         Assert.True(bracket.Entry.Tags.ContainsKey("ProfitDistance"));
