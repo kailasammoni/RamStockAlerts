@@ -51,6 +51,8 @@ public sealed class ShadowTradingCoordinator
     private readonly bool _tapeWatchlistEnabled;
     private readonly long _tapeWatchlistRecheckIntervalMs; // 5000ms = 5 sec
     private readonly System.Threading.Timer _watchlistTimer;
+    private DateTimeOffset _lastSnapshotProcessedUtc = DateTimeOffset.MinValue;
+    public DateTimeOffset? LastSnapshotProcessedUtc => _lastSnapshotProcessedUtc == DateTimeOffset.MinValue ? null : _lastSnapshotProcessedUtc;
 
     public ShadowTradingCoordinator(
         IConfiguration configuration,
@@ -125,6 +127,8 @@ public sealed class ShadowTradingCoordinator
             LogInactiveSymbolSkipThrottled(book.Symbol, nowMs);
             return;
         }
+
+        _lastSnapshotProcessedUtc = DateTimeOffset.UtcNow;
 
         // Phase 3.1: Monitor post-signal quality for accepted signals
         MonitorPostSignalQuality(book, nowMs);
@@ -224,6 +228,20 @@ public sealed class ShadowTradingCoordinator
         _lastProcessedSnapshotMs[book.Symbol] = snapshot.TimestampMs;
 
         var decision = _validator.EvaluateDecision(book, nowMs);
+        _logger.LogDebug(
+            "[SignalEval] {Symbol} candidate={HasCandidate} accepted={Accepted} reason={Reason} cooldownRemaining={Cooldown:F1}s hourlyAlerts={Hourly}",
+            book.Symbol,
+            decision.HasCandidate,
+            decision.Accepted,
+            decision.RejectionReason ?? "None",
+            _validator.GetCooldownRemainingSeconds(book.Symbol, nowMs),
+            _validator.GetAlertCountInLastHour(nowMs));
+
+        if (decision.Signal != null)
+        {
+            _logger.LogDebug("[SignalEval] Metrics for {Symbol}: {SignalDetails}", decision.Signal.Symbol, decision.Signal);
+        }
+
         if (!decision.HasCandidate || decision.Snapshot == null)
         {
             return;

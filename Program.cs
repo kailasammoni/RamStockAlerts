@@ -1,3 +1,4 @@
+using System;
 using Microsoft.EntityFrameworkCore;
 using RamStockAlerts.Data;
 using RamStockAlerts.Engine;
@@ -42,6 +43,12 @@ string ResolveMode(IConfiguration config)
 
 
 var mode = ResolveMode(initialConfig).ToLowerInvariant();
+
+void LogSessionStart(string label) =>
+    Log.Information("[Session] Starting {Label} session at {Time:O}", label, DateTimeOffset.UtcNow);
+
+void LogSessionEnd(string label) =>
+    Log.Information("[Session] Ending {Label} session at {Time:O}", label, DateTimeOffset.UtcNow);
 
 var dailyRollupRequested = initialConfig.GetValue("Report:DailyRollup", false);
 if (dailyRollupRequested)
@@ -98,6 +105,7 @@ if (mode == "record")
 {
     // RECORD MODE: Simple IBKR data recorder (writes L2 + tape to JSONL files)
     Log.Information("Starting in RECORD mode - IBKR data will be written to logs/");
+    LogSessionStart("Record mode");
     
     var hostBuilder = Host.CreateDefaultBuilder(args)
         .UseSerilog()
@@ -108,6 +116,7 @@ if (mode == "record")
     
     var host = hostBuilder.Build();
     await host.RunAsync();
+    LogSessionEnd("Record mode");
     return;
 }
 
@@ -115,6 +124,7 @@ if (mode == "diagnostics")
 {
     // DIAGNOSTICS MODE: Test subscription health for symbols on various exchanges
     Log.Information("Starting in DIAGNOSTICS mode - testing subscription health");
+    LogSessionStart("Diagnostics mode");
     
     var hostBuilder = Host.CreateDefaultBuilder(args)
         .UseSerilog()
@@ -129,12 +139,14 @@ if (mode == "diagnostics")
     
     var host = hostBuilder.Build();
     await host.RunAsync();
+    LogSessionEnd("Diagnostics mode");
     return;
 }
 
 if (mode == "replay")
 {
     Log.Information("Starting in REPLAY mode - deterministic state reconstruction");
+    LogSessionStart("Replay mode");
 
     var hostBuilder = Host.CreateDefaultBuilder(args)
         .UseSerilog()
@@ -145,6 +157,7 @@ if (mode == "replay")
 
     var host = hostBuilder.Build();
     await host.RunAsync();
+    LogSessionEnd("Replay mode");
     return;
 }
 
@@ -158,15 +171,17 @@ var tradingMode = builder.Configuration.GetValue<string>("TradingMode") ?? strin
 var alertsEnabled = builder.Configuration.GetValue("AlertsEnabled", true);
 var recordBlueprints = builder.Configuration.GetValue("RecordBlueprints", true);
 var isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
+var sessionLabel = isShadowMode ? "Shadow trading" : "Trading";
 var universeSource = builder.Configuration.GetValue<string>("Universe:Source");
 var isLegacyUniverse = string.IsNullOrWhiteSpace(universeSource)
     || string.Equals(universeSource, "Legacy", StringComparison.OrdinalIgnoreCase);
 
-if (isShadowMode)
-{
-    Log.Information("TradingMode=Shadow (AlertsEnabled={AlertsEnabled}, RecordBlueprints={RecordBlueprints})",
-        alertsEnabled, recordBlueprints);
-}
+ if (isShadowMode)
+ {
+     Log.Information("TradingMode=Shadow (AlertsEnabled={AlertsEnabled}, RecordBlueprints={RecordBlueprints})",
+         alertsEnabled, recordBlueprints);
+ }
+ LogSessionStart(sessionLabel);
 
 // Add Application Insights
 var appInsightsConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
@@ -292,6 +307,12 @@ else
 // Register order flow metrics and signal validation (IBKR Phase 3-4)
 builder.Services.AddSingleton<OrderFlowMetrics>();
 builder.Services.AddSingleton<OrderFlowSignalValidator>();
+
+if (OperatingSystem.IsWindows())
+{
+    builder.Services.AddHostedService<SystemSleepPreventer>();
+    Log.Information("[System] Windows keep-awake helper registered.");
+}
 
 // Register outcome labeling and summary services (Phase 1)
 var outcomesFilePath = builder.Configuration.GetValue<string>("Outcomes:FilePath")
@@ -449,6 +470,7 @@ var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
 lifetime.ApplicationStopping.Register(() =>
 {
     Log.Information("Application is stopping, initiating graceful shutdown...");
+    LogSessionEnd(sessionLabel);
 });
 
 lifetime.ApplicationStopped.Register(() =>

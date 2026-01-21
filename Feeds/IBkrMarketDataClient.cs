@@ -176,6 +176,8 @@ public class IBkrMarketDataClient : BackgroundService
                     DisableDepthAsync,
                     stoppingToken);
 
+                LogMarketDataFeedHeartbeat(refreshInterval);
+
                 await Task.Delay(refreshInterval, stoppingToken);
             }
         }
@@ -767,6 +769,22 @@ public class IBkrMarketDataClient : BackgroundService
 
         var ageMs = nowMs - mostRecentTickMs.Value;
         return ageMs / 1000.0;
+    }
+
+    private void LogMarketDataFeedHeartbeat(TimeSpan refreshInterval)
+    {
+        var stats = _subscriptionManager.GetSubscriptionStats();
+        var lastTickAge = GetLastTickAgeSeconds();
+        var nextRefreshAt = DateTimeOffset.UtcNow + refreshInterval;
+        var tickAgeDisplay = lastTickAge.HasValue ? $"{lastTickAge.Value:F1}s" : "no ticks yet";
+
+        _logger.LogInformation(
+            "[MarketData] Feed active: tape={TapeCount} subs, depth={DepthCount}, tickByTick={TickCount}, last tick age={TickAge}, next refresh at {NextRefresh:O}.",
+            stats.TotalSubscriptions,
+            stats.DepthEnabled,
+            stats.TickByTickEnabled,
+            tickAgeDisplay,
+            nextRefreshAt);
     }
 
     /// <summary>

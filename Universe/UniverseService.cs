@@ -20,6 +20,7 @@ public sealed class UniverseService
 
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private string _lastSource = "unknown";
+    private DateTimeOffset? _lastRefreshUtc;
     public UniverseService(
         IConfiguration configuration,
         IMemoryCache cache,
@@ -36,10 +37,17 @@ public sealed class UniverseService
         _depthFilter = depthFilter;
     }
 
+    public DateTimeOffset? LastRefreshUtc => _lastRefreshUtc;
+
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
     {
         if (_cache.TryGetValue(CacheKey, out IReadOnlyList<string>? cached) && cached is not null)
         {
+            var cacheNextRefreshAt = DateTimeOffset.UtcNow + CacheTtl;
+            _logger.LogInformation(
+                "[UniverseRefresh] Cache hit: returning {Count} symbols (next refresh at {NextRefresh:O}).",
+                cached.Count,
+                cacheNextRefreshAt);
             return cached;
         }
 
@@ -48,11 +56,18 @@ public sealed class UniverseService
         {
             if (_cache.TryGetValue(CacheKey, out cached) && cached is not null)
             {
+                var cacheNextRefreshAt = DateTimeOffset.UtcNow + CacheTtl;
+                _logger.LogInformation(
+                    "[UniverseRefresh] Cache hit: returning {Count} symbols (next refresh at {NextRefresh:O}).",
+                    cached.Count,
+                    cacheNextRefreshAt);
                 return cached;
             }
 
             var sourceLabel = ResolveSourceLabel();
             var sourceKey = sourceLabel.ToLowerInvariant();
+            var scanStartUtc = DateTimeOffset.UtcNow;
+            _logger.LogInformation("[UniverseRefresh] Initiating {Source} scan.", sourceLabel);
             IReadOnlyList<string> universe;
 
             try
@@ -123,6 +138,17 @@ public sealed class UniverseService
             }
 
             _cache.Set(CacheKey, universe, CacheTtl);
+
+            var scanEndUtc = DateTimeOffset.UtcNow;
+            _lastRefreshUtc = scanEndUtc;
+            var elapsedMs = (scanEndUtc - scanStartUtc).TotalMilliseconds;
+            var nextRefreshAt = scanEndUtc + CacheTtl;
+            _logger.LogInformation(
+                "[UniverseRefresh] Completed {Source} scan in {ElapsedMs}ms with {Count} symbols (next refresh at {NextRefresh:O}).",
+                sourceLabel,
+                elapsedMs,
+                universe.Count,
+                nextRefreshAt);
 
             if (universe.Count > 0)
             {

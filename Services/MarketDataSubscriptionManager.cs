@@ -341,6 +341,10 @@ public sealed class MarketDataSubscriptionManager
                     reason,
                     _activeUniverse.Count);
             }
+            _logger.LogInformation(
+                "[Coordinator] Active universe updated: {ActiveCount} symbols active (reason={Reason}).",
+                _activeUniverse.Count,
+                reason);
         }
     }
 

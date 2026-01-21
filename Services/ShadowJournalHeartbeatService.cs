@@ -21,10 +21,15 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
     private readonly OrderFlowMetrics _metrics;
     private readonly ILogger<ShadowJournalHeartbeatService> _logger;
     private readonly IBkrMarketDataClient _ibkrClient;
+    private readonly ShadowTradingCoordinator _coordinator;
     private readonly bool _enabled;
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
     private readonly double _disconnectThresholdSeconds;
     private readonly TimeSpan _disconnectCheckInterval;
+    private DateTimeOffset _lastHeartbeatUtc = DateTimeOffset.MinValue;
+    private static readonly TimeSpan HeartbeatDelayTolerance = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan UniverseRefreshWarningThreshold = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan CoordinatorInactivityThreshold = TimeSpan.FromMinutes(5);
 
     public ShadowJournalHeartbeatService(
         IConfiguration configuration,
@@ -33,6 +38,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         UniverseService universeService,
         OrderFlowMetrics metrics,
         IBkrMarketDataClient ibkrClient,
+        ShadowTradingCoordinator shadowTradingCoordinator,
         ILogger<ShadowJournalHeartbeatService> logger)
     {
         _journal = journal;
@@ -40,6 +46,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         _universeService = universeService;
         _metrics = metrics;
         _ibkrClient = ibkrClient;
+        _coordinator = shadowTradingCoordinator;
         _logger = logger;
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
         _disconnectThresholdSeconds = configuration.GetValue("IBKR:DisconnectThresholdSeconds", 30.0);
@@ -67,7 +74,24 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         var interval = TimeSpan.FromSeconds(60);
         while (!stoppingToken.IsCancellationRequested)
         {
+            var now = DateTimeOffset.UtcNow;
+            if (_lastHeartbeatUtc != DateTimeOffset.MinValue)
+            {
+                var gap = now - _lastHeartbeatUtc;
+                var expectedThreshold = interval + HeartbeatDelayTolerance;
+                if (gap > expectedThreshold)
+                {
+                    _logger.LogWarning(
+                        "[ShadowHeartbeat] Heartbeat delay detected: last heartbeat was {Gap} ago (expected about {Expected}). Possible application stall.",
+                        gap,
+                        expectedThreshold);
+                }
+            }
+
             await WriteHeartbeatAsync(stoppingToken);
+            _lastHeartbeatUtc = DateTimeOffset.UtcNow;
+            CheckUniverseRefreshLiveness(_lastHeartbeatUtc);
+            CheckCoordinatorLiveness(_lastHeartbeatUtc);
             await Task.Delay(interval, stoppingToken);
         }
 
@@ -169,6 +193,42 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         }
 
         return (minDepthAge, minTapeAge, bookValidAny, tapeRecentAny);
+    }
+
+    private void CheckUniverseRefreshLiveness(DateTimeOffset now)
+    {
+        var lastRefresh = _universeService.LastRefreshUtc;
+        if (!lastRefresh.HasValue)
+        {
+            return;
+        }
+
+        var age = now - lastRefresh.Value;
+        if (age > UniverseRefreshWarningThreshold)
+        {
+            _logger.LogWarning(
+                "[ShadowHeartbeat] Universe refresh overdue: last refresh was {Age} ago (at {LastRefresh:O}).",
+                age,
+                lastRefresh.Value);
+        }
+    }
+
+    private void CheckCoordinatorLiveness(DateTimeOffset now)
+    {
+        var lastProcessed = _coordinator.LastSnapshotProcessedUtc;
+        if (!lastProcessed.HasValue)
+        {
+            return;
+        }
+
+        var age = now - lastProcessed.Value;
+        if (age > CoordinatorInactivityThreshold)
+        {
+            _logger.LogWarning(
+                "[ShadowHeartbeat] Coordinator inactivity: no snapshots processed for {Age} (last at {LastProcessed:O}).",
+                age,
+                lastProcessed.Value);
+        }
     }
 
     private async Task MonitorIbkrConnectionAsync(CancellationToken stoppingToken)
