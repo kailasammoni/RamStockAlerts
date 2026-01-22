@@ -289,7 +289,6 @@ public sealed class ContractClassificationService
         _logger.LogInformation("[IBKR ContractDetails] FetchFromIbkrAsync called for {Count} symbols", symbols.Count);
         
         await _connectionLock.WaitAsync(cancellationToken);
-        var classifications = new List<ContractClassification>();
         var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
         var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
         var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
@@ -299,31 +298,34 @@ public sealed class ContractClassificationService
         var wrapper = new ContractDetailsWrapper(_logger);
         var client = new EClientSocket(wrapper, readerSignal);
 
-        _logger.LogInformation(
-            "[IBKR ContractDetails] Connecting to {Host}:{Port} clientId={ClientId}",
-            host,
-            port,
-            clientId);
-
-        client.eConnect(host, port, clientId);
-
-        if (!client.IsConnected())
-        {
-            _logger.LogWarning("[IBKR ContractDetails] Failed to connect to {Host}:{Port}", host, port);
-            return classifications;
-        }
-
-        client.startApi();
-
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var pumpTask = Task.Run(() => ProcessMessages(client, readerSignal, wrapper, linkedCts.Token), linkedCts.Token);
-
         try
         {
+            _logger.LogInformation(
+                "[IBKR ContractDetails] Connecting to {Host}:{Port} clientId={ClientId}",
+                host,
+                port,
+                clientId);
+
+            client.eConnect(host, port, clientId);
+
+            if (!client.IsConnected())
+            {
+                _logger.LogWarning("[IBKR ContractDetails] Failed to connect to {Host}:{Port}", host, port);
+                return new List<ContractClassification>();
+            }
+
+            client.startApi();
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var pumpTask = Task.Run(() => ProcessMessages(client, readerSignal, wrapper, linkedCts.Token), linkedCts.Token);
+
+            var tasks = new List<(string Symbol, Task<ContractDetails?> Task)>();
+            
             foreach (var symbol in symbols)
             {
-                await EnforceThrottleAsync(cancellationToken);
-
+                // Simple pacing: fire-and-forget requests with micro-delays
+                await Task.Delay(20, cancellationToken); 
+                
                 var requestId = _requestIdSource.NextId();
                 var task = wrapper.Register(requestId, symbol);
 
@@ -336,85 +338,53 @@ public sealed class ContractClassificationService
                 };
 
                 client.reqContractDetails(requestId, contract);
-
-                var completed = await Task.WhenAny(
-                    task,
-                    Task.Delay(TimeSpan.FromSeconds(25), cancellationToken));
-
-                if (completed != task || !task.IsCompletedSuccessfully)
-                {
-                    _logger.LogInformation("[IBKR ContractDetails] Timeout for {Symbol}", symbol);
-                    continue;
-                }
-
-                var details = task.Result;
-                var now = DateTimeOffset.UtcNow;
-                var classification = ToClassification(details, now);
-                await _cache.PutAsync(classification, cancellationToken);
-                classifications.Add(classification);
+                tasks.Add((symbol, task));
             }
+
+            var results = new List<ContractClassification>();
+            var timeout = TimeSpan.FromSeconds(30);
+
+            _logger.LogInformation("[IBKR ContractDetails] Waiting for {Count} requests to complete (timeout: {Timeout}s)...", tasks.Count, timeout.TotalSeconds);
+
+            foreach (var item in tasks)
+            {
+                try
+                {
+                    using var timeoutCts = new CancellationTokenSource(timeout);
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                    
+                    var details = await item.Task.WaitAsync(cts.Token);
+                    if (details != null)
+                    {
+                        var classification = ToClassification(details, DateTimeOffset.UtcNow);
+                        await _cache.PutAsync(classification, cancellationToken);
+                        results.Add(classification);
+                        _logger.LogDebug("[IBKR ContractDetails] Success for {Symbol}", item.Symbol);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogWarning("[IBKR ContractDetails] Timeout or cancellation for {Symbol}", item.Symbol);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("[IBKR ContractDetails] Error for {Symbol}: {Message}", item.Symbol, ex.Message);
+                }
+            }
+
+            return results;
         }
         finally
         {
             _connectionLock.Release();
-            try
-            {
-                linkedCts.Cancel();
-            }
-            catch
-            {
-            }
-
             if (client.IsConnected())
             {
-                try
-                {
-                    client.eDisconnect();
-                }
-                catch
-                {
-                }
+                client.eDisconnect();
             }
-
-            try
-            {
-                readerSignal.issueSignal();
-            }
-            catch
-            {
-            }
-
-            try
-            {
-                await pumpTask;
-            }
-            catch
-            {
-            }
-        }
-
-        return classifications;
-    }
-
-    private async Task EnforceThrottleAsync(CancellationToken cancellationToken)
-    {
-        await _throttle.WaitAsync(cancellationToken);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            var delay = _lastRequestAtUtc + _minInterval - now;
-            if (delay > TimeSpan.Zero)
-            {
-                await Task.Delay(delay, cancellationToken);
-            }
-
-            _lastRequestAtUtc = DateTimeOffset.UtcNow;
-        }
-        finally
-        {
-            _throttle.Release();
+            readerSignal.issueSignal();
         }
     }
+
 
     private static ContractClassification ToClassification(ContractDetails details, DateTimeOffset now)
     {
@@ -460,25 +430,14 @@ public sealed class ContractClassificationService
         var reader = new EReader(socket, signal);
         reader.Start();
 
-        using var _ = stoppingToken.Register(() =>
-        {
-            try
-            {
-                signal.issueSignal();
-            }
-            catch
-            {
-            }
-        });
-
         while (!stoppingToken.IsCancellationRequested && socket.IsConnected())
         {
+            signal.waitForSignal();
             try
             {
-                signal.waitForSignal();
                 reader.processMsgs();
             }
-            catch
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 break;
             }
@@ -488,23 +447,23 @@ public sealed class ContractClassificationService
     private sealed class ContractDetailsWrapper : EWrapper
     {
         private readonly ILogger _logger;
-        private readonly ConcurrentDictionary<int, TaskCompletionSource<ContractDetails>> _pending = new();
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<ContractDetails?>> _pending = new();
 
         public ContractDetailsWrapper(ILogger logger)
         {
             _logger = logger;
         }
 
-        public Task<ContractDetails> Register(int requestId, string symbol)
+        public Task<ContractDetails?> Register(int requestId, string symbol)
         {
-            var tcs = new TaskCompletionSource<ContractDetails>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var tcs = new TaskCompletionSource<ContractDetails?>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pending[requestId] = tcs;
             return tcs.Task;
         }
 
         public void contractDetails(int reqId, ContractDetails contractDetails)
         {
-            if (_pending.TryRemove(reqId, out var tcs) && contractDetails is not null)
+            if (_pending.TryGetValue(reqId, out var tcs) && contractDetails is not null)
             {
                 tcs.TrySetResult(contractDetails);
             }
@@ -514,32 +473,38 @@ public sealed class ContractClassificationService
         {
             if (_pending.TryRemove(reqId, out var tcs))
             {
-                tcs.TrySetCanceled();
+                // If it wasn't already set by contractDetails, it's finished but empty
+                tcs.TrySetResult(null);
             }
         }
 
         public void error(int id, int errorCode, string errorMsg)
         {
-            if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
+            // Error 200: No security definition found. This is common for invalid tickers (e.g. ETFs being scanned).
+            if (errorCode == 200 && _pending.TryRemove(id, out var tcs))
             {
-                _logger.LogDebug("[IBKR ContractDetails] Info: id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
+                _logger.LogDebug("[IBKR ContractDetails] Symbol not found (ErrorCode 200) for id={Id}", id);
+                tcs.TrySetResult(null);
                 return;
             }
 
-            if (id <= 0)
+            if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158 || errorCode == 2107)
             {
+                // These are just farm connection status messages
                 return;
             }
 
-            if (_pending.TryRemove(id, out var tcs))
+            if (id > 0 && _pending.TryRemove(id, out var errorTcs))
             {
-                tcs.TrySetException(new InvalidOperationException($"IBKR error {errorCode}: {errorMsg}"));
+                _logger.LogDebug("[IBKR ContractDetails] Error id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
+                errorTcs.TrySetException(new Exception($"IBKR {errorCode}: {errorMsg}"));
             }
         }
 
         public void error(string str) => _logger.LogDebug("[IBKR ContractDetails] {Message}", str);
         public void error(Exception e) => _logger.LogDebug(e, "[IBKR ContractDetails] Exception");
 
+        // ... rest of EWrapper methods (empty) ...
         public void currentTime(long time) { }
         public void tickPrice(int tickerId, int field, double price, TickAttrib attribs) { }
         public void tickSize(int tickerId, int field, int size) { }

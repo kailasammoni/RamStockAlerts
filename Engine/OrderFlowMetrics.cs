@@ -79,6 +79,9 @@ public class OrderFlowMetrics
     /// </summary>
     public MetricSnapshot UpdateMetrics(OrderBookState book, long currentTimeMs)
     {
+        // Store the order book state for external access (needed for triage/diagnostics)
+        RegisterOrderBook(book);
+
         // HARD GATE: Absolute check - no exceptions
         if (!book.IsBookValid(out var validityReason, currentTimeMs))
         {
@@ -106,8 +109,6 @@ public class OrderFlowMetrics
             return invalidSnapshot;
         }
 
-        // Store the order book state for external access
-        _orderBooks[book.Symbol] = book;
         
         var snapshot = new MetricSnapshot
         {
@@ -310,5 +311,12 @@ public class OrderFlowMetrics
     public List<string> GetSubscribedSymbols()
     {
         return _orderBooks.Keys.OrderBy(x => x).ToList();
+    }
+    /// <summary>
+    /// Explicitly registers an order book for visibility (e.g. for triage) without updating metrics.
+    /// </summary>
+    public void RegisterOrderBook(OrderBookState book)
+    {
+        _orderBooks[book.Symbol] = book;
     }
 }

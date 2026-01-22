@@ -96,11 +96,32 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
         var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
         var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
-        var clientId = _configuration.GetValue<int?>("Universe:IbkrScanner:ClientId") ?? baseClientId + 1;
+        var clientId = _configuration.GetValue<int?>("Universe:IbkrScanner:ClientId") ?? baseClientId + 9; // Offset further to avoid collisions
 
         var instrument = _configuration["Universe:IbkrScanner:Instrument"] ?? "STK";
         var locationCode = _configuration["Universe:IbkrScanner:LocationCode"] ?? "STK.US.MAJOR";
-        var scanCode = _configuration["Universe:IbkrScanner:ScanCode"] ?? "SCAN_floatShares_ASC";
+        
+        // Robust reading of ScanCodes array
+        var scanCodes = _configuration.GetSection("Universe:IbkrScanner:ScanCodes")
+            .GetChildren()
+            .Select(x => x.Value)
+            .Where(x => !string.IsNullOrEmpty(x))
+            .ToList();
+
+        if (scanCodes.Count == 0)
+        {
+            var legacyCode = _configuration["Universe:IbkrScanner:ScanCode"];
+            if (!string.IsNullOrEmpty(legacyCode))
+            {
+                scanCodes.Add(legacyCode);
+            }
+            else
+            {
+                scanCodes.Add("HOT_BY_VOLUME"); // Sensible default
+            }
+        }
+
+        _logger.LogInformation("[IBKR Scanner] Final scan codes to run: {Codes}", string.Join(", ", scanCodes));
         var rows = Math.Clamp(_configuration.GetValue("Universe:IbkrScanner:Rows", 200), 1, 500);
         var abovePrice = _configuration.GetValue<double?>("Universe:IbkrScanner:AbovePrice") ?? 5d;
         var belowPrice = _configuration.GetValue<double?>("Universe:IbkrScanner:BelowPrice") ?? 20d;
@@ -128,21 +149,47 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
             try
             {
-                var universe = await ExecuteScannerAttemptAsync(
-                    host,
-                    port,
-                    clientId,
-                    instrument,
-                    locationCode,
-                    scanCode,
-                    rows,
-                    abovePrice,
-                    belowPrice,
-                    aboveVolume,
-                    floatSharesBelow,
-                    marketCapAbove,
-                    marketCapBelow,
-                    cancellationToken);
+                var cumulativeUniverse = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var successCount = 0;
+
+                foreach (var code in scanCodes)
+                {
+                    try
+                    {
+                        _logger.LogInformation("[IBKR Scanner] Running scan: {ScanCode}", code);
+                        var scanResults = await ExecuteScannerAttemptAsync(
+                            host,
+                            port,
+                            clientId,
+                            instrument,
+                            locationCode,
+                            code,
+                            rows,
+                            abovePrice,
+                            belowPrice,
+                            aboveVolume,
+                            floatSharesBelow,
+                            marketCapAbove,
+                            marketCapBelow,
+                            cancellationToken);
+                        
+                        foreach (var s in scanResults) cumulativeUniverse.Add(s);
+                        _logger.LogInformation("[IBKR Scanner] Scan {ScanCode} returned {Count} symbols.", code, scanResults.Count);
+                        successCount++;
+                    }
+                    catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        _logger.LogError(ex, "[IBKR Scanner] Individual scan code {ScanCode} failed. Skipping and continuing with next.", code);
+                        // Continue to next scan code so one failure doesn't block the whole universe
+                    }
+                }
+
+                if (successCount == 0 && scanCodes.Count > 0)
+                {
+                    throw new InvalidOperationException($"All {scanCodes.Count} configured scan codes failed. IBKR connection or farm status likely the cause.");
+                }
+
+                var universe = cumulativeUniverse.ToList();
 
                 if (universe.Count > 0)
                 {
@@ -284,7 +331,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 filterOptions);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(35)); // Increased from 10s to 30s for open load
 
             var completed = await Task.WhenAny(
                 completion.Task,
@@ -310,6 +357,16 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             }
 
             return universe;
+        }
+        catch (System.IO.EndOfStreamException ex)
+        {
+            _logger.LogError(ex, "[IBKR Scanner] Connection to TWS dropped (End of Stream). This often happens if TWS market data farms are disconnected or the client ID is already in use.");
+            throw;
+        }
+        catch (Exception ex) when (ex.Message.Contains("read beyond the end of the stream"))
+        {
+             _logger.LogError(ex, "[IBKR Scanner] Connection to TWS dropped. Check TWS -> Troubleshooting -> Diagnostics -> Data Connections.");
+             throw;
         }
         finally
         {
@@ -818,7 +875,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     {
         var options = new List<TagValue>();
 
-        if (scanCode.Equals("SCAN_floatShares_ASC", StringComparison.OrdinalIgnoreCase) && floatSharesBelow.HasValue)
+        // Apply float filter to all scans if value is provided
+        if (floatSharesBelow.HasValue && floatSharesBelow.Value > 0)
         {
             options.Add(new TagValue("floatSharesBelow", floatSharesBelow.Value.ToString(CultureInfo.InvariantCulture)));
         }

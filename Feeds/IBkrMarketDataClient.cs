@@ -115,6 +115,7 @@ public class IBkrMarketDataClient : BackgroundService
                 _previewSignalEmitter,
                 IsTickByTickActive,
                 _subscriptionManager.RecordActivity,
+                _subscriptionManager.RecordTapeReceipt,
                 HandleIbkrError,
                 MarkDepthEligible,
                 _subscriptionManager.RecordDepthSubscribeUpdateReceived);
@@ -201,14 +202,14 @@ public class IBkrMarketDataClient : BackgroundService
     /// </summary>
     private string SelectL1Exchange(ContractClassification? classification)
     {
-        if (classification?.PrimaryExchange != null)
-        {
-            var primary = classification.PrimaryExchange.Trim().ToUpperInvariant();
-            if (primary == "NASDAQ" || primary == "NYSE" || primary == "AMEX" || primary == "CBOE" || primary == "BOX")
-            {
-                return primary;
-            }
-        }
+        // if (classification?.PrimaryExchange != null)
+        // {
+        //     var primary = classification.PrimaryExchange.Trim().ToUpperInvariant();
+        //     if (primary == "NASDAQ" || primary == "NYSE" || primary == "AMEX" || primary == "CBOE" || primary == "BOX")
+        //     {
+        //         return primary;
+        //     }
+        // }
         
         return "SMART";
     }
@@ -752,6 +753,15 @@ public class IBkrMarketDataClient : BackgroundService
                 }
             }
             
+            // Also check last L1 update
+            if (book.LastL1RecvMs.HasValue && book.LastL1RecvMs.Value > 0)
+            {
+                if (mostRecentTickMs is null || book.LastL1RecvMs.Value > mostRecentTickMs.Value)
+                {
+                    mostRecentTickMs = book.LastL1RecvMs.Value;
+                }
+            }
+            
             // Also check last depth update
             if (book.LastDepthUpdateUtcMs > 0)
             {
@@ -901,6 +911,7 @@ public class IBkrMarketDataClient : BackgroundService
                         _previewSignalEmitter,
                         IsTickByTickActive,
                         _subscriptionManager.RecordActivity,
+                        _subscriptionManager.RecordTapeReceipt,
                         HandleIbkrError,
                         MarkDepthEligible,
                         _subscriptionManager.RecordDepthSubscribeUpdateReceived);
@@ -1196,16 +1207,25 @@ public class IBkrMarketDataClient : BackgroundService
 
     internal static string ResolveDepthExchange(ContractClassification? classification)
     {
-        if (!string.IsNullOrWhiteSpace(classification?.PrimaryExchange))
+        var primary = classification?.PrimaryExchange?.Trim().ToUpperInvariant();
+        
+        // NASDAQ TotalView (Level 2) requires the 'ISLAND' exchange identifier in IBKR API
+        if (primary == "NASDAQ")
         {
-            return classification.PrimaryExchange!;
+            return "ISLAND";
         }
 
-        if (!string.IsNullOrWhiteSpace(classification?.Exchange))
+        if (!string.IsNullOrWhiteSpace(primary) && primary != "UNKNOWN")
         {
-            return classification.Exchange!;
+            return primary;
         }
 
+        if (!string.IsNullOrWhiteSpace(classification?.Exchange) && classification.Exchange != "SMART")
+        {
+            return classification.Exchange.Trim().ToUpperInvariant();
+        }
+
+        // Default to SMART if no primary exchange is known, though reqMktDepth will likely fail
         return "SMART";
     }
 
@@ -1596,6 +1616,7 @@ internal class IBkrWrapperImpl : EWrapper
     private readonly PreviewSignalEmitter _previewSignalEmitter;
     private readonly Func<string, bool> _isTickByTickActive;
     private readonly Action<string>? _recordActivity;
+    private readonly Action<string, long>? _recordTapeReceipt;
     private readonly Action<int, int, string>? _errorHandler;
     private readonly ConcurrentDictionary<string, byte> _depthEligibilityMarked = new(StringComparer.OrdinalIgnoreCase);
     private readonly Action<string>? _markDepthEligible;
@@ -1611,6 +1632,7 @@ internal class IBkrWrapperImpl : EWrapper
         PreviewSignalEmitter previewSignalEmitter,
         Func<string, bool> isTickByTickActive,
         Action<string>? recordActivity,
+        Action<string, long>? recordTapeReceipt,
         Action<int, int, string>? errorHandler,
         Action<string>? markDepthEligible,
         Action<int>? recordDepthUpdate)
@@ -1623,6 +1645,7 @@ internal class IBkrWrapperImpl : EWrapper
         _previewSignalEmitter = previewSignalEmitter;
         _isTickByTickActive = isTickByTickActive;
         _recordActivity = recordActivity;
+        _recordTapeReceipt = recordTapeReceipt;
         _errorHandler = errorHandler;
         _markDepthEligible = markDepthEligible;
         _recordDepthUpdate = recordDepthUpdate;
@@ -1644,6 +1667,7 @@ internal class IBkrWrapperImpl : EWrapper
         }
 
         book = existing;
+        _metrics.RegisterOrderBook(book);
         return true;
     }
 
@@ -1770,6 +1794,7 @@ internal class IBkrWrapperImpl : EWrapper
             // Record with both timestamps: event time (IB server) and receipt time (local)
             book.RecordTrade(eventMs, recvMs, price, (decimal)size);
             _recordActivity?.Invoke(book.Symbol);
+            _recordTapeReceipt?.Invoke(book.Symbol, recvMs);
 
             // Fix 3: Only update metrics if book is valid
             if (book.IsBookValid(out var validityReason, recvMs))
@@ -1820,6 +1845,7 @@ internal class IBkrWrapperImpl : EWrapper
         // Market data callbacks don't provide event time, so use receipt time for both
         book.RecordTrade(nowMs, nowMs, price, size);
         _recordActivity?.Invoke(book.Symbol);
+        _recordTapeReceipt?.Invoke(book.Symbol, nowMs);
 
         if (book.IsBookValid(out var validityReason, nowMs))
         {
@@ -1885,7 +1911,8 @@ internal class IBkrWrapperImpl : EWrapper
     // === Remaining EWrapper members (stubs) ===
     public void tickPrice(int tickerId, int field, double price, TickAttrib attribs)
     {
-        if (field != TickType.LAST && field != TickType.DELAYED_LAST)
+        if (field != TickType.BID && field != TickType.ASK && field != TickType.LAST && 
+            field != TickType.DELAYED_BID && field != TickType.DELAYED_ASK && field != TickType.DELAYED_LAST)
         {
             return;
         }
@@ -1895,24 +1922,38 @@ internal class IBkrWrapperImpl : EWrapper
             return;
         }
 
-        if (_isTickByTickActive(book.Symbol))
-        {
-            return;
-        }
+        // Track L1 receipt time for triage eligibility
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        book.LastL1RecvMs = nowMs;
+        _recordActivity?.Invoke(book.Symbol);
 
-        if (price <= 0)
-        {
-            return;
-        }
+        // Skip L1 updates if TBT or Level 2 depth is active to avoid jitter
+        if (_isTickByTickActive(book.Symbol) || book.MaxDepthRows > 1) return;
 
-        var state = _lastTrades.GetOrAdd(tickerId, _ => new LastTradeState());
-        state.LastPrice = (decimal)price;
-        TryRecordMktDataTrade(book, state);
+        switch (field)
+        {
+            case TickType.BID:
+            case TickType.DELAYED_BID:
+                book.UpdateBidDepth((decimal)price, book.BidLevels.Count > 0 ? book.BidLevels[0].Size : 0m, nowMs, 0);
+                break;
+            case TickType.ASK:
+            case TickType.DELAYED_ASK:
+                book.UpdateAskDepth((decimal)price, book.AskLevels.Count > 0 ? book.AskLevels[0].Size : 0m, nowMs, 0);
+                break;
+            case TickType.LAST:
+            case TickType.DELAYED_LAST:
+                if (price <= 0) return;
+                var tradeState = _lastTrades.GetOrAdd(tickerId, _ => new LastTradeState());
+                tradeState.LastPrice = (decimal)price;
+                TryRecordMktDataTrade(book, tradeState);
+                break;
+        }
     }
 
     public void tickSize(int tickerId, int field, int size)
     {
-        if (field != TickType.LAST_SIZE && field != TickType.DELAYED_LAST_SIZE)
+        if (field != TickType.BID_SIZE && field != TickType.ASK_SIZE && field != TickType.LAST_SIZE && 
+            field != TickType.DELAYED_BID_SIZE && field != TickType.DELAYED_ASK_SIZE && field != TickType.DELAYED_LAST_SIZE)
         {
             return;
         }
@@ -1922,19 +1963,32 @@ internal class IBkrWrapperImpl : EWrapper
             return;
         }
 
-        if (_isTickByTickActive(book.Symbol))
-        {
-            return;
-        }
+        // Track L1 receipt time for triage eligibility
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        book.LastL1RecvMs = nowMs;
+        _recordActivity?.Invoke(book.Symbol);
 
-        if (size <= 0)
-        {
-            return;
-        }
+        // Skip L1 updates if TBT or Level 2 depth is active to avoid jitter
+        if (_isTickByTickActive(book.Symbol) || book.MaxDepthRows > 1) return;
 
-        var state = _lastTrades.GetOrAdd(tickerId, _ => new LastTradeState());
-        state.LastSize = size;
-        TryRecordMktDataTrade(book, state);
+        switch (field)
+        {
+            case TickType.BID_SIZE:
+            case TickType.DELAYED_BID_SIZE:
+                book.UpdateBidDepth(book.BidLevels.Count > 0 ? book.BidLevels[0].Price : 0m, (decimal)size, nowMs, 0);
+                break;
+            case TickType.ASK_SIZE:
+            case TickType.DELAYED_ASK_SIZE:
+                book.UpdateAskDepth(book.AskLevels.Count > 0 ? book.AskLevels[0].Price : 0m, (decimal)size, nowMs, 0);
+                break;
+            case TickType.LAST_SIZE:
+            case TickType.DELAYED_LAST_SIZE:
+                if (size <= 0) return;
+                var tradeState = _lastTrades.GetOrAdd(tickerId, _ => new LastTradeState());
+                tradeState.LastSize = size;
+                TryRecordMktDataTrade(book, tradeState);
+                break;
+        }
     }
     public void tickOptionComputation(int tickerId, int field, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) { }
     public void tickGeneric(int tickerId, int tickType, double value) { }

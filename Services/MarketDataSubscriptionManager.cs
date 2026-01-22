@@ -358,6 +358,10 @@ public sealed class MarketDataSubscriptionManager
         if (_active.TryGetValue(symbol.Trim().ToUpperInvariant(), out var state))
         {
             state.LastActivityUtc = DateTimeOffset.UtcNow;
+            if (state.DepthRequestId.HasValue && state.FocusStartMs > 0)
+            {
+                state.QuoteUpdatesInDwell++;
+            }
         }
     }
 
@@ -1647,6 +1651,8 @@ public sealed class MarketDataSubscriptionManager
         {
             var symbol = candidates[i];
             var book = _metrics.GetOrderBookSnapshot(symbol);
+            var warmupPass = i < 5;
+
             if (book is null)
             {
                 var deadMetrics = new ProbeMetrics(
@@ -1655,8 +1661,9 @@ public sealed class MarketDataSubscriptionManager
                     TradesInLast15s: 0,
                     QuoteUpdatesInLast15s: 0,
                     LastSpread: null,
-                    IsEligible: false);
-                scores.Add(new TriageScore(symbol, -100m, 0m, 0m, 0m, null, 0m, 0m, i, deadMetrics, false));
+                    IsEligible: warmupPass);
+                
+                scores.Add(new TriageScore(symbol, warmupPass ? -99m : -100m, 0m, 0m, 0m, null, 0m, 0m, i, deadMetrics, warmupPass));
                 continue;
             }
 
@@ -1677,8 +1684,12 @@ public sealed class MarketDataSubscriptionManager
                 LastSpread: book.Spread > 0m ? book.Spread : null,
                 IsEligible: false); // Will be set below
 
-            // PRECONDITION 1: Must have at least 1 tape print in lookback window
-            if (tradesInWindow.Count < minTradesInWindow)
+            // PRECONDITION 1: Must have at least 1 tape print OR recent quote in lookback window
+            var hasRecentTape = tradesInWindow.Count >= minTradesInWindow;
+            var hasRecentQuote = lastL1RecvMs > 0 && (nowMs - lastL1RecvMs <= triageLookbackMs);
+            
+
+            if (!hasRecentTape && !hasRecentQuote && !warmupPass)
             {
                 var eligibleMetrics = metrics with { IsEligible = false };
                 scores.Add(new TriageScore(symbol, -100m, 0m, 0m, 0m, null, 0m, 0m, i, eligibleMetrics, false));
@@ -1693,21 +1704,23 @@ public sealed class MarketDataSubscriptionManager
                 mid = (decimal)tradesInWindow.Average(t => t.Price);
             }
 
-            if (spread is null || mid <= 0m)
+            if ((spread is null || mid <= 0m) && !warmupPass)
             {
                 var eligibleMetrics = metrics with { IsEligible = false };
                 scores.Add(new TriageScore(symbol, -90m, 0m, 0m, 0m, null, 0m, 0m, i, eligibleMetrics, false));
                 continue;
             }
 
-            var spreadPct = (spread.Value / mid);
-            if (spreadPct > maxSpreadPct)
+            var effectiveMid = mid > 1.0m ? mid : 1.0m;
+            var spreadPct = spread.HasValue ? (spread.Value / effectiveMid) : 0.1m;
+            if (spreadPct > maxSpreadPct && !warmupPass)
             {
                 // Heavy penalty for wide spread
                 var eligibleMetrics = metrics with { IsEligible = false };
                 scores.Add(new TriageScore(symbol, -80m, 0m, 0m, 0m, spread, 0m, 0m, i, eligibleMetrics, false));
                 continue;
             }
+            mid = effectiveMid; // Ensure downstream uses non-zero mid
 
             // Symbol is eligible - now compute regular scoring
             var window3Start = nowMs - 3_000;
@@ -2020,7 +2033,8 @@ public sealed class MarketDataSubscriptionManager
         var dwellMet = dwellMs >= focusMinDwellMs;
         var tapeIdle = dwellMet && (!tapeAgeMs.HasValue || tapeAgeMs.Value >= focusTapeIdleMs);
         var depthIdle = dwellMet && (!depthAgeMs.HasValue || depthAgeMs.Value >= focusDepthIdleMs);
-        var warmupMet = state.TradesReceivedInDwell >= focusWarmupMinTrades;
+        var focusWarmupMinQuotes = _configuration.GetValue("MarketData:FocusWarmupMinQuotes", 5);
+        var warmupMet = state.TradesReceivedInDwell >= focusWarmupMinTrades || state.QuoteUpdatesInDwell >= focusWarmupMinQuotes;
 
         // EARLY EXIT DETECTION (before dwell is met):
         // If tape fails to warm up even after grace period, evict immediately
@@ -2251,6 +2265,7 @@ public sealed class MarketDataSubscriptionManager
         state.LastDepthReceiptMs = 0;
         state.TradesReceivedInDwell = 0;
         state.DepthUpdatesInDwell = 0;
+        state.QuoteUpdatesInDwell = 0;
     }
 
     private static void StartFocusWindow(SubscriptionState state, long nowMs)
@@ -2258,6 +2273,7 @@ public sealed class MarketDataSubscriptionManager
         state.FocusStartMs = nowMs;
         state.TradesReceivedInDwell = 0;
         state.DepthUpdatesInDwell = 0;
+        state.QuoteUpdatesInDwell = 0;
         state.LastTapeReceiptMs = 0;
         state.LastDepthReceiptMs = 0;
     }
@@ -2334,6 +2350,7 @@ public sealed class MarketDataSubscriptionManager
         public long LastDepthReceiptMs { get; set; }
         public int TradesReceivedInDwell { get; set; }
         public int DepthUpdatesInDwell { get; set; }
+        public int QuoteUpdatesInDwell { get; set; }
     }
 
     private sealed record RequestMapping(string Symbol, MarketDataRequestKind Kind);
