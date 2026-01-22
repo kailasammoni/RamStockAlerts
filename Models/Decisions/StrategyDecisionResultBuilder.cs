@@ -24,6 +24,8 @@ public static class StrategyDecisionResultBuilder
             SpoofScore = context.SpoofScore ?? 0m,
             TapeAcceleration = context.TapeAcceleration ?? 0m,
             TradesIn3Sec = context.TradesIn3Sec ?? 0,
+            BidTradesIn3Sec = context.BidTradesIn3Sec,
+            AskTradesIn3Sec = context.AskTradesIn3Sec,
             Spread = context.Spread ?? 0m,
             MidPrice = context.MidPrice ?? 0m,
             LastPrice = context.LastPrice,
@@ -92,6 +94,8 @@ public sealed record StrategyDecisionBuildContext
     public decimal? SpoofScore { get; init; }
     public decimal? TapeAcceleration { get; init; }
     public int? TradesIn3Sec { get; init; }
+    public int BidTradesIn3Sec { get; init; }
+    public int AskTradesIn3Sec { get; init; }
     public decimal? Spread { get; init; }
     public decimal? MidPrice { get; init; }
     public decimal? BestBidPrice { get; init; }

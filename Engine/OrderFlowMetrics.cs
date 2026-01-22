@@ -57,6 +57,8 @@ public class OrderFlowMetrics
         // Tape Acceleration
         public decimal TapeAcceleration { get; set; } // trade rate ratio
         public int TradesIn3Sec { get; set; }
+        public int BidTradesIn3Sec { get; set; }
+        public int AskTradesIn3Sec { get; set; }
         
         // Spread
         public decimal Spread { get; set; }
@@ -99,7 +101,9 @@ public class OrderFlowMetrics
                 Spread = 0m,
                 MidPrice = 0m,
                 SpoofScore = 0m,
-                TapeAcceleration = 0m
+                TapeAcceleration = 0m,
+                BidTradesIn3Sec = 0,
+                AskTradesIn3Sec = 0
             };
             
             // DO NOT store invalid snapshot - prevent downstream signal generation
@@ -133,9 +137,8 @@ public class OrderFlowMetrics
         snapshot.BidWallAgeMs = book.BestBidAgeMs;
         snapshot.AskWallAgeMs = book.BestAskAgeMs;
         
-        // Tape acceleration
-        snapshot.TradesIn3Sec = book.RecentTrades.Count;
-        snapshot.TapeAcceleration = ComputeTapeAcceleration(book);
+        // Tape acceleration and side-specific velocity
+        ComputeTapeMetrics(book, snapshot);
         
         // Spread
         snapshot.Spread = book.Spread;
@@ -208,22 +211,53 @@ public class OrderFlowMetrics
         return false;
     }
     
-    private decimal ComputeTapeAcceleration(OrderBookState book)
+    private void ComputeTapeMetrics(OrderBookState book, MetricSnapshot snapshot)
     {
         if (book.RecentTrades.Count < 2)
-            return 0m;
+        {
+            snapshot.TradesIn3Sec = book.RecentTrades.Count;
+            snapshot.BidTradesIn3Sec = 0;
+            snapshot.AskTradesIn3Sec = 0;
+            snapshot.TapeAcceleration = 0m;
+            return;
+        }
         
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var window3SecAgo = now - TAPE_WINDOW_MS;
         
-        // Count trades in current and previous window
-        var tradesNow = book.RecentTrades.Where(t => t.TimestampMs >= window3SecAgo).Count();
+        int tradesNow = 0;
+        int bidTradesNow = 0;
+        int askTradesNow = 0;
+
+        foreach (var trade in book.RecentTrades)
+        {
+            if (trade.TimestampMs >= window3SecAgo)
+            {
+                tradesNow++;
+                if (trade.Price <= (double)book.BestBid)
+                {
+                    bidTradesNow++;
+                }
+                else if (trade.Price >= (double)book.BestAsk)
+                {
+                    askTradesNow++;
+                }
+            }
+        }
+
+        snapshot.TradesIn3Sec = tradesNow;
+        snapshot.BidTradesIn3Sec = bidTradesNow;
+        snapshot.AskTradesIn3Sec = askTradesNow;
+
         var tradesPrevious = book.RecentTrades.Count - tradesNow;
-        
         if (tradesPrevious == 0)
-            return tradesNow > 0 ? 1m : 0m;
-        
-        return (decimal)tradesNow / (decimal)tradesPrevious;
+        {
+            snapshot.TapeAcceleration = tradesNow > 0 ? 1m : 0m;
+        }
+        else
+        {
+            snapshot.TapeAcceleration = (decimal)tradesNow / (decimal)tradesPrevious;
+        }
     }
     
     private void ComputeAbsorptionRates(OrderBookState book, MetricSnapshot snapshot)

@@ -102,6 +102,8 @@ public sealed class ShadowTradeJournalEntry
         public decimal? SpoofScore { get; set; }
         public decimal? TapeAcceleration { get; set; }
         public int? TradesIn3Sec { get; set; }
+        public int? BidTradesIn3Sec { get; set; }
+        public int? AskTradesIn3Sec { get; set; }
         public decimal? TapeVolume3Sec { get; set; }
         public decimal? Spread { get; set; }
         public decimal? BestBidPrice { get; set; }
@@ -122,6 +124,8 @@ public sealed class ShadowTradeJournalEntry
         public decimal? SpoofScore { get; set; }
         public decimal? TapeAcceleration { get; set; }
         public int? TradesIn3Sec { get; set; }
+        public int? BidTradesIn3Sec { get; set; }
+        public int? AskTradesIn3Sec { get; set; }
         public decimal? Spread { get; set; }
         public decimal? MidPrice { get; set; }
         public decimal? LastPrice { get; set; }
