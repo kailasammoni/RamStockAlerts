@@ -83,9 +83,13 @@ public sealed class PerformanceMetrics
         if (TotalSignals == 0)
             return "No outcomes to report";
 
-        var winRate = WinRate?.ToString("P1") ?? "N/A";
-        var pnl = TotalPnlUsd > 0 ? $"+${TotalPnlUsd:F2}" : $"${TotalPnlUsd:F2}";
-        var exp = Expectancy?.ToString("F2") ?? "N/A";
+        var winRate = WinRate.HasValue
+            ? (WinRate.Value * 100).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + "%"
+            : "N/A";
+        var pnl = TotalPnlUsd > 0
+            ? $"+${TotalPnlUsd.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}"
+            : $"${TotalPnlUsd.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}";
+        var exp = Expectancy?.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) ?? "N/A";
 
         return $"Wins: {WinCount} | Losses: {LossCount} | Open: {OpenCount} | " +
                $"WinRate: {winRate} | PnL: {pnl} | Expectancy: {exp}R";

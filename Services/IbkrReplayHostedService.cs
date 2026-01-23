@@ -52,8 +52,6 @@ public sealed class IbkrReplayHostedService : BackgroundService
             }
 
             var orderBook = new OrderBookState(symbol);
-            var bidWallTracker = new BidWallTracker();
-            var tapeVelocityTracker = new TapeVelocityTracker(TimeSpan.FromSeconds(3));
             var velocityWindow = new Queue<TradePrint>();
 
             var summaryPath = Path.Combine("logs", $"replay-summary-{symbol}.jsonl");
@@ -61,7 +59,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
 
             _logger.LogInformation("Starting deterministic replay for {Symbol}. Depth={DepthFile} Tape={TapeFile}", symbol, depthPath, tapePath);
 
-            await RunReplay(events, orderBook, bidWallTracker, tapeVelocityTracker, velocityWindow, summaryPath, stoppingToken);
+            await RunReplay(events, orderBook, velocityWindow, summaryPath, stoppingToken);
         }
         catch (Exception ex)
         {
@@ -73,8 +71,6 @@ public sealed class IbkrReplayHostedService : BackgroundService
     private async Task RunReplay(
         List<ReplayEvent> events,
         OrderBookState orderBook,
-        BidWallTracker bidWallTracker,
-        TapeVelocityTracker tapeVelocityTracker,
         Queue<TradePrint> velocityWindow,
         string summaryPath,
         CancellationToken cancellationToken)
@@ -136,7 +132,6 @@ public sealed class IbkrReplayHostedService : BackgroundService
             EmitSummary(
                 second,
                 orderBook,
-                tapeVelocityTracker,
                 velocityWindow,
                 writer,
                 invalidBookCount,
@@ -196,17 +191,6 @@ public sealed class IbkrReplayHostedService : BackgroundService
                 try
                 {
                     orderBook.ApplyDepthUpdate(depthUpdate);
-                    
-                    // Fix 3: Only apply to bidWallTracker if book is valid
-                    var depthTimestampMs = evt.TimestampUtc.ToUnixTimeMilliseconds();
-                    if (orderBook.IsBookValid(out var depthValidityReason, depthTimestampMs))
-                    {
-                        bidWallTracker.ApplyDepthUpdate(depthUpdate);
-                    }
-                    else
-                    {
-                        _logger.LogDebug("[Replay] Skipped bidWallTracker update: {Reason}", depthValidityReason);
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -253,9 +237,8 @@ public sealed class IbkrReplayHostedService : BackgroundService
 
                 var recvMs = evt.TimestampUtc.ToUnixTimeMilliseconds();
                 orderBook.RecordTrade(recvMs, recvMs, (double)tapePayload.Price, tapePayload.Size);
-                tapeVelocityTracker.AddTrade(recvMs, (double)tapePayload.Price, tapePayload.Size);
                 velocityWindow.Enqueue(tapePayload);
-                PruneVelocityWindow(velocityWindow, eventSecond, tapeVelocityTracker.Window);
+                PruneVelocityWindow(velocityWindow, eventSecond, TimeSpan.FromSeconds(3));
                 lastTapeSecond = eventSecond;
                 tapePresentThisSecond = true;
             }
@@ -328,7 +311,6 @@ public sealed class IbkrReplayHostedService : BackgroundService
     private void EmitSummary(
         long second,
         OrderBookState book,
-        TapeVelocityTracker tapeVelocityTracker,
         Queue<TradePrint> velocityWindow,
         StreamWriter writer,
         long invalidBookCount,
@@ -340,7 +322,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
         long exceptionsSeconds)
     {
         var ts = DateTimeOffset.FromUnixTimeSeconds(second).ToUniversalTime();
-        PruneVelocityWindow(velocityWindow, second, tapeVelocityTracker.Window);
+        PruneVelocityWindow(velocityWindow, second, TimeSpan.FromSeconds(3));
 
         var summary = new
         {
@@ -352,7 +334,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
             spread = book.Spread,
             totalBidSizeTop5 = book.TotalBidSize(5),
             totalAskSizeTop5 = book.TotalAskSize(5),
-            tapeVelocityTradesPerSec = velocityWindow.Count / (decimal)tapeVelocityTracker.Window.TotalSeconds,
+            tapeVelocityTradesPerSec = velocityWindow.Count / 3m,
             validSeconds = validSeconds,
             invalidSeconds = invalidSeconds,
             crossedSeconds = crossedSeconds,
