@@ -1,0 +1,24 @@
+  Determining projects to restore...
+/app/RamStockAlerts.Execution.Tests/RamStockAlerts.Execution.Tests.csproj : warning NU1603: RamStockAlerts.Execution.Tests depends on Microsoft.NET.Test.Sdk (>= 17.11.2) but Microsoft.NET.Test.Sdk 17.11.2 was not found. Microsoft.NET.Test.Sdk 17.12.0 was resolved instead. [/app/RamStockAlerts.sln]
+/app/RamStockAlerts.Execution.Tests/RamStockAlerts.Execution.Tests.csproj : warning NU1603: RamStockAlerts.Execution.Tests depends on xunit (>= 2.7.2) but xunit 2.7.2 was not found. xunit 2.8.0 was resolved instead. [/app/RamStockAlerts.sln]
+  All projects are up-to-date for restore.
+/app/RamStockAlerts.Execution.Tests/RamStockAlerts.Execution.Tests.csproj : warning NU1603: RamStockAlerts.Execution.Tests depends on Microsoft.NET.Test.Sdk (>= 17.11.2) but Microsoft.NET.Test.Sdk 17.11.2 was not found. Microsoft.NET.Test.Sdk 17.12.0 was resolved instead.
+/app/RamStockAlerts.Execution.Tests/RamStockAlerts.Execution.Tests.csproj : warning NU1603: RamStockAlerts.Execution.Tests depends on xunit (>= 2.7.2) but xunit 2.7.2 was not found. xunit 2.8.0 was resolved instead.
+  RamStockAlerts.Execution -> /app/RamStockAlerts.Execution/bin/Debug/net10.0/RamStockAlerts.Execution.dll
+  RamStockAlerts.Execution.Tests -> /app/RamStockAlerts.Execution.Tests/bin/Debug/net10.0/RamStockAlerts.Execution.Tests.dll
+Test run for /app/RamStockAlerts.Execution.Tests/bin/Debug/net10.0/RamStockAlerts.Execution.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.1 (x64)
+
+Starting test execution, please wait...
+  RamStockAlerts -> /app/bin/Debug/net10.0/RamStockAlerts.dll
+A total of 1 test files matched the specified pattern.
+  RamStockAlerts.Tests -> /app/RamStockAlerts.Tests/bin/Debug/net10.0/RamStockAlerts.Tests.dll
+Test run for /app/RamStockAlerts.Tests/bin/Debug/net10.0/RamStockAlerts.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.1 (x64)
+
+No test matches the given testcase filter `PerformanceMetrics_GeneratesSummary` in /app/RamStockAlerts.Execution.Tests/bin/Debug/net10.0/RamStockAlerts.Execution.Tests.dll
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+
+Passed!  - Failed:     0, Passed:     1, Skipped:     0, Total:     1, Duration: 38 ms - RamStockAlerts.Tests.dll (net10.0)

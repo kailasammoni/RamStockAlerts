@@ -1,6 +1,4 @@
 using System;
-using Microsoft.EntityFrameworkCore;
-using RamStockAlerts.Data;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Feeds;
 using RamStockAlerts.Services;
@@ -65,25 +63,19 @@ if (dailyRollupRequested)
     Log.Information("Running daily rollup report for {JournalPath} (writeToFile={WriteToFile})",
         journalPath, writeToFile);
 
-    // Phase 2.4: Build DI container for outcomes + rotation (or use no-arg constructor if disabled)
     var outcomesEnabled = initialConfig.GetValue("Outcomes:Enabled", true);
     var rotationEnabled = initialConfig.GetValue("JournalRotation:Enabled", true);
 
     if (outcomesEnabled || rotationEnabled)
     {
-        // Build services for full integration
         var reporterServices = new ServiceCollection();
         
-        // Register outcome services
         var reporterOutcomesFilePath = initialConfig.GetValue<string>("Outcomes:FilePath")
             ?? Path.Combine("logs", "trade-outcomes.jsonl");
         reporterServices.AddSingleton<ITradeOutcomeLabeler, TradeOutcomeLabeler>();
         reporterServices.AddSingleton<IOutcomeSummaryStore>(sp => new FileBasedOutcomeSummaryStore(reporterOutcomesFilePath));
-        
-        // Register rotation service
         reporterServices.AddSingleton<IJournalRotationService, FileBasedJournalRotationService>();
         
-        // Use DI container directly instead of building intermediate ServiceProvider
         using var sp = reporterServices.BuildServiceProvider();
         var labeler = sp.GetRequiredService<ITradeOutcomeLabeler>();
         var store = sp.GetRequiredService<IOutcomeSummaryStore>();
@@ -94,7 +86,6 @@ if (dailyRollupRequested)
     }
     else
     {
-        // Fallback: no outcomes or rotation
         var reporter = new DailyRollupReporter();
         await reporter.RunAsync(journalPath, writeToFile, outputPath);
     }
@@ -103,7 +94,6 @@ if (dailyRollupRequested)
 
 if (mode == "record")
 {
-    // RECORD MODE: Simple IBKR data recorder (writes L2 + tape to JSONL files)
     Log.Information("Starting in RECORD mode - IBKR data will be written to logs/");
     LogSessionStart("Record mode");
     
@@ -122,7 +112,6 @@ if (mode == "record")
 
 if (mode == "diagnostics")
 {
-    // DIAGNOSTICS MODE: Test subscription health for symbols on various exchanges
     Log.Information("Starting in DIAGNOSTICS mode - testing subscription health");
     LogSessionStart("Diagnostics mode");
     
@@ -130,7 +119,6 @@ if (mode == "diagnostics")
         .UseSerilog()
         .ConfigureServices((context, services) =>
         {
-            // Add required services for diagnostics
             services.AddSingleton<IRequestIdSource>(sp => new IbkrRequestIdSource(sp.GetRequiredService<IConfiguration>()));
             services.AddSingleton<ContractClassificationCache>();
             services.AddSingleton<ContractClassificationService>();
@@ -168,18 +156,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
 
 var tradingMode = builder.Configuration.GetValue<string>("TradingMode") ?? string.Empty;
-var alertsEnabled = builder.Configuration.GetValue("AlertsEnabled", true);
 var recordBlueprints = builder.Configuration.GetValue("RecordBlueprints", true);
 var isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
 var sessionLabel = isShadowMode ? "Shadow trading" : "Trading";
-var universeSource = builder.Configuration.GetValue<string>("Universe:Source");
-var isLegacyUniverse = string.IsNullOrWhiteSpace(universeSource)
-    || string.Equals(universeSource, "Legacy", StringComparison.OrdinalIgnoreCase);
 
  if (isShadowMode)
  {
-     Log.Information("TradingMode=Shadow (AlertsEnabled={AlertsEnabled}, RecordBlueprints={RecordBlueprints})",
-         alertsEnabled, recordBlueprints);
+     Log.Information("TradingMode=Shadow (RecordBlueprints={RecordBlueprints})", recordBlueprints);
  }
  LogSessionStart(sessionLabel);
 
@@ -206,47 +189,11 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v1", new() { Title = "RamStockAlerts API", Version = "v1" });
 });
 
-// Database configuration - support both SQLite and PostgreSQL
-var usePostgreSQL = builder.Configuration.GetValue<bool>("UsePostgreSQL");
-if (usePostgreSQL)
-{
-    builder.Services.AddDbContext<AppDbContext>(options =>
-        options.UseNpgsql(builder.Configuration.GetConnectionString("PostgreSQL")));
-    Log.Information("Using PostgreSQL database");
-}
-else
-{
-    builder.Services.AddDbContext<AppDbContext>(options =>
-        options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") 
-            ?? "Data Source=ramstockalerts.db"));
-    Log.Information("Using SQLite database");
-}
-
-// Caching for universe and circuit breaker
+// Caching for universe
 builder.Services.AddMemoryCache();
-
-// Add HttpClient for alert channels and Polygon
-builder.Services.AddHttpClient<DiscordAlertChannel>();
-builder.Services.AddHttpClient("Polygon");
 builder.Services.AddHttpClient();
 
-// Register alert channels in order (Discord -> SMS -> Email)
-// They will be resolved in the order they are registered for failover
-builder.Services.AddScoped<IAlertChannel, DiscordAlertChannel>();
-builder.Services.AddScoped<IAlertChannel, SmsAlertChannel>();
-builder.Services.AddScoped<IAlertChannel, EmailAlertChannel>();
-builder.Services.AddScoped<MultiChannelNotificationService>();
-
 // Register services
-builder.Services.AddScoped<SignalService>();
-builder.Services.AddScoped<AlertThrottlingService>();
-builder.Services.AddSingleton<AlpacaTradingClient>();
-builder.Services.AddSingleton<SignalValidator>();
-builder.Services.AddSingleton<TradeBlueprint>();
-builder.Services.AddSingleton<CircuitBreakerService>();
-builder.Services.AddScoped<PerformanceTracker>();
-builder.Services.AddSingleton<ApiQuotaTracker>();
-builder.Services.AddScoped<BacktestService>();
 builder.Services.AddSingleton<ShadowTradeJournal>();
 builder.Services.AddSingleton<IShadowTradeJournal>(sp => sp.GetRequiredService<ShadowTradeJournal>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ShadowTradeJournal>());
@@ -271,40 +218,7 @@ builder.Services.AddSingleton<MarketDataSubscriptionManager>(sp =>
         sp.GetRequiredService<OrderFlowMetrics>(),
         sp.GetService<IShadowTradeJournal>()));
 
-if (!isShadowMode && isLegacyUniverse)
-{
-    builder.Services.AddSingleton<LegacyUniverseBuilder>();
-}
-
-// Event store - use PostgreSQL-backed if enabled, otherwise use file-based store
-if (usePostgreSQL)
-{
-    builder.Services.AddSingleton<IEventStore, PostgresEventStore>();
-}
-else
-{
-    builder.Services.AddSingleton<IEventStore, FileEventStore>();
-}
-
-if (!isShadowMode)
-{
-    builder.Services.AddSingleton<AlpacaStreamClient>();
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<AlpacaStreamClient>());
-
-    // Register Polygon background service only if Alpaca is not configured (fallback for daily aggregates)
-    var alpacaKey = builder.Configuration["Alpaca:Key"];
-    if (string.IsNullOrEmpty(alpacaKey))
-    {
-        builder.Services.AddHostedService<PolygonRestClient>();
-        Log.Warning("Alpaca not configured. Using PolygonRestClient as fallback (development mode).");
-    }
-}
-else
-{
-    Log.Information("Shadow mode active. AlpacaStreamClient hosting and PolygonRestClient are disabled.");
-}
-
-// Register order flow metrics and signal validation (IBKR Phase 3-4)
+// Register order flow metrics and signal validation
 builder.Services.AddSingleton<OrderFlowMetrics>();
 builder.Services.AddSingleton<OrderFlowSignalValidator>();
 
@@ -314,23 +228,21 @@ if (OperatingSystem.IsWindows())
     Log.Information("[System] Windows keep-awake helper registered.");
 }
 
-// Register outcome labeling and summary services (Phase 1)
+// Register outcome labeling and summary services
 var outcomesFilePath = builder.Configuration.GetValue<string>("Outcomes:FilePath")
     ?? Path.Combine("logs", "trade-outcomes.jsonl");
 builder.Services.AddSingleton<ITradeOutcomeLabeler, TradeOutcomeLabeler>();
 builder.Services.AddSingleton<IOutcomeSummaryStore>(sp => new FileBasedOutcomeSummaryStore(outcomesFilePath));
 Log.Information("Outcome labeling services registered. Outcomes file: {Path}", outcomesFilePath);
 
-// Register journal rotation service (Phase 2.3)
+// Register journal rotation service
 builder.Services.AddSingleton<IJournalRotationService, FileBasedJournalRotationService>();
 Log.Information("Journal rotation service registered");
 
-// Register Execution module (F0-F3)
+// Register Execution module
 var executionEnabled = builder.Configuration.GetValue("Execution:Enabled", false);
 var executionBroker = builder.Configuration.GetValue("Execution:Broker", "Fake");
 
-// Always register types (even if disabled) - controller will check enabled flag
-// Bind ExecutionOptions from configuration
 var executionOptions = new RamStockAlerts.Execution.Contracts.ExecutionOptions();
 builder.Configuration.GetSection("Execution").Bind(executionOptions);
 
@@ -343,10 +255,10 @@ builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IRiskManager>(
     return new RamStockAlerts.Execution.Risk.RiskManagerV0(executionOptions, maxNotional, maxShares);
 });
 
-// Broker selection based on config
+// Broker selection
 if (string.Equals(executionBroker, "IBKR", StringComparison.OrdinalIgnoreCase))
 {
-    // TODO F4: Implement IbkrBrokerClient
+    // TODO: Implement IbkrBrokerClient
     Log.Warning("Execution:Broker=IBKR requested but IbkrBrokerClient not yet implemented. Falling back to FakeBrokerClient.");
     builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IBrokerClient, 
         RamStockAlerts.Execution.Services.FakeBrokerClient>();
@@ -375,7 +287,7 @@ else
     Log.Information("Execution module DISABLED (endpoints will return 503). Set Execution:Enabled=true to enable.");
 }
 
-// Register IBKR market data client (Phase 1-2) if configured
+// Register IBKR market data client
 var ibkrEnabled = builder.Configuration.GetValue("IBKR:Enabled", false);
 if (ibkrEnabled)
 {
@@ -385,21 +297,7 @@ if (ibkrEnabled)
 }
 
 // Health checks
-var healthChecks = builder.Services.AddHealthChecks();
-
-if (usePostgreSQL)
-{
-    healthChecks.AddNpgSql(
-        builder.Configuration.GetConnectionString("PostgreSQL") ?? "",
-        name: "postgresql",
-        tags: new[] { "db", "sql", "postgresql" });
-}
-else
-{
-    healthChecks.AddDbContextCheck<AppDbContext>(
-        name: "sqlite",
-        tags: new[] { "db", "sql", "sqlite" });
-}
+builder.Services.AddHealthChecks();
 
 // Add CORS for development
 builder.Services.AddCors(options =>
@@ -413,23 +311,6 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
-
-// Ensure database is created (skip in test environment)
-if (!app.Environment.IsEnvironment("Testing"))
-{
-    using (var scope = app.Services.CreateScope())
-    {
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        if (usePostgreSQL)
-        {
-            await db.Database.MigrateAsync();
-        }
-        else
-        {
-            db.Database.EnsureCreated();
-        }
-    }
-}
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
