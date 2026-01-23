@@ -1763,7 +1763,7 @@ public sealed class ShadowTradingCoordinator
     /// <summary>
     /// Tracks an accepted signal for post-signal quality monitoring.
     /// </summary>
-    private void TrackAcceptedSignal(string symbol, string direction, Guid decisionId, decimal baselineSpread, decimal baselineTapeVelocity, long nowMs)
+    private void TrackAcceptedSignal(string symbol, string direction, Guid decisionId, decimal baselineSpread, int baselineSideVelocity, int baselineOppositeVelocity, long nowMs)
     {
         if (!_postSignalMonitoringEnabled)
         {
@@ -1776,7 +1776,8 @@ public sealed class ShadowTradingCoordinator
             Direction = direction,
             DecisionId = decisionId,
             BaselineSpread = baselineSpread,
-            BaselineTapeVelocity = baselineTapeVelocity,
+            BaselineSideVelocity = baselineSideVelocity,
+            BaselineOppositeVelocity = baselineOppositeVelocity,
             AcceptanceTimestampMs = nowMs,
             IsCanceled = false
         };
@@ -1784,8 +1785,8 @@ public sealed class ShadowTradingCoordinator
         _acceptedSignals[symbol] = tracker;
         
         _logger.LogDebug(
-            "[Shadow] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, BaselineTape={Tape:F2} tps",
-            symbol, direction, baselineSpread, baselineTapeVelocity);
+            "[Shadow] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, SideVel={SideVel}, OppVel={OppVel}",
+            symbol, direction, baselineSpread, baselineSideVelocity, baselineOppositeVelocity);
     }
 
     /// <summary>
