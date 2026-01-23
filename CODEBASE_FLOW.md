@@ -174,3 +174,34 @@ sequenceDiagram
     end
 ```
 ```
+# RamStockAlerts – Local Runbook (Windows)
+
+This document describes how to run RamStockAlerts continuously on Windows
+while allowing active development, branching, and parallel builds.
+
+## Core Principle
+
+Never run the app from the working git directory.
+
+Always run from a published output folder to avoid:
+- file locks
+- accidental binary overwrites
+- branch switches affecting a running process
+
+---
+
+## Folder Layout
+
+C:\workspace\RamStockAlerts\        # Git working directory (dev only)
+C:\run\RamStockAlerts\shadow\       # Stable running instance
+C:\run\RamStockAlerts\dev\          # Test / next build (optional)
+
+---
+
+## Build & Run (Stable Instance)
+
+### Publish Release Build
+Creates a self-contained output folder that will not change while running.
+
+```powershell
+dotnet publish -c Release -o C:\run\RamStockAlerts\shadow
