@@ -56,3 +56,6 @@ appsettings.*.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Local agent overrides (keep out of git)
+AGENTS.override.md
