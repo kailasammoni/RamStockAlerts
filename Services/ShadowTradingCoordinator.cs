@@ -522,6 +522,8 @@ public sealed class ShadowTradingCoordinator
             SpoofScore = snapshot.SpoofScore,
             TapeAcceleration = snapshot.TapeAcceleration,
             TradesIn3Sec = snapshot.TradesIn3Sec,
+            BidTradesIn3Sec = snapshot.BidTradesIn3Sec,
+            AskTradesIn3Sec = snapshot.AskTradesIn3Sec,
             Spread = snapshot.Spread,
             MidPrice = snapshot.MidPrice,
             LastPrice = tapeStats.LastPrice,
@@ -749,6 +751,8 @@ public sealed class ShadowTradingCoordinator
             SpoofScore = snapshot.SpoofScore,
             TapeAcceleration = snapshot.TapeAcceleration,
             TradesIn3Sec = snapshot.TradesIn3Sec,
+            BidTradesIn3Sec = snapshot.BidTradesIn3Sec,
+            AskTradesIn3Sec = snapshot.AskTradesIn3Sec,
             Spread = snapshot.Spread,
             MidPrice = snapshot.MidPrice,
             LastPrice = tapeStats.LastPrice,
@@ -801,6 +805,8 @@ public sealed class ShadowTradingCoordinator
             SpoofScore = snapshot.SpoofScore,
             TapeAcceleration = snapshot.TapeAcceleration,
             TradesIn3Sec = snapshot.TradesIn3Sec,
+            BidTradesIn3Sec = snapshot.BidTradesIn3Sec,
+            AskTradesIn3Sec = snapshot.AskTradesIn3Sec,
             TapeVolume3Sec = tapeStats.Volume,
             Spread = snapshot.Spread,
             BestBidPrice = book.BestBid,
@@ -1076,8 +1082,22 @@ public sealed class ShadowTradingCoordinator
                     
                     // Phase 3.1: Track accepted signal for post-signal quality monitoring
                     var baselineSpread = entry.ObservedMetrics?.Spread ?? 0m;
-                    var baselineTapeVelocity = entry.ObservedMetrics?.TapeAcceleration ?? 0m; // Using tape acceleration as proxy for velocity
-                    TrackAcceptedSignal(entry.Symbol, entry.Direction ?? "Unknown", entry.DecisionId, baselineSpread, baselineTapeVelocity, pending.TimestampMsUtc);
+                    
+                    // Side-aware baseline velocity
+                    int baselineSideVelocity = 0;
+                    int baselineOppositeVelocity = 0;
+                    if (string.Equals(entry.Direction, "BUY", StringComparison.OrdinalIgnoreCase))
+                    {
+                        baselineSideVelocity = entry.ObservedMetrics?.AskTradesIn3Sec ?? 0;
+                        baselineOppositeVelocity = entry.ObservedMetrics?.BidTradesIn3Sec ?? 0;
+                    }
+                    else if (string.Equals(entry.Direction, "SELL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        baselineSideVelocity = entry.ObservedMetrics?.BidTradesIn3Sec ?? 0;
+                        baselineOppositeVelocity = entry.ObservedMetrics?.AskTradesIn3Sec ?? 0;
+                    }
+
+                    TrackAcceptedSignal(entry.Symbol, entry.Direction ?? "Unknown", entry.DecisionId, baselineSpread, baselineSideVelocity, baselineOppositeVelocity, pending.TimestampMsUtc);
                 }
                 _logger.LogInformation("[Shadow] Signal accepted for {Symbol} ({Direction}) Score={Score}",
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
@@ -1639,18 +1659,57 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
-        var currentSpread = book.BestAsk - book.BestBid;
-        var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
-        var currentTapeVelocity = snapshot?.TapeAcceleration ?? 0m;
-
-        // Tape slowdown check (velocity drops by >50%)
-        if (tracker.BaselineTapeVelocity > 0m && currentTapeVelocity < tracker.BaselineTapeVelocity * (1m - (decimal)_tapeSlowdownThreshold))
+        // 1. Grace Period check: allow some time for the trade to breathe (3s)
+        var monitoringAgeMs = nowMs - tracker.AcceptanceTimestampMs;
+        if (monitoringAgeMs < 3000)
         {
-            CancelSignal(tracker, "TapeSlowdown", currentTapeVelocity, tracker.BaselineTapeVelocity, nowMs);
             return;
         }
 
-        // Spread blowout check (spread increases by >50%)
+        var currentSpread = book.BestAsk - book.BestBid;
+        var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
+        if (snapshot == null) return;
+
+        // 2. Side-aware velocity check
+        int currentSideVelocity;
+        int currentOppositeVelocity;
+        bool isBuy = string.Equals(tracker.Direction, "BUY", StringComparison.OrdinalIgnoreCase);
+
+        if (isBuy)
+        {
+            currentSideVelocity = snapshot.AskTradesIn3Sec;
+            currentOppositeVelocity = snapshot.BidTradesIn3Sec;
+        }
+        else
+        {
+            currentSideVelocity = snapshot.BidTradesIn3Sec;
+            currentOppositeVelocity = snapshot.AskTradesIn3Sec;
+        }
+
+        // Slowdown check: Only cancel if side-velocity drops significantly AND opposite side isn't also dead
+        decimal velocityFloor = tracker.BaselineSideVelocity * (1m - (decimal)_tapeSlowdownThreshold);
+        if (tracker.BaselineSideVelocity > 2 && currentSideVelocity < (int)velocityFloor)
+        {
+            tracker.ConsecutiveSlowdownCount++;
+            if (tracker.ConsecutiveSlowdownCount >= 2)
+            {
+                CancelSignal(tracker, "TapeSlowdown", (decimal)currentSideVelocity, (decimal)tracker.BaselineSideVelocity, nowMs);
+                return;
+            }
+        }
+        else
+        {
+            tracker.ConsecutiveSlowdownCount = 0;
+        }
+
+        // 3. Reversal check: if opposite side velocity dominates heavily (e.g. 5+ prints AND 3x side velocity)
+        if (currentOppositeVelocity > 5 && currentOppositeVelocity > currentSideVelocity * 3)
+        {
+            CancelSignal(tracker, "TapeReversal", (decimal)currentOppositeVelocity, (decimal)currentSideVelocity, nowMs);
+            return;
+        }
+
+        // 4. Spread blowout check
         if (tracker.BaselineSpread > 0m && currentSpread > tracker.BaselineSpread * (1m + (decimal)_spreadBlowoutThreshold))
         {
             CancelSignal(tracker, "SpreadBlowout", currentSpread, tracker.BaselineSpread, nowMs);
@@ -1704,7 +1763,7 @@ public sealed class ShadowTradingCoordinator
     /// <summary>
     /// Tracks an accepted signal for post-signal quality monitoring.
     /// </summary>
-    private void TrackAcceptedSignal(string symbol, string direction, Guid decisionId, decimal baselineSpread, decimal baselineTapeVelocity, long nowMs)
+    private void TrackAcceptedSignal(string symbol, string direction, Guid decisionId, decimal baselineSpread, int baselineSideVelocity, int baselineOppositeVelocity, long nowMs)
     {
         if (!_postSignalMonitoringEnabled)
         {
@@ -1717,7 +1776,8 @@ public sealed class ShadowTradingCoordinator
             Direction = direction,
             DecisionId = decisionId,
             BaselineSpread = baselineSpread,
-            BaselineTapeVelocity = baselineTapeVelocity,
+            BaselineSideVelocity = baselineSideVelocity,
+            BaselineOppositeVelocity = baselineOppositeVelocity,
             AcceptanceTimestampMs = nowMs,
             IsCanceled = false
         };
@@ -1725,8 +1785,8 @@ public sealed class ShadowTradingCoordinator
         _acceptedSignals[symbol] = tracker;
         
         _logger.LogDebug(
-            "[Shadow] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, BaselineTape={Tape:F2} tps",
-            symbol, direction, baselineSpread, baselineTapeVelocity);
+            "[Shadow] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, SideVel={SideVel}, OppVel={OppVel}",
+            symbol, direction, baselineSpread, baselineSideVelocity, baselineOppositeVelocity);
     }
 
     /// <summary>
@@ -1820,11 +1880,13 @@ public sealed class ShadowTradingCoordinator
         public required string Direction { get; init; }
         public required Guid DecisionId { get; init; }
         public required decimal BaselineSpread { get; init; }
-        public required decimal BaselineTapeVelocity { get; init; }
+        public required int BaselineSideVelocity { get; init; }
+        public required int BaselineOppositeVelocity { get; init; }
         public required long AcceptanceTimestampMs { get; init; }
         public bool IsCanceled { get; set; }
         public string? CancellationReason { get; set; }
         public long CancellationTimestampMs { get; set; }
+        public int ConsecutiveSlowdownCount { get; set; }
     }
 
     /// <summary>

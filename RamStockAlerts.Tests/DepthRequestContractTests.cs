@@ -26,7 +26,8 @@ public class DepthRequestContractTests
 
         var contract = IBkrMarketDataClient.BuildDepthContractForDepth("AAA", classification);
 
-        Assert.Equal("SMART", contract.Exchange);
+        // NASDAQ TotalView requires ISLAND exchange in IBKR API
+        Assert.Equal("ISLAND", contract.Exchange);
         Assert.Equal("NASDAQ", contract.PrimaryExch);
     }
 

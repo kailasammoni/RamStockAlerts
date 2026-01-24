@@ -53,6 +53,8 @@ public sealed record FeatureSnapshot
     public decimal SpoofScore { get; init; }
     public decimal TapeAcceleration { get; init; }
     public int TradesIn3Sec { get; init; }
+    public int BidTradesIn3Sec { get; init; }
+    public int AskTradesIn3Sec { get; init; }
     public decimal Spread { get; init; }
     public decimal MidPrice { get; init; }
     public decimal? LastPrice { get; init; }

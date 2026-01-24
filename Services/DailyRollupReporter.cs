@@ -367,18 +367,18 @@ public sealed class DailyRollupReporter
             sb.AppendLine($"- No hit: {metrics.NoHitCount}");
 
             if (metrics.WinRate.HasValue)
-                sb.AppendLine($"- Win rate: {metrics.WinRate.Value:P1}");
+                sb.AppendLine($"- Win rate: {(metrics.WinRate.Value * 100).ToString("F1", CultureInfo.InvariantCulture)}%");
 
             if (metrics.AvgWinRMultiple.HasValue)
-                sb.AppendLine($"- Avg +R (wins): {metrics.AvgWinRMultiple.Value:F2}R");
+                sb.AppendLine($"- Avg +R (wins): {metrics.AvgWinRMultiple.Value.ToString("F2", CultureInfo.InvariantCulture)}R");
 
             if (metrics.AvgLossRMultiple.HasValue)
-                sb.AppendLine($"- Avg -R (losses): {metrics.AvgLossRMultiple.Value:F2}R");
+                sb.AppendLine($"- Avg -R (losses): {metrics.AvgLossRMultiple.Value.ToString("F2", CultureInfo.InvariantCulture)}R");
 
             if (metrics.Expectancy.HasValue)
-                sb.AppendLine($"- Expectancy: {metrics.Expectancy.Value:F2}R per trade");
+                sb.AppendLine($"- Expectancy: {metrics.Expectancy.Value.ToString("F2", CultureInfo.InvariantCulture)}R per trade");
 
-            sb.AppendLine($"- Total P&L: ${metrics.TotalPnlUsd:F2}");
+            sb.AppendLine($"- Total P&L: ${metrics.TotalPnlUsd.ToString("F2", CultureInfo.InvariantCulture)}");
             
             // Append warning thresholds
             AppendMetricsWarnings(sb, metrics);
@@ -393,7 +393,7 @@ public sealed class DailyRollupReporter
             {
                 if (metrics.WinRate.Value < 0.60m)
                 {
-                    warnings.Add($"⚠ Win rate {metrics.WinRate.Value:P1} below target (≥60%)");
+                    warnings.Add($"⚠ Win rate {(metrics.WinRate.Value * 100).ToString("F1", CultureInfo.InvariantCulture)}% below target (≥60%)");
                 }
             }
 
@@ -402,7 +402,7 @@ public sealed class DailyRollupReporter
             {
                 if (metrics.Expectancy.Value < 0.25m)
                 {
-                    warnings.Add($"⚠ Expectancy {metrics.Expectancy.Value:F2}R below target (≥0.25R)");
+                    warnings.Add($"⚠ Expectancy {metrics.Expectancy.Value.ToString("F2", CultureInfo.InvariantCulture)}R below target (≥0.25R)");
                 }
             }
 

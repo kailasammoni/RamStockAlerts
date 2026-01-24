@@ -23,6 +23,7 @@ internal static class ShadowTradingCoordinatorTestHelper
             ["MarketData:EnableTape"] = "true",
             ["MarketData:MaxLines"] = "10",
             ["MarketData:TickByTickMaxSymbols"] = "1",
+            ["MarketData:GateRejectLogMinIntervalMs"] = "0",
             // Set longer triage lookback (30s) so symbols with old trades still pass triage eligibility,
             // while keeping warmup window at 15s to test "TapeNotWarmedUp" scenarios
             ["MarketData:TriageLookbackMs"] = "30000"

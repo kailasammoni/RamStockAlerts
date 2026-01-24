@@ -55,52 +55,13 @@ public class MvpScopeDisciplineTests
     public void DefaultConfiguration_UsesIbkrPrimarySource()
     {
         // Validates that IBKR is the primary and only market data source
-        // No Alpaca or Polygon in MVP scope
         var config = BuildDefaultConfiguration();
         
-        var universeSource = config.GetValue("Universe:Source", "Polygon");
+        var universeSource = config.GetValue("Universe:Source", "Static");
         var ibkrEnabled = config.GetValue("IBKR:Enabled", false);
         
         Assert.Equal("IbkrScanner", universeSource);
         Assert.True(ibkrEnabled, "IBKR must be enabled as primary source");
-    }
-
-    [Fact]
-    public void DefaultConfiguration_DisablesAlpacaAutoTrading()
-    {
-        // Validates that Alpaca auto-trading is disabled (legacy code should not activate)
-        // Alpaca exists for historical reasons but must not auto-trade
-        var config = BuildDefaultConfiguration();
-        
-        var alpacaAutoTrade = config.GetValue("Alpaca:EnableAutoTrading", true);
-        
-        Assert.False(alpacaAutoTrade, "Alpaca auto-trading must be disabled for MVP scope");
-    }
-
-    [Fact]
-    public void DefaultConfiguration_HasNoPolygonApiKey()
-    {
-        // Validates that Polygon API key is empty by default
-        // Polygon is out of scope for MVP
-        var config = BuildDefaultConfiguration();
-        
-        var polygonKey = config.GetValue("Polygon:ApiKey", "default-key");
-        
-        Assert.Empty(polygonKey);
-    }
-
-    [Fact]
-    public void DefaultConfiguration_HasNoAlpacaCredentials()
-    {
-        // Validates that Alpaca credentials are empty by default
-        // Alpaca is out of scope for MVP
-        var config = BuildDefaultConfiguration();
-        
-        var alpacaKey = config.GetValue("Alpaca:Key", "default-key");
-        var alpacaSecret = config.GetValue("Alpaca:Secret", "default-secret");
-        
-        Assert.Empty(alpacaKey);
-        Assert.Empty(alpacaSecret);
     }
 
     [Fact]
@@ -174,15 +135,12 @@ public class MvpScopeDisciplineTests
     public void MvpScope_SingleProviderOnly()
     {
         // Documents that MVP uses IBKR exclusively
-        // No multi-broker support (Alpaca/Polygon are legacy/out-of-scope)
         var config = BuildDefaultConfiguration();
         
         var ibkrEnabled = config.GetValue("IBKR:Enabled", false);
-        var alpacaAutoTrade = config.GetValue("Alpaca:EnableAutoTrading", true);
         var universeSource = config.GetValue("Universe:Source", "");
         
         Assert.True(ibkrEnabled);
-        Assert.False(alpacaAutoTrade);
         Assert.Equal("IbkrScanner", universeSource);
     }
 
@@ -297,16 +255,11 @@ public class MvpScopeDisciplineTests
             ["TradingMode"] = "Shadow",
             ["Universe:Source"] = "IbkrScanner",
             ["IBKR:Enabled"] = "true",
-            ["Alpaca:EnableAutoTrading"] = "false",
-            ["Alpaca:Key"] = "",
-            ["Alpaca:Secret"] = "",
-            ["Polygon:ApiKey"] = "",
             ["Discord:WebhookUrl"] = "",
             ["Twilio:AccountSid"] = "",
             ["Email:Username"] = "",
             ["ShadowTradeJournal:FilePath"] = "logs/shadow-trade-journal.jsonl",
-            ["Report:DailyRollup"] = "false",
-            ["AlertsEnabled"] = "true" // Preview alerts enabled, but not external notifications
+            ["Report:DailyRollup"] = "false"
         };
 
         return new ConfigurationBuilder()
