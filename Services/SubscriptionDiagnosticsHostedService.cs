@@ -384,7 +384,7 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
             }
         }
 
-        public override void tickSize(int tickerId, int field, int size)
+        public override void tickSize(int tickerId, int field, decimal size)
         {
             // Field 5 = LAST_SIZE (L1)
             if (field == 5 && _sessions.TryGetValue(tickerId, out var session))
@@ -397,7 +397,7 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
             }
         }
 
-        public override void tickByTickAllLast(int reqId, int tickType, long time, double price, int size, TickAttribLast tickAttribLast, string exchange, string specialConditions)
+        public override void tickByTickAllLast(int reqId, int tickType, long time, double price, decimal size, TickAttribLast tickAttribLast, string exchange, string specialConditions)
         {
             if (_sessions.TryGetValue(reqId, out var session))
             {
@@ -409,7 +409,7 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
             }
         }
 
-        public override void updateMktDepth(int tickerId, int position, int operation, int side, double price, int size)
+        public override void updateMktDepth(int tickerId, int position, int operation, int side, double price, decimal size)
         {
             if (_sessions.TryGetValue(tickerId, out var session))
             {
@@ -421,7 +421,7 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
             }
         }
 
-        public override void error(int id, int errorCode, string errorMsg)
+        public override void error(int id, long errorTime, int errorCode, string errorMsg, string advancedOrderRejectJson)
         {
             if (_sessions.TryGetValue(id, out var session))
             {

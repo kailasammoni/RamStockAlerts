@@ -152,7 +152,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
                 throw new ArgumentException("IBKR brokerOrderId must be an integer orderId", nameof(brokerOrderId));
             }
 
-            _socket!.cancelOrder(id);
+            _socket!.cancelOrder(id, new OrderCancel());
 
             return new ExecutionResult
             {
@@ -277,7 +277,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
         var order = new Order
         {
             Action = intent.Side == OrderSide.Buy ? "BUY" : "SELL",
-            TotalQuantity = (double)qty,
+            TotalQuantity = qty,
             Tif = intent.Tif == TimeInForce.Gtc ? "GTC" : "DAY",
             Transmit = true
         };
@@ -377,7 +377,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
         _connectLock.Dispose();
     }
 
-    private sealed class Wrapper : EWrapper
+    private sealed class Wrapper : DefaultEWrapper
     {
         private readonly ILogger _logger;
         private readonly TaskCompletionSource<int> _nextValidIdTcs;
@@ -388,9 +388,9 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             _nextValidIdTcs = nextValidIdTcs;
         }
 
-        public void nextValidId(int orderId) => _nextValidIdTcs.TrySetResult(orderId);
+        public override void nextValidId(int orderId) => _nextValidIdTcs.TrySetResult(orderId);
 
-        public void error(int id, int errorCode, string errorMsg)
+        public override void error(int id, long errorTime, int errorCode, string errorMsg, string advancedOrderRejectJson)
         {
             if (errorCode is 2104 or 2106 or 2158 or 2107)
             {
@@ -400,99 +400,14 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             _logger.LogWarning("[IBKR] error id={Id} code={Code} msg={Msg}", id, errorCode, errorMsg);
         }
 
-        public void error(string str) => _logger.LogWarning("[IBKR] error: {Message}", str);
-        public void error(Exception e) => _logger.LogWarning(e, "[IBKR] exception");
+        public override void error(string str) => _logger.LogWarning("[IBKR] error: {Message}", str);
+        public override void error(Exception e) => _logger.LogWarning(e, "[IBKR] exception");
 
-        public void connectionClosed() => _logger.LogWarning("[IBKR] Connection closed");
+        public override void connectionClosed() => _logger.LogWarning("[IBKR] Connection closed");
 
         // Optional fill tracking (best-effort).
-        public void orderStatus(int orderId, string status, double filled, double remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, string whyHeld, double mktCapPrice) { }
-        public void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
-        public void commissionReport(CommissionReport commissionReport) { }
-
-        // Remaining EWrapper members not used by execution client.
-        public void currentTime(long time) { }
-        public void tickPrice(int tickerId, int field, double price, TickAttrib attribs) { }
-        public void tickSize(int tickerId, int field, int size) { }
-        public void tickOptionComputation(int tickerId, int field, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) { }
-        public void tickGeneric(int tickerId, int tickType, double value) { }
-        public void tickString(int tickerId, int tickType, string value) { }
-        public void tickEFP(int tickerId, int tickType, double basisPoints, string formattedBasisPoints, double impliedFuture, int holdDays, string futureExpiry, double dividendImpact, double dividendsToExpiry) { }
-        public void openOrder(int orderId, Contract contract, Order order, OrderState orderState) { }
-        public void openOrderEnd() { }
-        public void updateAccountValue(string key, string value, string currency, string accountName) { }
-        public void updatePortfolio(Contract contract, double position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, string accountName) { }
-        public void updateAccountTime(string timeStamp) { }
-        public void accountDownloadEnd(string accountName) { }
-        public void accountSummary(int reqId, string account, string tag, string value, string currency) { }
-        public void accountSummaryEnd(int reqId) { }
-        public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
-        public void contractDetails(int reqId, ContractDetails contractDetails) { }
-        public void contractDetailsEnd(int reqId) { }
-        public void fundamentalData(int reqId, string data) { }
-        public void historicalData(int reqId, Bar bar) { }
-        public void historicalDataEnd(int reqId, string start, string end) { }
-        public void marketDataType(int reqId, int marketDataType) { }
-        public void updateMktDepth(int tickerId, int position, int operation, int side, double price, int size) { }
-        public void updateMktDepthL2(int tickerId, int position, string marketMaker, int operation, int side, double price, int size, bool isSmartDepth) { }
-        public void updateNewsBulletin(int msgId, int msgType, string message, string origExchange) { }
-        public void managedAccounts(string accountsList) { }
-        public void receiveFA(int faDataType, string faXmlData) { }
-        public void scannerParameters(string xml) { }
-        public void scannerData(int reqId, int rank, ContractDetails contractDetails, string distance, string benchmark, string projection, string legsStr) { }
-        public void scannerDataEnd(int reqId) { }
-        public void realtimeBar(int reqId, long time, double open, double high, double low, double close, long volume, double wap, int count) { }
-        public void deltaNeutralValidation(int reqId, DeltaNeutralContract deltaNeutralContract) { }
-        public void tickSnapshotEnd(int tickerId) { }
-        public void marketRule(int marketRuleId, PriceIncrement[] priceIncrements) { }
-        public void pnl(int reqId, double dailyPnL, double unrealizedPnL, double realizedPnL) { }
-        public void pnlSingle(int reqId, int pos, double dailyPnL, double unrealizedPnL, double realizedPnL, double value) { }
-        public void historicalTicks(int reqId, HistoricalTick[] ticks, bool done) { }
-        public void historicalTicksBidAsk(int reqId, HistoricalTickBidAsk[] ticks, bool done) { }
-        public void historicalTicksLast(int reqId, HistoricalTickLast[] ticks, bool done) { }
-        public void tickByTickAllLast(int reqId, int tickType, long time, double price, int size, TickAttribLast tickAttribLast, string exchange, string specialConditions) { }
-        public void tickByTickBidAsk(int reqId, long time, double bidPrice, double askPrice, int bidSize, int askSize, TickAttribBidAsk tickAttribBidAsk) { }
-        public void tickByTickMidPoint(int reqId, long time, double midPoint) { }
-        public void headTimestamp(int reqId, string headTimestamp) { }
-        public void histogramData(int reqId, HistogramEntry[] data) { }
-        public void rerouteMktDataReq(int reqId, int conId, string exchange) { }
-        public void rerouteMktDepthReq(int reqId, int conId, string exchange) { }
-        public void tickReqParams(int tickerId, double minTick, string bboExchange, int snapshotPermissions) { }
-        public void position(string account, Contract contract, double pos, double avgCost) { }
-        public void positionEnd() { }
-        public void positionMulti(int reqId, string account, string modelCode, Contract contract, double pos, double avgCost) { }
-        public void positionMultiEnd(int reqId) { }
-        public void accountUpdateMulti(int reqId, string account, string modelCode, string key, string value, string currency) { }
-        public void accountUpdateMultiEnd(int reqId) { }
-        public void securityDefinitionOptionParameter(int reqId, string exchange, int underlyingConId, string tradingClass, string multiplier, HashSet<string> expirations, HashSet<double> strikes) { }
-        public void securityDefinitionOptionParameterEnd(int reqId) { }
-        public void softDollarTiers(int reqId, SoftDollarTier[] tiers) { }
-        public void familyCodes(FamilyCode[] familyCodes) { }
-        public void symbolSamples(int reqId, ContractDescription[] contractDescriptions) { }
-        public void mktDepthExchanges(DepthMktDataDescription[] depthMktDataDescriptions) { }
-        public void tickNews(int tickerId, long timeStamp, string providerCode, string articleId, string headline, string extraData) { }
-        public void smartComponents(int reqId, Dictionary<int, KeyValuePair<string, char>> theMap) { }
-        public void newsProviders(NewsProvider[] newsProviders) { }
-        public void newsArticle(int requestId, int articleType, string articleText) { }
-        public void historicalNews(int requestId, string time, string providerCode, string articleId, string headline) { }
-        public void historicalNewsEnd(int requestId, bool hasMore) { }
-        public void wshMetaData(int reqId, string dataJson) { }
-        public void wshEventData(int reqId, string dataJson) { }
-        public void historicalDataUpdate(int reqId, Bar bar) { }
-        public void execDetailsEnd(int reqId) { }
-        public void completedOrder(Contract contract, Order order, OrderState orderState) { }
-        public void completedOrdersEnd() { }
-        public void replaceFAEnd(int reqId, string text) { }
-        public void displayGroupList(int reqId, string groups) { }
-        public void displayGroupUpdated(int reqId, string contractInfo) { }
-        public void verifyMessageAPI(string apiData) { }
-        public void verifyCompleted(bool isSuccessful, string errorText) { }
-        public void verifyAndAuthMessageAPI(string apiData, string xyzChallange) { }
-        public void verifyAndAuthCompleted(bool isSuccessful, string errorText) { }
-        public void connectAck() { }
-        public void orderBound(long orderId, int apiClientId, int apiOrderId) { }
-        public void userInfo(int reqId, string whiteBrandingId) { }
-        public void marketRule(int marketRuleId, List<PriceIncrement> priceIncrements) { }
-        public void completedOrderEnd() { }
+        public override void orderStatus(int orderId, string status, decimal filled, decimal remaining, double avgFillPrice, long permId, int parentId, double lastFillPrice, int clientId, string whyHeld, double mktCapPrice) { }
+        public override void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
+        public override void commissionAndFeesReport(CommissionAndFeesReport commissionAndFeesReport) { }
     }
 }
