@@ -8,6 +8,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Decisions;
 using RamStockAlerts.Models.Microstructure;
+using RamStockAlerts.Models.Notifications;
 
 namespace RamStockAlerts.Services;
 
@@ -22,6 +23,7 @@ public sealed class ShadowTradingCoordinator
     private readonly IShadowTradeJournal _journal;
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly ILogger<ShadowTradingCoordinator> _logger;
+    private readonly DiscordNotificationService? _discordNotificationService;
     private readonly bool _enabled;
     private readonly bool _recordBlueprints;
     private readonly string _tradingMode;
@@ -61,7 +63,8 @@ public sealed class ShadowTradingCoordinator
         IShadowTradeJournal journal,
         ScarcityController scarcityController,
         MarketDataSubscriptionManager subscriptionManager,
-        ILogger<ShadowTradingCoordinator> logger)
+        ILogger<ShadowTradingCoordinator> logger,
+        DiscordNotificationService? discordNotificationService = null)
     {
         _metrics = metrics;
         _validator = validator;
@@ -69,6 +72,7 @@ public sealed class ShadowTradingCoordinator
         _subscriptionManager = subscriptionManager;
         _scarcityController = scarcityController;
         _logger = logger;
+        _discordNotificationService = discordNotificationService;
 
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
@@ -1101,6 +1105,8 @@ public sealed class ShadowTradingCoordinator
                 }
                 _logger.LogInformation("[Shadow] Signal accepted for {Symbol} ({Direction}) Score={Score}",
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
+
+                TryNotifyDiscordAlert(entry, pending);
             }
             else
             {
@@ -1119,6 +1125,91 @@ public sealed class ShadowTradingCoordinator
             EnqueueEntry(entry);
             _pendingRankedEntries.Remove(ranked.CandidateId);
         }
+    }
+
+    private void TryNotifyDiscordAlert(ShadowTradeJournalEntry entry, PendingRankEntry pending)
+    {
+        if (_discordNotificationService == null || string.IsNullOrWhiteSpace(entry.Symbol))
+        {
+            return;
+        }
+
+        var mode = string.Equals(_tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase)
+            ? DiscordNotificationMode.Shadow
+            : DiscordNotificationMode.Live;
+
+        var intendedAction = string.Equals(_tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : BuildIntendedAction(entry.Direction, pending.Blueprint);
+
+        var details = BuildAlertDetails(entry, pending.Blueprint);
+        var timestamp = entry.DecisionTimestampUtc ?? DateTimeOffset.UtcNow;
+
+        _ = _discordNotificationService.SendAlertAsync(
+            entry.Symbol,
+            "Liquidity Setup",
+            timestamp,
+            mode,
+            intendedAction,
+            details);
+    }
+
+    private static Dictionary<string, string> BuildAlertDetails(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)
+    {
+        var details = new Dictionary<string, string>();
+
+        if (!string.IsNullOrWhiteSpace(entry.Direction))
+        {
+            details["Side"] = string.Equals(entry.Direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Long" : "Short";
+        }
+
+        var score = entry.DecisionInputs?.Score;
+        if (score.HasValue)
+        {
+            details["Score"] = score.Value.ToString("F2");
+        }
+
+        if (blueprint.Success)
+        {
+            if (blueprint.Entry.HasValue)
+            {
+                details["Entry"] = blueprint.Entry.Value.ToString("F2");
+            }
+
+            if (blueprint.Stop.HasValue)
+            {
+                details["Stop"] = blueprint.Stop.Value.ToString("F2");
+            }
+
+            if (blueprint.Target.HasValue)
+            {
+                details["Target"] = blueprint.Target.Value.ToString("F2");
+            }
+        }
+
+        var spread = entry.DecisionInputs?.Spread;
+        if (spread.HasValue)
+        {
+            details["Spread"] = spread.Value.ToString("F4");
+        }
+
+        return details;
+    }
+
+    private static string? BuildIntendedAction(string? direction, BlueprintPlan blueprint)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            return null;
+        }
+
+        var side = string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Buy" : "Sell";
+        if (blueprint.Success && blueprint.Entry.HasValue)
+        {
+            return $"{side} @ {blueprint.Entry.Value:F2}";
+        }
+
+        return side;
     }
 
     private void EnqueueEntry(ShadowTradeJournalEntry entry)

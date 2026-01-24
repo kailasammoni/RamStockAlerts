@@ -1,12 +1,11 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
+using RamStockAlerts.Models.Notifications;
 
 namespace RamStockAlerts.Services;
 
@@ -15,8 +14,8 @@ public sealed class PreviewSignalEmitter
     private const int TapePresenceWindowMs = 3000;
     private readonly OrderFlowMetrics _metrics;
     private readonly OrderFlowSignalValidator _validator;
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<PreviewSignalEmitter> _logger;
+    private readonly DiscordNotificationService _discordNotificationService;
     private readonly bool _enabled;
     private readonly decimal _minScore;
     private readonly int _maxSignalsPerMinute;
@@ -26,7 +25,6 @@ public sealed class PreviewSignalEmitter
     private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _discordEnabled;
     private readonly string _discordChannelTag;
-    private readonly string? _webhookUrl;
     private readonly Queue<DateTimeOffset> _recentSignals = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSymbolEmit = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _rateLock = new();
@@ -35,12 +33,12 @@ public sealed class PreviewSignalEmitter
         IConfiguration configuration,
         OrderFlowMetrics metrics,
         OrderFlowSignalValidator validator,
-        IHttpClientFactory httpClientFactory,
+        DiscordNotificationService discordNotificationService,
         ILogger<PreviewSignalEmitter> logger)
     {
         _metrics = metrics;
         _validator = validator;
-        _httpClientFactory = httpClientFactory;
+        _discordNotificationService = discordNotificationService;
         _logger = logger;
 
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
@@ -55,7 +53,6 @@ public sealed class PreviewSignalEmitter
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
         _discordEnabled = configuration.GetValue("Preview:DiscordEnabled", true);
         _discordChannelTag = configuration.GetValue<string>("Preview:DiscordChannelTag") ?? "PREVIEW";
-        _webhookUrl = configuration["Discord:WebhookUrl"];
 
         if (_enabled)
         {
@@ -114,7 +111,7 @@ public sealed class PreviewSignalEmitter
             stop,
             target);
 
-        if (_discordEnabled && !string.IsNullOrWhiteSpace(_webhookUrl))
+        if (_discordEnabled)
         {
             try
             {
@@ -177,8 +174,8 @@ public sealed class PreviewSignalEmitter
             : 0m;
 
         var tapeStats = BuildTapeStats(book, nowMs);
-        var fields = BuildFields(
-            book.Symbol,
+        var intendedAction = BuildIntendedAction(decision.Direction);
+        var details = BuildDetails(
             decision.Direction,
             score,
             entry,
@@ -188,31 +185,23 @@ public sealed class PreviewSignalEmitter
             bidAskRatio,
             tapeStats.Velocity);
 
-        var embed = new
+        var options = new DiscordNotificationSendOptions
         {
-            title = $"[{_discordChannelTag}] Liquidity Setup",
-            fields,
-            timestamp = DateTimeOffset.UtcNow.ToString("o")
+            EnabledOverride = _discordEnabled ? null : false,
+            ChannelTagOverride = _discordChannelTag
         };
 
-        var payload = new { embeds = new[] { embed } };
-        var json = JsonSerializer.Serialize(payload);
-        var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-        var client = _httpClientFactory.CreateClient();
-        var response = await client.PostAsync(_webhookUrl!, content);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorContent = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning(
-                "[PREVIEW] Discord webhook failed: {StatusCode} - {Error}",
-                response.StatusCode,
-                errorContent);
-        }
+        await _discordNotificationService.SendAlertAsync(
+            book.Symbol,
+            "Liquidity Setup",
+            DateTimeOffset.UtcNow,
+            DiscordNotificationMode.Preview,
+            intendedAction,
+            details,
+            options);
     }
 
-    private static object[] BuildFields(
-        string symbol,
+    private static Dictionary<string, string> BuildDetails(
         string? direction,
         int score,
         decimal entry,
@@ -222,35 +211,33 @@ public sealed class PreviewSignalEmitter
         decimal bidAskRatio,
         decimal? tapeVelocity)
     {
-        var fields = new List<object>
+        var details = new Dictionary<string, string>
         {
-            new { name = "Symbol", value = symbol, inline = true }
+            ["Score"] = score.ToString("F0"),
+            ["Entry"] = entry.ToString("F2"),
+            ["Stop"] = stop.ToString("F2"),
+            ["Target"] = target.ToString("F2"),
+            ["Spread"] = spread.ToString("F4"),
+            ["BidAskRatio"] = bidAskRatio.ToString("F2"),
+            ["TapeVelocityProxy"] = tapeVelocity.HasValue ? tapeVelocity.Value.ToString("F2") : "N/A"
         };
 
         if (!string.IsNullOrWhiteSpace(direction))
         {
-            var side = string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Long" : "Short";
-            fields.Add(new { name = "Side", value = side, inline = true });
+            details["Side"] = string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Long" : "Short";
         }
 
-        fields.AddRange(new[]
-        {
-            new { name = "Score", value = score.ToString("F0"), inline = true },
-            new { name = "Entry", value = entry.ToString("F2"), inline = true },
-            new { name = "Stop", value = stop.ToString("F2"), inline = true },
-            new { name = "Target", value = target.ToString("F2"), inline = true },
-            new { name = "Spread", value = spread.ToString("F4"), inline = true },
-            new { name = "BidAskRatio", value = bidAskRatio.ToString("F2"), inline = true },
-            new
-            {
-                name = "TapeVelocityProxy",
-                value = tapeVelocity.HasValue ? tapeVelocity.Value.ToString("F2") : "N/A",
-                inline = true
-            },
-            new { name = "Timestamp", value = DateTimeOffset.UtcNow.ToString("u"), inline = true }
-        });
+        return details;
+    }
 
-        return fields.ToArray();
+    private static string? BuildIntendedAction(string? direction)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            return null;
+        }
+
+        return string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Long" : "Short";
     }
 
     private sealed record TapeStats(decimal? Velocity);

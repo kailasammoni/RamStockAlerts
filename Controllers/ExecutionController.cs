@@ -2,7 +2,10 @@ namespace RamStockAlerts.Controllers;
 
 using Microsoft.AspNetCore.Mvc;
 using RamStockAlerts.Controllers.Api.Execution;
+using RamStockAlerts.Execution.Contracts;
 using RamStockAlerts.Execution.Interfaces;
+using RamStockAlerts.Models.Notifications;
+using RamStockAlerts.Services;
 
 /// <summary>
 /// Controller for manual execution via REST API.
@@ -16,17 +19,23 @@ public class ExecutionController : ControllerBase
     private readonly IExecutionLedger _ledger;
     private readonly ILogger<ExecutionController> _logger;
     private readonly bool _executionEnabled;
+    private readonly bool _isShadowMode;
+    private readonly DiscordNotificationService? _discordNotificationService;
 
     public ExecutionController(
         IExecutionService executionService,
         IExecutionLedger ledger,
         ILogger<ExecutionController> logger,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        DiscordNotificationService? discordNotificationService = null)
     {
         _executionService = executionService ?? throw new ArgumentNullException(nameof(executionService));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _executionEnabled = configuration.GetValue("Execution:Enabled", false);
+        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
+        _isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
+        _discordNotificationService = discordNotificationService;
     }
 
     /// <summary>
@@ -65,6 +74,8 @@ public class ExecutionController : ControllerBase
             _logger.LogInformation(
                 "Order execution complete: {Status} (IntentId: {IntentId})",
                 result.Status, intent.IntentId);
+
+            TryNotifyExecutionStatus(intent, result);
 
             return Ok(result);
         }
@@ -119,6 +130,8 @@ public class ExecutionController : ControllerBase
                 "Bracket execution complete: {Status} (IntentId: {IntentId})",
                 result.Status, intent.Entry.IntentId);
 
+            TryNotifyExecutionStatus(intent, result);
+
             return Ok(result);
         }
         catch (ArgumentException ex)
@@ -168,5 +181,109 @@ public class ExecutionController : ControllerBase
             _logger.LogError(ex, "Error retrieving ledger");
             return StatusCode(500, new { error = "Internal server error" });
         }
+    }
+
+    private void TryNotifyExecutionStatus(OrderIntent intent, ExecutionResult result)
+    {
+        if (_discordNotificationService == null || _isShadowMode || string.IsNullOrWhiteSpace(intent.Symbol))
+        {
+            return;
+        }
+
+        var status = MapExecutionStatus(result.Status);
+        var details = BuildExecutionDetails(intent, result);
+
+        _ = _discordNotificationService.SendExecutionStatusAsync(
+            intent.Symbol,
+            status,
+            result.TimestampUtc,
+            DiscordNotificationMode.Live,
+            details);
+    }
+
+    private void TryNotifyExecutionStatus(BracketIntent intent, ExecutionResult result)
+    {
+        if (_discordNotificationService == null || _isShadowMode || string.IsNullOrWhiteSpace(intent.Entry.Symbol))
+        {
+            return;
+        }
+
+        var status = MapExecutionStatus(result.Status);
+        var details = BuildExecutionDetails(intent.Entry, result);
+
+        if (intent.StopLoss?.StopPrice != null)
+        {
+            details["StopLoss"] = intent.StopLoss.StopPrice.Value.ToString("F2");
+        }
+
+        if (intent.TakeProfit?.LimitPrice != null)
+        {
+            details["TakeProfit"] = intent.TakeProfit.LimitPrice.Value.ToString("F2");
+        }
+
+        _ = _discordNotificationService.SendExecutionStatusAsync(
+            intent.Entry.Symbol,
+            status,
+            result.TimestampUtc,
+            DiscordNotificationMode.Live,
+            details);
+    }
+
+    private static Dictionary<string, string> BuildExecutionDetails(OrderIntent intent, ExecutionResult result)
+    {
+        var details = new Dictionary<string, string>
+        {
+            ["Side"] = intent.Side.ToString()
+        };
+
+        if (intent.Quantity.HasValue)
+        {
+            details["Quantity"] = intent.Quantity.Value.ToString("F0");
+        }
+        else if (intent.NotionalUsd.HasValue)
+        {
+            details["NotionalUsd"] = intent.NotionalUsd.Value.ToString("F2");
+        }
+
+        if (intent.LimitPrice.HasValue)
+        {
+            details["LimitPrice"] = intent.LimitPrice.Value.ToString("F2");
+        }
+
+        if (intent.StopPrice.HasValue)
+        {
+            details["StopPrice"] = intent.StopPrice.Value.ToString("F2");
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.BrokerName))
+        {
+            details["Broker"] = result.BrokerName;
+        }
+
+        if (result.BrokerOrderIds.Count > 0)
+        {
+            details["BrokerOrderId"] = string.Join(", ", result.BrokerOrderIds);
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.RejectionReason))
+        {
+            details["Reason"] = result.RejectionReason;
+        }
+
+        return details;
+    }
+
+    private static string MapExecutionStatus(ExecutionStatus status)
+    {
+        return status switch
+        {
+            ExecutionStatus.Accepted => "Submitted",
+            ExecutionStatus.Submitted => "Submitted",
+            ExecutionStatus.Filled => "Filled",
+            ExecutionStatus.Cancelled => "Canceled",
+            ExecutionStatus.Rejected => "Rejected",
+            ExecutionStatus.Error => "Rejected",
+            _ => status.ToString()
+        };
     }
 }

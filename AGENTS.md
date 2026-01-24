@@ -1,4 +1,4 @@
-# AGENTS.md - Guide for Jules and other AI Agents
+﻿# AGENTS.md - Guide for Jules and other AI Agents
 
 ## Overview
 RamStockAlerts is an order-flow intelligence platform built with .NET 10. It detects liquidity dislocations in equity markets using Level II market depth and tape data.
@@ -6,7 +6,7 @@ RamStockAlerts is an order-flow intelligence platform built with .NET 10. It det
 ## Tech Stack
 - **Framework**: .NET 10 (ASP.NET Core)
 - **Database**: SQLite (default) or PostgreSQL
-- **Key Libraries**: Entity Framework Core, Serilog, Alpaca.Markets, IBApi
+- **Key Libraries**: Entity Framework Core, Serilog, IBApi
 
 ## Project Structure
 - `RamStockAlerts/`: Main API project and core logic.

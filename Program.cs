@@ -193,6 +193,11 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
 
+// Discord notification services
+builder.Services.AddSingleton<DiscordNotificationSettingsStore>();
+builder.Services.AddSingleton<DiscordDeliveryStatusStore>();
+builder.Services.AddSingleton<DiscordNotificationService>();
+
 // Register services
 builder.Services.AddSingleton<ShadowTradeJournal>();
 builder.Services.AddSingleton<IShadowTradeJournal>(sp => sp.GetRequiredService<ShadowTradeJournal>());
