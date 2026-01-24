@@ -697,8 +697,8 @@ public class MarketDataSubscriptionManagerTests
                 ["MarketData:MaxDepthSymbols"] = "1",
                 ["MarketData:FocusRotationEnabled"] = "true",
                 ["MarketData:FocusMinDwellMs"] = "10",
-                ["MarketData:FocusTapeIdleMs"] = "50",
-                ["MarketData:FocusDepthIdleMs"] = "50",
+                ["MarketData:FocusTapeIdleMs"] = "5000",
+                ["MarketData:FocusDepthIdleMs"] = "5000",
                 ["MarketData:FocusWarmupMinTrades"] = "0"
             })
             .Build();

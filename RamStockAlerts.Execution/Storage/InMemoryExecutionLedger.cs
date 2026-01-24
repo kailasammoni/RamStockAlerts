@@ -52,6 +52,10 @@ public class InMemoryExecutionLedger : IExecutionLedger
 
         lock (_lock)
         {
+            if (result.IntentId == Guid.Empty)
+            {
+                result.IntentId = intentId;
+            }
             _results.Add(result);
         }
     }

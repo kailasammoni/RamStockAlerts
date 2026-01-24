@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
+using RamStockAlerts.Controllers.Api.Admin;
 using RamStockAlerts.Feeds;
 using RamStockAlerts.Services;
 using RamStockAlerts.Models;
+using RamStockAlerts.Models.Notifications;
 using RamStockAlerts.Engine;
 
 namespace RamStockAlerts.Controllers;
@@ -11,13 +13,22 @@ namespace RamStockAlerts.Controllers;
 public class AdminController : ControllerBase
 {
     private readonly OrderFlowMetrics _orderFlowMetrics;
+    private readonly DiscordNotificationSettingsStore _discordSettingsStore;
+    private readonly DiscordDeliveryStatusStore _discordStatusStore;
+    private readonly DiscordNotificationService _discordNotificationService;
     private readonly ILogger<AdminController> _logger;
 
     public AdminController(
         OrderFlowMetrics orderFlowMetrics,
+        DiscordNotificationSettingsStore discordSettingsStore,
+        DiscordDeliveryStatusStore discordStatusStore,
+        DiscordNotificationService discordNotificationService,
         ILogger<AdminController> logger)
     {
         _orderFlowMetrics = orderFlowMetrics;
+        _discordSettingsStore = discordSettingsStore;
+        _discordStatusStore = discordStatusStore;
+        _discordNotificationService = discordNotificationService;
         _logger = logger;
     }
 
@@ -100,6 +111,133 @@ public class AdminController : ControllerBase
             SymbolsWithData = symbolStats.Count(s => s.HasData),
             Symbols = symbolStats
         });
+    }
+
+    [HttpGet("notifications/discord")]
+    [ProducesResponseType(typeof(DiscordNotificationStatusResponse), StatusCodes.Status200OK)]
+    public IActionResult GetDiscordNotificationStatus()
+    {
+        var settings = _discordSettingsStore.GetSettings();
+        var status = _discordStatusStore.GetStatusForWebhook(settings.WebhookUrl);
+
+        return Ok(new DiscordNotificationStatusResponse
+        {
+            Settings = ToSettingsDto(settings),
+            Status = ToStatusDto(status)
+        });
+    }
+
+    [HttpPut("notifications/discord")]
+    [ProducesResponseType(typeof(DiscordNotificationStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public IActionResult UpdateDiscordNotificationSettings([FromBody] DiscordNotificationSettingsRequest request)
+    {
+        if (request is null)
+        {
+            return BadRequest(new { error = "Request body is required." });
+        }
+
+        if (!TryValidateWebhookUrl(request.WebhookUrl, out var normalizedWebhook))
+        {
+            return BadRequest(new { error = "WebhookUrl must be a valid absolute http(s) URL." });
+        }
+
+        var existing = _discordSettingsStore.GetSettings();
+        var updated = new DiscordNotificationSettings
+        {
+            Enabled = request.Enabled,
+            WebhookUrl = normalizedWebhook,
+            ChannelTag = string.IsNullOrWhiteSpace(request.ChannelTag) ? null : request.ChannelTag.Trim(),
+            IncludeModeTag = existing.IncludeModeTag
+        };
+
+        _discordSettingsStore.UpdateSettings(updated);
+        var status = _discordStatusStore.GetStatusForWebhook(updated.WebhookUrl);
+
+        return Ok(new DiscordNotificationStatusResponse
+        {
+            Settings = ToSettingsDto(updated),
+            Status = ToStatusDto(status)
+        });
+    }
+
+    [HttpPost("notifications/discord/test")]
+    [ProducesResponseType(typeof(DiscordTestResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> SendDiscordTest([FromBody] DiscordTestRequest? request)
+    {
+        var result = await _discordNotificationService.SendTestAsync(request?.Message);
+
+        return Ok(new DiscordTestResponse
+        {
+            Success = result.Success,
+            Status = ToStatusDto(result.Status)
+        });
+    }
+
+    private static DiscordNotificationSettingsDto ToSettingsDto(DiscordNotificationSettings settings)
+    {
+        return new DiscordNotificationSettingsDto
+        {
+            Enabled = settings.Enabled,
+            WebhookUrlMasked = MaskWebhookUrl(settings.WebhookUrl),
+            ChannelTag = settings.ChannelTag
+        };
+    }
+
+    private static DiscordDeliveryStatusDto? ToStatusDto(DiscordDeliveryStatus? status)
+    {
+        if (status == null)
+        {
+            return null;
+        }
+
+        return new DiscordDeliveryStatusDto
+        {
+            LastAttemptAt = status.LastAttemptAt,
+            LastSuccessAt = status.LastSuccessAt,
+            LastFailureAt = status.LastFailureAt,
+            LastStatusCode = status.LastStatusCode,
+            LastError = status.LastError
+        };
+    }
+
+    private static bool TryValidateWebhookUrl(string webhookUrl, out string? normalizedWebhook)
+    {
+        normalizedWebhook = null;
+        if (string.IsNullOrWhiteSpace(webhookUrl))
+        {
+            return false;
+        }
+
+        var trimmed = webhookUrl.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)
+        {
+            return false;
+        }
+
+        normalizedWebhook = trimmed;
+        return true;
+    }
+
+    private static string? MaskWebhookUrl(string? webhookUrl)
+    {
+        if (string.IsNullOrWhiteSpace(webhookUrl))
+        {
+            return null;
+        }
+
+        var trimmed = webhookUrl.Trim();
+        if (trimmed.Length <= 12)
+        {
+            return "****";
+        }
+
+        return $"{trimmed[..8]}****{trimmed[^4..]}";
     }
 }
 

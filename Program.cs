@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Universe;
 using RamStockAlerts.Services.Universe;
+using RamStockAlerts.Execution.Reporting;
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
@@ -89,6 +90,27 @@ if (dailyRollupRequested)
         var reporter = new DailyRollupReporter();
         await reporter.RunAsync(journalPath, writeToFile, outputPath);
     }
+    return;
+}
+
+var executionRollupRequested = initialConfig.GetValue("Report:ExecutionDailyRollup", false);
+if (executionRollupRequested)
+{
+    var ledgerPath = initialConfig.GetValue<string>("Report:ExecutionLedgerPath");
+    if (string.IsNullOrWhiteSpace(ledgerPath))
+    {
+        ledgerPath = initialConfig.GetValue<string>("Execution:Ledger:FilePath")
+                     ?? Path.Combine("logs", "execution-ledger.jsonl");
+    }
+
+    var writeToFile = initialConfig.GetValue("Report:WriteToFile", false);
+    var outputPath = initialConfig.GetValue<string>("Report:OutputPath");
+
+    Log.Information("Running execution EOD report for {LedgerPath} (writeToFile={WriteToFile})",
+        ledgerPath, writeToFile);
+
+    var reporter = new ExecutionDailyReporter();
+    await reporter.RunAsync(ledgerPath, writeToFile, outputPath);
     return;
 }
 
@@ -193,6 +215,11 @@ builder.Services.AddSwaggerGen(c =>
 builder.Services.AddMemoryCache();
 builder.Services.AddHttpClient();
 
+// Discord notification services
+builder.Services.AddSingleton<DiscordNotificationSettingsStore>();
+builder.Services.AddSingleton<DiscordDeliveryStatusStore>();
+builder.Services.AddSingleton<DiscordNotificationService>();
+
 // Register services
 builder.Services.AddSingleton<ShadowTradeJournal>();
 builder.Services.AddSingleton<IShadowTradeJournal>(sp => sp.GetRequiredService<ShadowTradeJournal>());
@@ -246,8 +273,21 @@ var executionBroker = builder.Configuration.GetValue("Execution:Broker", "Fake")
 var executionOptions = new RamStockAlerts.Execution.Contracts.ExecutionOptions();
 builder.Configuration.GetSection("Execution").Bind(executionOptions);
 
-builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IExecutionLedger, 
-    RamStockAlerts.Execution.Storage.InMemoryExecutionLedger>();
+var executionLedgerType = builder.Configuration.GetValue<string>("Execution:Ledger:Type") ?? "InMemory";
+if (string.Equals(executionLedgerType, "Jsonl", StringComparison.OrdinalIgnoreCase))
+{
+    var ledgerPath = builder.Configuration.GetValue<string>("Execution:Ledger:FilePath")
+                    ?? Path.Combine("logs", "execution-ledger.jsonl");
+    builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IExecutionLedger>(
+        _ => new RamStockAlerts.Execution.Storage.JsonlExecutionLedger(ledgerPath));
+    Log.Information("Execution ledger: Jsonl ({Path})", ledgerPath);
+}
+else
+{
+    builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IExecutionLedger,
+        RamStockAlerts.Execution.Storage.InMemoryExecutionLedger>();
+    Log.Information("Execution ledger: InMemory");
+}
 builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IRiskManager>(sp =>
 {
     var maxNotional = builder.Configuration.GetValue("Execution:MaxNotionalUsd", 2000m);
@@ -258,10 +298,8 @@ builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IRiskManager>(
 // Broker selection
 if (string.Equals(executionBroker, "IBKR", StringComparison.OrdinalIgnoreCase))
 {
-    // TODO: Implement IbkrBrokerClient
-    Log.Warning("Execution:Broker=IBKR requested but IbkrBrokerClient not yet implemented. Falling back to FakeBrokerClient.");
     builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IBrokerClient, 
-        RamStockAlerts.Execution.Services.FakeBrokerClient>();
+        RamStockAlerts.Execution.Services.IbkrBrokerClient>();
 }
 else
 {

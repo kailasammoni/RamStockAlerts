@@ -205,3 +205,5 @@ Creates a self-contained output folder that will not change while running.
 
 ```powershell
 dotnet publish -c Release -o C:\run\RamStockAlerts\shadow
+
+$env:Report__ExecutionDailyRollup="true"

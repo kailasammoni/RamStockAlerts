@@ -5,9 +5,12 @@ using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
+using RamStockAlerts.Execution.Contracts;
+using RamStockAlerts.Execution.Interfaces;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Decisions;
 using RamStockAlerts.Models.Microstructure;
+using RamStockAlerts.Models.Notifications;
 
 namespace RamStockAlerts.Services;
 
@@ -22,9 +25,14 @@ public sealed class ShadowTradingCoordinator
     private readonly IShadowTradeJournal _journal;
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly ILogger<ShadowTradingCoordinator> _logger;
+    private readonly DiscordNotificationService? _discordNotificationService;
+    private readonly IExecutionService? _executionService;
     private readonly bool _enabled;
     private readonly bool _recordBlueprints;
     private readonly string _tradingMode;
+    private readonly bool _autoExecuteFromSignals;
+    private readonly decimal _autoExecuteNotionalUsd;
+    private readonly TradingMode _executionMode;
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly ScarcityController _scarcityController;
     private readonly RejectionLogger _rejectionLogger;
@@ -61,7 +69,9 @@ public sealed class ShadowTradingCoordinator
         IShadowTradeJournal journal,
         ScarcityController scarcityController,
         MarketDataSubscriptionManager subscriptionManager,
-        ILogger<ShadowTradingCoordinator> logger)
+        ILogger<ShadowTradingCoordinator> logger,
+        IExecutionService? executionService = null,
+        DiscordNotificationService? discordNotificationService = null)
     {
         _metrics = metrics;
         _validator = validator;
@@ -69,11 +79,19 @@ public sealed class ShadowTradingCoordinator
         _subscriptionManager = subscriptionManager;
         _scarcityController = scarcityController;
         _logger = logger;
+        _executionService = executionService;
+        _discordNotificationService = discordNotificationService;
 
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
         _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
+
+        _autoExecuteFromSignals =
+            configuration.GetValue("Execution:Enabled", false) &&
+            configuration.GetValue("Execution:AutoExecuteFromSignals", false);
+        _autoExecuteNotionalUsd = configuration.GetValue("Execution:AutoExecuteNotionalUsd", 500m);
+        _executionMode = configuration.GetValue("Execution:Mode", TradingMode.Paper);
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
         var gatingRejectSuppressionSeconds = configuration.GetValue<double?>("ShadowTrading:GatingRejectSuppressionSeconds")
             ?? configuration.GetValue("ShadowTrading:GatingRejectDedupeSeconds", 10d);
@@ -1101,6 +1119,9 @@ public sealed class ShadowTradingCoordinator
                 }
                 _logger.LogInformation("[Shadow] Signal accepted for {Symbol} ({Direction}) Score={Score}",
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
+
+                TryNotifyDiscordAlert(entry, pending);
+                TryAutoExecuteFromSignal(entry, pending.Blueprint);
             }
             else
             {
@@ -1119,6 +1140,212 @@ public sealed class ShadowTradingCoordinator
             EnqueueEntry(entry);
             _pendingRankedEntries.Remove(ranked.CandidateId);
         }
+    }
+
+    private void TryNotifyDiscordAlert(ShadowTradeJournalEntry entry, PendingRankEntry pending)
+    {
+        if (_discordNotificationService == null || string.IsNullOrWhiteSpace(entry.Symbol))
+        {
+            return;
+        }
+
+        var mode = string.Equals(_tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase)
+            ? DiscordNotificationMode.Shadow
+            : DiscordNotificationMode.Live;
+
+        var intendedAction = string.Equals(_tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : BuildIntendedAction(entry.Direction, pending.Blueprint);
+
+        var details = BuildAlertDetails(entry, pending.Blueprint);
+        var timestamp = entry.DecisionTimestampUtc ?? DateTimeOffset.UtcNow;
+
+        _ = _discordNotificationService.SendAlertAsync(
+            entry.Symbol,
+            "Liquidity Setup",
+            timestamp,
+            mode,
+            intendedAction,
+            details);
+    }
+
+    private void TryAutoExecuteFromSignal(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)
+    {
+        if (!_autoExecuteFromSignals || _executionService is null)
+        {
+            return;
+        }
+
+        if (!_recordBlueprints || !blueprint.Success || blueprint.Entry is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.Symbol) || string.IsNullOrWhiteSpace(entry.Direction))
+        {
+            return;
+        }
+
+        var side = string.Equals(entry.Direction, "BUY", StringComparison.OrdinalIgnoreCase)
+            ? OrderSide.Buy
+            : OrderSide.Sell;
+
+        var entryPrice = blueprint.Entry.Value;
+        if (entryPrice <= 0m)
+        {
+            return;
+        }
+
+        var qty = Math.Floor(_autoExecuteNotionalUsd / entryPrice);
+        if (qty <= 0m)
+        {
+            _logger.LogWarning(
+                "[Exec] AutoExecute suppressed for {Symbol}: notional too small (notional={Notional} entry={Entry})",
+                entry.Symbol,
+                _autoExecuteNotionalUsd,
+                entryPrice);
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var entryIntentId = Guid.NewGuid();
+        var tags = new Dictionary<string, string>
+        {
+            ["Source"] = "Signal",
+            ["SessionId"] = _sessionId.ToString(),
+            ["DecisionId"] = entry.DecisionId.ToString(),
+            ["Entry"] = entryPrice.ToString("F4")
+        };
+
+        var bracket = new BracketIntent
+        {
+            Entry = new OrderIntent
+            {
+                IntentId = entryIntentId,
+                DecisionId = entry.DecisionId,
+                Mode = _executionMode,
+                Symbol = entry.Symbol,
+                Side = side,
+                Type = OrderType.Limit,
+                Quantity = qty,
+                LimitPrice = entryPrice,
+                Tif = TimeInForce.Day,
+                CreatedUtc = now,
+                Tags = tags
+            },
+            StopLoss = blueprint.Stop is null
+                ? null
+                : new OrderIntent
+                {
+                    IntentId = Guid.NewGuid(),
+                    DecisionId = entry.DecisionId,
+                    Mode = _executionMode,
+                    Symbol = entry.Symbol,
+                    Side = side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
+                    Type = OrderType.Stop,
+                    Quantity = qty,
+                    StopPrice = blueprint.Stop.Value,
+                    Tif = TimeInForce.Day,
+                    CreatedUtc = now,
+                    Tags = new Dictionary<string, string>(tags) { ["Stop"] = blueprint.Stop.Value.ToString("F4") }
+                },
+            TakeProfit = blueprint.Target is null
+                ? null
+                : new OrderIntent
+                {
+                    IntentId = Guid.NewGuid(),
+                    DecisionId = entry.DecisionId,
+                    Mode = _executionMode,
+                    Symbol = entry.Symbol,
+                    Side = side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
+                    Type = OrderType.Limit,
+                    Quantity = qty,
+                    LimitPrice = blueprint.Target.Value,
+                    Tif = TimeInForce.Day,
+                    CreatedUtc = now,
+                    Tags = new Dictionary<string, string>(tags) { ["Target"] = blueprint.Target.Value.ToString("F4") }
+                },
+            OcoGroupId = entryIntentId.ToString()
+        };
+
+        _ = ExecuteAutoBracketAsync(bracket, entry.Symbol);
+    }
+
+    private async Task ExecuteAutoBracketAsync(BracketIntent bracket, string symbol)
+    {
+        try
+        {
+            var result = await _executionService!.ExecuteAsync(bracket);
+            _logger.LogInformation(
+                "[Exec] AutoExecute complete symbol={Symbol} intent={IntentId} status={Status} broker={Broker} orderIds={OrderIds}",
+                symbol,
+                bracket.Entry.IntentId,
+                result.Status,
+                result.BrokerName ?? "?",
+                result.BrokerOrderIds.Count == 0 ? "N/A" : string.Join(",", result.BrokerOrderIds));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Exec] AutoExecute failed symbol={Symbol}", symbol);
+        }
+    }
+
+    private static Dictionary<string, string> BuildAlertDetails(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)
+    {
+        var details = new Dictionary<string, string>();
+
+        if (!string.IsNullOrWhiteSpace(entry.Direction))
+        {
+            details["Side"] = string.Equals(entry.Direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Long" : "Short";
+        }
+
+        var score = entry.DecisionInputs?.Score;
+        if (score.HasValue)
+        {
+            details["Score"] = score.Value.ToString("F2");
+        }
+
+        if (blueprint.Success)
+        {
+            if (blueprint.Entry.HasValue)
+            {
+                details["Entry"] = blueprint.Entry.Value.ToString("F2");
+            }
+
+            if (blueprint.Stop.HasValue)
+            {
+                details["Stop"] = blueprint.Stop.Value.ToString("F2");
+            }
+
+            if (blueprint.Target.HasValue)
+            {
+                details["Target"] = blueprint.Target.Value.ToString("F2");
+            }
+        }
+
+        var spread = entry.DecisionInputs?.Spread;
+        if (spread.HasValue)
+        {
+            details["Spread"] = spread.Value.ToString("F4");
+        }
+
+        return details;
+    }
+
+    private static string? BuildIntendedAction(string? direction, BlueprintPlan blueprint)
+    {
+        if (string.IsNullOrWhiteSpace(direction))
+        {
+            return null;
+        }
+
+        var side = string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase) ? "Buy" : "Sell";
+        if (blueprint.Success && blueprint.Entry.HasValue)
+        {
+            return $"{side} @ {blueprint.Entry.Value:F2}";
+        }
+
+        return side;
     }
 
     private void EnqueueEntry(ShadowTradeJournalEntry entry)
