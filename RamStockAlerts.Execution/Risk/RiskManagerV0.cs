@@ -210,7 +210,7 @@ public class RiskManagerV0 : IRiskManager
 
     private int CountOrdersToday(IExecutionLedger ledger, DateTimeOffset now)
     {
-        var today_start = now.Date;
+        var today_start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
         var today_end = today_start.AddDays(1);
         return ledger.GetIntents()
             .Count(o => o.CreatedUtc >= today_start && o.CreatedUtc < today_end);
@@ -218,7 +218,7 @@ public class RiskManagerV0 : IRiskManager
 
     private int CountBracketsToday(IExecutionLedger ledger, DateTimeOffset now)
     {
-        var today_start = now.Date;
+        var today_start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
         var today_end = today_start.AddDays(1);
         return ledger.GetBrackets()
             .Count(b => b.Entry.CreatedUtc >= today_start && b.Entry.CreatedUtc < today_end);
@@ -243,7 +243,7 @@ public class RiskManagerV0 : IRiskManager
     {
         // Simplified: count active brackets (not yet closed/cancelled)
         // F6 will track order status properly; for now, assume all brackets are open
-        var today_start = now.Date;
+        var today_start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
         var today_end = today_start.AddDays(1);
         return ledger.GetBrackets()
             .Count(b => b.Entry.CreatedUtc >= today_start && b.Entry.CreatedUtc < today_end);

@@ -31,15 +31,16 @@ public class ExecutionService : IExecutionService
         if (intent is null)
             throw new ArgumentNullException(nameof(intent));
 
-        // Record the intent
-        _ledger.RecordIntent(intent);
-
         // Validate via risk manager
-        var riskDecision = _riskManager.Validate(intent);
+        var riskDecision = _riskManager.Validate(intent, _ledger);
+
+        // Record the intent (including rejected intents for audit)
+        _ledger.RecordIntent(intent);
         if (!riskDecision.Allowed)
         {
             var result = new ExecutionResult
             {
+                IntentId = intent.IntentId,
                 Status = ExecutionStatus.Rejected,
                 RejectionReason = riskDecision.Reason,
                 BrokerName = _brokerClient.Name,
@@ -51,6 +52,7 @@ public class ExecutionService : IExecutionService
 
         // Place via broker
         var executionResult = await _brokerClient.PlaceAsync(intent, ct);
+        executionResult.IntentId = intent.IntentId;
         
         // Ensure timestamp is set
         if (executionResult.TimestampUtc == default)
@@ -72,15 +74,16 @@ public class ExecutionService : IExecutionService
         if (intent is null)
             throw new ArgumentNullException(nameof(intent));
 
-        // Record the bracket intent
-        _ledger.RecordBracket(intent);
-
         // Validate via risk manager
-        var riskDecision = _riskManager.Validate(intent);
+        var riskDecision = _riskManager.Validate(intent, _ledger);
+
+        // Record the bracket intent (including rejected intents for audit)
+        _ledger.RecordBracket(intent);
         if (!riskDecision.Allowed)
         {
             var result = new ExecutionResult
             {
+                IntentId = intent.Entry.IntentId,
                 Status = ExecutionStatus.Rejected,
                 RejectionReason = riskDecision.Reason,
                 BrokerName = _brokerClient.Name,
@@ -92,6 +95,7 @@ public class ExecutionService : IExecutionService
 
         // Place via broker
         var executionResult = await _brokerClient.PlaceBracketAsync(intent, ct);
+        executionResult.IntentId = intent.Entry.IntentId;
 
         // Ensure timestamp is set
         if (executionResult.TimestampUtc == default)
@@ -115,6 +119,7 @@ public class ExecutionService : IExecutionService
 
         // Cancel via broker
         var result = await _brokerClient.CancelAsync(brokerOrderId, ct);
+        result.IntentId = Guid.Empty;
 
         // Ensure timestamp is set
         if (result.TimestampUtc == default)

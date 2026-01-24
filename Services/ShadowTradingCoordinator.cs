@@ -5,6 +5,8 @@ using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
+using RamStockAlerts.Execution.Contracts;
+using RamStockAlerts.Execution.Interfaces;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Decisions;
 using RamStockAlerts.Models.Microstructure;
@@ -24,9 +26,13 @@ public sealed class ShadowTradingCoordinator
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly ILogger<ShadowTradingCoordinator> _logger;
     private readonly DiscordNotificationService? _discordNotificationService;
+    private readonly IExecutionService? _executionService;
     private readonly bool _enabled;
     private readonly bool _recordBlueprints;
     private readonly string _tradingMode;
+    private readonly bool _autoExecuteFromSignals;
+    private readonly decimal _autoExecuteNotionalUsd;
+    private readonly TradingMode _executionMode;
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly ScarcityController _scarcityController;
     private readonly RejectionLogger _rejectionLogger;
@@ -64,6 +70,7 @@ public sealed class ShadowTradingCoordinator
         ScarcityController scarcityController,
         MarketDataSubscriptionManager subscriptionManager,
         ILogger<ShadowTradingCoordinator> logger,
+        IExecutionService? executionService = null,
         DiscordNotificationService? discordNotificationService = null)
     {
         _metrics = metrics;
@@ -72,12 +79,19 @@ public sealed class ShadowTradingCoordinator
         _subscriptionManager = subscriptionManager;
         _scarcityController = scarcityController;
         _logger = logger;
+        _executionService = executionService;
         _discordNotificationService = discordNotificationService;
 
         var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
         _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
+
+        _autoExecuteFromSignals =
+            configuration.GetValue("Execution:Enabled", false) &&
+            configuration.GetValue("Execution:AutoExecuteFromSignals", false);
+        _autoExecuteNotionalUsd = configuration.GetValue("Execution:AutoExecuteNotionalUsd", 500m);
+        _executionMode = configuration.GetValue("Execution:Mode", TradingMode.Paper);
         _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
         var gatingRejectSuppressionSeconds = configuration.GetValue<double?>("ShadowTrading:GatingRejectSuppressionSeconds")
             ?? configuration.GetValue("ShadowTrading:GatingRejectDedupeSeconds", 10d);
@@ -1107,6 +1121,7 @@ public sealed class ShadowTradingCoordinator
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
 
                 TryNotifyDiscordAlert(entry, pending);
+                TryAutoExecuteFromSignal(entry, pending.Blueprint);
             }
             else
             {
@@ -1152,6 +1167,127 @@ public sealed class ShadowTradingCoordinator
             mode,
             intendedAction,
             details);
+    }
+
+    private void TryAutoExecuteFromSignal(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)
+    {
+        if (!_autoExecuteFromSignals || _executionService is null)
+        {
+            return;
+        }
+
+        if (!_recordBlueprints || !blueprint.Success || blueprint.Entry is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.Symbol) || string.IsNullOrWhiteSpace(entry.Direction))
+        {
+            return;
+        }
+
+        var side = string.Equals(entry.Direction, "BUY", StringComparison.OrdinalIgnoreCase)
+            ? OrderSide.Buy
+            : OrderSide.Sell;
+
+        var entryPrice = blueprint.Entry.Value;
+        if (entryPrice <= 0m)
+        {
+            return;
+        }
+
+        var qty = Math.Floor(_autoExecuteNotionalUsd / entryPrice);
+        if (qty <= 0m)
+        {
+            _logger.LogWarning(
+                "[Exec] AutoExecute suppressed for {Symbol}: notional too small (notional={Notional} entry={Entry})",
+                entry.Symbol,
+                _autoExecuteNotionalUsd,
+                entryPrice);
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var entryIntentId = Guid.NewGuid();
+        var tags = new Dictionary<string, string>
+        {
+            ["Source"] = "Signal",
+            ["SessionId"] = _sessionId.ToString(),
+            ["DecisionId"] = entry.DecisionId.ToString(),
+            ["Entry"] = entryPrice.ToString("F4")
+        };
+
+        var bracket = new BracketIntent
+        {
+            Entry = new OrderIntent
+            {
+                IntentId = entryIntentId,
+                DecisionId = entry.DecisionId,
+                Mode = _executionMode,
+                Symbol = entry.Symbol,
+                Side = side,
+                Type = OrderType.Limit,
+                Quantity = qty,
+                LimitPrice = entryPrice,
+                Tif = TimeInForce.Day,
+                CreatedUtc = now,
+                Tags = tags
+            },
+            StopLoss = blueprint.Stop is null
+                ? null
+                : new OrderIntent
+                {
+                    IntentId = Guid.NewGuid(),
+                    DecisionId = entry.DecisionId,
+                    Mode = _executionMode,
+                    Symbol = entry.Symbol,
+                    Side = side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
+                    Type = OrderType.Stop,
+                    Quantity = qty,
+                    StopPrice = blueprint.Stop.Value,
+                    Tif = TimeInForce.Day,
+                    CreatedUtc = now,
+                    Tags = new Dictionary<string, string>(tags) { ["Stop"] = blueprint.Stop.Value.ToString("F4") }
+                },
+            TakeProfit = blueprint.Target is null
+                ? null
+                : new OrderIntent
+                {
+                    IntentId = Guid.NewGuid(),
+                    DecisionId = entry.DecisionId,
+                    Mode = _executionMode,
+                    Symbol = entry.Symbol,
+                    Side = side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
+                    Type = OrderType.Limit,
+                    Quantity = qty,
+                    LimitPrice = blueprint.Target.Value,
+                    Tif = TimeInForce.Day,
+                    CreatedUtc = now,
+                    Tags = new Dictionary<string, string>(tags) { ["Target"] = blueprint.Target.Value.ToString("F4") }
+                },
+            OcoGroupId = entryIntentId.ToString()
+        };
+
+        _ = ExecuteAutoBracketAsync(bracket, entry.Symbol);
+    }
+
+    private async Task ExecuteAutoBracketAsync(BracketIntent bracket, string symbol)
+    {
+        try
+        {
+            var result = await _executionService!.ExecuteAsync(bracket);
+            _logger.LogInformation(
+                "[Exec] AutoExecute complete symbol={Symbol} intent={IntentId} status={Status} broker={Broker} orderIds={OrderIds}",
+                symbol,
+                bracket.Entry.IntentId,
+                result.Status,
+                result.BrokerName ?? "?",
+                result.BrokerOrderIds.Count == 0 ? "N/A" : string.Join(",", result.BrokerOrderIds));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Exec] AutoExecute failed symbol={Symbol}", symbol);
+        }
     }
 
     private static Dictionary<string, string> BuildAlertDetails(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)

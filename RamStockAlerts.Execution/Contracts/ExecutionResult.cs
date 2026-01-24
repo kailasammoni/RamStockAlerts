@@ -6,6 +6,11 @@ namespace RamStockAlerts.Execution.Contracts;
 public class ExecutionResult
 {
     /// <summary>
+    /// Correlation back to the originating intent (entry intent for brackets).
+    /// </summary>
+    public Guid IntentId { get; set; }
+
+    /// <summary>
     /// Status of the execution.
     /// </summary>
     public ExecutionStatus Status { get; set; }
@@ -34,4 +39,14 @@ public class ExecutionResult
     /// Optional debug information (freeform JSON/text for diagnostics).
     /// </summary>
     public string? Debug { get; set; }
+
+    /// <summary>
+    /// Optional best-effort filled quantity, if available from broker callbacks.
+    /// </summary>
+    public decimal? FilledQuantity { get; set; }
+
+    /// <summary>
+    /// Optional best-effort average fill price, if available from broker callbacks.
+    /// </summary>
+    public decimal? AvgFillPrice { get; set; }
 }
