@@ -2,6 +2,10 @@
 
 This document outlines the high-level sequence diagrams for the primary operations of the RamStockAlerts platform.
 
+Related:
+- `docs/Architecture.md`
+- `docs/AgenticWorkflow.md`
+
 ## 1. Universe Pipeline & Subscription Management
 
 This flow describes how the system discovers candidates and manages IBKR market data subscriptions.

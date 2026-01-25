@@ -10,20 +10,20 @@
 
   <ItemGroup>
     <!-- Exclude test project files from compilation -->
-    <Compile Remove="RamStockAlerts.Tests/**" />
-    <EmbeddedResource Remove="RamStockAlerts.Tests/**" />
-    <None Remove="RamStockAlerts.Tests/**" />
+    <Compile Remove="../../tests/RamStockAlerts.Tests/**" />
+    <EmbeddedResource Remove="../../tests/RamStockAlerts.Tests/**" />
+    <None Remove="../../tests/RamStockAlerts.Tests/**" />
     <!-- Exclude vendored IBKR CSharp API sources (built via project reference) -->
-    <Compile Remove="lib/ibkr/CSharpClient/**" />
-    <EmbeddedResource Remove="lib/ibkr/CSharpClient/**" />
-    <None Remove="lib/ibkr/CSharpClient/**" />
+    <Compile Remove="../../lib/ibkr/CSharpClient/**" />
+    <EmbeddedResource Remove="../../lib/ibkr/CSharpClient/**" />
+    <None Remove="../../lib/ibkr/CSharpClient/**" />
     <!-- Exclude Execution module test project files -->
-    <Compile Remove="RamStockAlerts.Execution/**" />
-    <EmbeddedResource Remove="RamStockAlerts.Execution/**" />
-    <None Remove="RamStockAlerts.Execution/**" />
-    <Compile Remove="RamStockAlerts.Execution.Tests/**" />
-    <EmbeddedResource Remove="RamStockAlerts.Execution.Tests/**" />
-    <None Remove="RamStockAlerts.Execution.Tests/**" />
+    <Compile Remove="../RamStockAlerts.Execution/**" />
+    <EmbeddedResource Remove="../RamStockAlerts.Execution/**" />
+    <None Remove="../RamStockAlerts.Execution/**" />
+    <Compile Remove="../../tests/RamStockAlerts.Execution.Tests/**" />
+    <EmbeddedResource Remove="../../tests/RamStockAlerts.Execution.Tests/**" />
+    <None Remove="../../tests/RamStockAlerts.Execution.Tests/**" />
     <!-- Exclude auto-generated assembly attributes to avoid duplicates -->
     <Compile Remove="obj/**/*.AssemblyAttributes.cs" />
   </ItemGroup>
@@ -46,11 +46,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="lib/ibkr/CSharpClient/CSharpAPI.csproj" />
+    <ProjectReference Include="../../lib/ibkr/CSharpClient/CSharpAPI.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="RamStockAlerts.Execution\RamStockAlerts.Execution.csproj" />
+    <ProjectReference Include="../RamStockAlerts.Execution/RamStockAlerts.Execution.csproj" />
   </ItemGroup>
 
 </Project>

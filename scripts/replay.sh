@@ -7,4 +7,4 @@ CONFIGURATION="${1:-Release}"
 export MODE="replay"
 export SYMBOL="$SYMBOL"
 
-dotnet run --project ./RamStockAlerts.csproj -c "$CONFIGURATION"
+dotnet run --project ./src/RamStockAlerts/RamStockAlerts.csproj -c "$CONFIGURATION"

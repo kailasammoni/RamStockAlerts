@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\RamStockAlerts.csproj" />
+    <ProjectReference Include="..\\..\\src\\RamStockAlerts\\RamStockAlerts.csproj" />
   </ItemGroup>
 
 </Project>

@@ -23,6 +23,12 @@ No prediction. No indicators. No momentum chasing.
   - `docs/DataContracts.md`
   - `docs/DecisionLog.md` (if present)
 
+## Agentic workflow
+- Workflow guide: `docs/AgenticWorkflow.md`
+- Architecture overview: `docs/Architecture.md`
+- Skills index: `SKILLS.md`
+- Repo has a single root `AGENTS.md` (no nested overrides).
+
 ## Deliverables format (in your response)
 1) What changed (files + intent)
 2) Why it changed (product/system reason)

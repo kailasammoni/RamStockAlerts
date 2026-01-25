@@ -1,50 +1,67 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+Sync Impact Report:
+- Version change: template -> 0.1.0
+- Modified principles: N/A (initial population)
+- Added sections: Core Principles (filled), Additional Constraints, Development Workflow, Governance (filled)
+- Removed sections: None
+- Templates requiring updates:
+  - .specify/templates/plan-template.md (ok, no changes required)
+  - .specify/templates/spec-template.md (ok, no changes required)
+  - .specify/templates/tasks-template.md (ok, no changes required)
+  - .specify/templates/commands/*.md (pending: directory not present)
+- Deferred placeholders: TODO(RATIFICATION_DATE)
+-->
+# RamStockAlerts Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### Order-Flow Blueprints Only
+Detect transient liquidity dislocations using IBKR Level II depth plus tape data,
+and output auditable trade blueprints for human execution. No price prediction,
+no indicator-driven signals, no momentum chasing, and no auto-execution unless
+explicitly requested and safety-reviewed.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### Scarcity Over Frequency
+Target 3-6 signals per day with a hard cap of 36. Prefer fewer, higher-confidence
+signals over volume.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### Deterministic, Auditable Evidence
+Recording and replay are first-class. Signal decisions must be reproducible and
+traceable via append-only journals/logs so that every alert has explainable
+evidence.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### Money-Touching Safety
+Never log or commit secrets (IBKR credentials, tokens, webhooks). Any change that
+affects signal firing must add/adjust tests and include log evidence. When
+features touch signals or orders, also update telemetry and diagnostics.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### Small Diffs, Documented Contracts
+Keep diffs small and avoid unrelated refactors. When schemas or gating/scoring
+changes, update docs/DataContracts.md and docs/DecisionLog.md to keep contracts
+and rationale aligned.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Additional Constraints
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+- No automated execution without explicit request and safety review.
+- Preserve append-only decision journals and JSONL evidence trails.
+- Keep local-only overrides out of git (see .gitignore and AGENTS.override.md).
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+## Development Workflow
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+- Source layout is a single project with src/ and tests/ at repo root.
+- Follow docs/AgenticWorkflow.md for planning and execution discipline.
+- Verification is required before reporting completion:
+  - Windows: powershell -File scripts/verify.ps1
+  - Linux: bash scripts/verify.sh
+- Optional replay smoke test: powershell -File scripts/replay.ps1 -Symbol AAPL
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+- This constitution supersedes other guidance. Conflicts must be resolved by
+  updating this document and re-syncing dependent templates.
+- Amendments require a version bump (semver), updated Sync Impact Report, and
+  review for compliance with money-touching guardrails.
+- Compliance review is mandatory for changes affecting signals, orders, schemas,
+  or telemetry.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 0.1.0 | **Ratified**: TODO(RATIFICATION_DATE): original adoption date unknown | **Last Amended**: 2026-01-25

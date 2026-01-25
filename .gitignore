@@ -59,3 +59,7 @@ Desktop.ini
 
 # Local agent overrides (keep out of git)
 AGENTS.override.md
+
+# Codex local state (keep out of git)
+.codex/
+!.codex/skills/

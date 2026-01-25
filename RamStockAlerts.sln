@@ -3,13 +3,13 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts", "RamStockAlerts.csproj", "{E9F4593D-387E-0198-141B-37AA7D8420A0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts", "src\\RamStockAlerts\\RamStockAlerts.csproj", "{E9F4593D-387E-0198-141B-37AA7D8420A0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Tests", "RamStockAlerts.Tests\RamStockAlerts.Tests.csproj", "{E8730FCD-724E-41FA-99FB-258E6EEFA8A0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Tests", "tests\\RamStockAlerts.Tests\\RamStockAlerts.Tests.csproj", "{E8730FCD-724E-41FA-99FB-258E6EEFA8A0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Execution", "RamStockAlerts.Execution\RamStockAlerts.Execution.csproj", "{A1B2C3D4-E5F6-4A5B-9C8D-7E6F5A4B3C2D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Execution", "src\\RamStockAlerts.Execution\\RamStockAlerts.Execution.csproj", "{A1B2C3D4-E5F6-4A5B-9C8D-7E6F5A4B3C2D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Execution.Tests", "RamStockAlerts.Execution.Tests\RamStockAlerts.Execution.Tests.csproj", "{B2C3D4E5-F6A7-4B5C-AD9E-8F7A6B5C4D3E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RamStockAlerts.Execution.Tests", "tests\\RamStockAlerts.Execution.Tests\\RamStockAlerts.Execution.Tests.csproj", "{B2C3D4E5-F6A7-4B5C-AD9E-8F7A6B5C4D3E}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "lib", "lib", "{3A8DF596-E814-FECC-DD4B-D8EF8AAC1A0D}"
 EndProject

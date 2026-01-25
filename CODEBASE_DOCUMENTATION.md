@@ -125,45 +125,51 @@ Detect **transient order-book imbalances** that statistically precede short-term
 ### Project Structure
 
 ```
-RamStockAlerts/                     # Main API project
-├── Controllers/                    # REST API endpoints
-│   ├── ExecutionController.cs     # Order placement API
-│   ├── SignalsController.cs       # Signal history queries
-│   └── AdminController.cs          # Admin/diagnostics
-├── Services/                       # Core business logic
-│   ├── SignalCoordinator.cs # signals loop
-│   ├── MarketDataSubscriptionManager.cs  # IBKR subscription lifecycle
-│   ├── TradeJournal.cs      # Event journaling
-│   └── ScarcityController.cs      # Signal throttling
-├── Engine/                         # Strategy & metrics
-│   ├── OrderFlowMetrics.cs        # Microstructure calculations
-│   ├── OrderFlowSignalValidator.cs # Signal scoring/validation
-│   └── TradeBlueprint.cs          # Trade plan generation
-├── Universe/                       # Symbol universe management
-│   ├── UniverseService.cs         # Universe orchestration
-│   ├── IbkrScannerUniverseSource.cs # IBKR scanner integration
-│   └── DepthUniverseFilter.cs     # Depth eligibility filtering
-├── Feeds/                          # Market data clients
-│   └── IBkrMarketDataClient.cs    # IBKR TWS API wrapper
-├── Models/                         # Domain models
-│   ├── OrderBookState.cs          # Level II depth state
-│   ├── TapeData.cs                # Tick-by-tick tape
-│   └── TradeJournalEntry.cs # Journal schema
-└── Data/                           # Persistence layer
-    ├── AppDbContext.cs            # EF Core DbContext
-    ├── FileEventStore.cs          # JSONL event store
-    └── PostgresEventStore.cs      # Postgres event store
+src/
+├── RamStockAlerts/                     # Main API project
+│   ├── Controllers/                    # REST API endpoints
+│   │   ├── ExecutionController.cs     # Order placement API
+│   │   ├── SignalsController.cs       # Signal history queries
+│   │   └── AdminController.cs          # Admin/diagnostics
+│   ├── Services/                       # Core business logic
+│   │   ├── SignalCoordinator.cs # signals loop
+│   │   ├── MarketDataSubscriptionManager.cs  # IBKR subscription lifecycle
+│   │   ├── TradeJournal.cs      # Event journaling
+│   │   └── ScarcityController.cs      # Signal throttling
+│   ├── Engine/                         # Strategy & metrics
+│   │   ├── OrderFlowMetrics.cs        # Microstructure calculations
+│   │   ├── OrderFlowSignalValidator.cs # Signal scoring/validation
+│   │   └── TradeBlueprint.cs          # Trade plan generation
+│   ├── Universe/                       # Symbol universe management
+│   │   ├── UniverseService.cs         # Universe orchestration
+│   │   ├── IbkrScannerUniverseSource.cs # IBKR scanner integration
+│   │   └── DepthUniverseFilter.cs     # Depth eligibility filtering
+│   ├── Feeds/                          # Market data clients
+│   │   └── IBkrMarketDataClient.cs    # IBKR TWS API wrapper
+│   ├── Models/                         # Domain models
+│   │   ├── OrderBookState.cs          # Level II depth state
+│   │   ├── TapeData.cs                # Tick-by-tick tape
+│   │   └── TradeJournalEntry.cs # Journal schema
+│   └── Data/                           # Persistence layer
+│       ├── AppDbContext.cs            # EF Core DbContext
+│       ├── FileEventStore.cs          # JSONL event store
+│       └── PostgresEventStore.cs      # Postgres event store
+└── RamStockAlerts.Execution/          # Execution module
+    ├── Services/
+    │   ├── ExecutionService.cs        # Order submission orchestration
+    │   ├── FakeBrokerClient.cs        # Mock broker (default)
+    │   └── IbkrBrokerClient.cs        # IBKR real broker (WIP)
+    └── Risk/
+        └── RiskManagerV0.cs           # Risk caps & validation
 
-RamStockAlerts.Execution/          # Execution module
-├── Services/
-│   ├── ExecutionService.cs        # Order submission orchestration
-│   ├── FakeBrokerClient.cs        # Mock broker (default)
-│   └── IbkrBrokerClient.cs        # IBKR real broker (WIP)
-└── Risk/
-    └── RiskManagerV0.cs           # Risk caps & validation
+tests/
+├── RamStockAlerts.Tests/              # Unit tests
+└── RamStockAlerts.Execution.Tests/    # Execution module tests
 
-RamStockAlerts.Tests/              # Unit tests
-RamStockAlerts.Execution.Tests/    # Execution module tests
+lib/
+└── ibkr/                              # Vendor IBKR API
+    └── CSharpClient/
+        └── CSharpAPI.csproj
 ```
 
 ---
@@ -883,7 +889,7 @@ dotnet build RamStockAlerts.sln -c Debug
 
 **Single Project:**
 ```bash
-dotnet build RamStockAlerts.csproj -c Debug
+dotnet build src/RamStockAlerts/RamStockAlerts.csproj -c Debug
 ```
 
 **Available Task:** `Build RamStockAlerts.sln Debug`
@@ -892,32 +898,32 @@ dotnet build RamStockAlerts.csproj -c Debug
 
 **API Host (signals enabled by default):**
 ```bash
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **With environment overrides:**
 ```bash
 $env:MarketData:MaxLines = 100
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Record Mode:**
 ```bash
 $env:MODE = "record"
 $env:SYMBOL = "AAPL"
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Replay Mode:**
 ```bash
 $env:MODE = "replay"
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Daily Rollup:**
 ```bash
 $env:Report:DailyRollup = "true"
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 ### 12.3 Code Change Pattern (Safety Rules)
@@ -1123,8 +1129,8 @@ dotnet run --project RamStockAlerts.csproj
 ## Appendix A: File Locations
 
 **Configuration:**
-- [appsettings.json](appsettings.json)
-- [appsettings.Development.json](appsettings.Development.json)
+- [src/RamStockAlerts/appsettings.json](src/RamStockAlerts/appsettings.json)
+- [src/RamStockAlerts/appsettings.Development.json](src/RamStockAlerts/appsettings.Development.json)
 
 **Documentation:**
 - [ProductGoal.md](ProductGoal.md) – Product vision and requirements
@@ -1135,17 +1141,20 @@ dotnet run --project RamStockAlerts.csproj
 - [README/UniverseUpdateJournalEntry.md](README/UniverseUpdateJournalEntry.md) – Journal schema docs
 - [README/GateTrace_Schema.md](README/GateTrace_Schema.md) – GateTrace schema docs
 - [README/Runbooks.md](README/Runbooks.md) – Operational runbooks
+- [docs/Architecture.md](docs/Architecture.md) – High-level architecture overview
+- [docs/AgenticWorkflow.md](docs/AgenticWorkflow.md) – Agent workflow and instruction layering
+- [SKILLS.md](SKILLS.md) – Repo skills index
 
 **Core Source Files:**
-- [Program.cs](Program.cs) – Application entry point
-- [Services/SignalCoordinator.cs](Services/SignalCoordinator.cs) – signals loop
-- [Services/MarketDataSubscriptionManager.cs](Services/MarketDataSubscriptionManager.cs) – Subscription lifecycle
-- [Universe/UniverseService.cs](Universe/UniverseService.cs) – Universe orchestration
-- [Engine/OrderFlowMetrics.cs](Engine/OrderFlowMetrics.cs) – Microstructure metrics
-- [Engine/OrderFlowSignalValidator.cs](Engine/OrderFlowSignalValidator.cs) – Signal scoring
-- [Feeds/IBkrMarketDataClient.cs](Feeds/IBkrMarketDataClient.cs) – IBKR TWS client
-- [Models/TradeJournalEntry.cs](Models/TradeJournalEntry.cs) – Journal schema
-- [RamStockAlerts.Execution/Services/ExecutionService.cs](RamStockAlerts.Execution/Services/ExecutionService.cs) – Execution orchestration
+- [src/RamStockAlerts/Program.cs](src/RamStockAlerts/Program.cs) – Application entry point
+- [src/RamStockAlerts/Services/SignalCoordinator.cs](src/RamStockAlerts/Services/SignalCoordinator.cs) – signals loop
+- [src/RamStockAlerts/Services/MarketDataSubscriptionManager.cs](src/RamStockAlerts/Services/MarketDataSubscriptionManager.cs) – Subscription lifecycle
+- [src/RamStockAlerts/Universe/UniverseService.cs](src/RamStockAlerts/Universe/UniverseService.cs) – Universe orchestration
+- [src/RamStockAlerts/Engine/OrderFlowMetrics.cs](src/RamStockAlerts/Engine/OrderFlowMetrics.cs) – Microstructure metrics
+- [src/RamStockAlerts/Engine/OrderFlowSignalValidator.cs](src/RamStockAlerts/Engine/OrderFlowSignalValidator.cs) – Signal scoring
+- [src/RamStockAlerts/Feeds/IBkrMarketDataClient.cs](src/RamStockAlerts/Feeds/IBkrMarketDataClient.cs) – IBKR TWS client
+- [src/RamStockAlerts/Models/TradeJournalEntry.cs](src/RamStockAlerts/Models/TradeJournalEntry.cs) – Journal schema
+- [src/RamStockAlerts.Execution/Services/ExecutionService.cs](src/RamStockAlerts.Execution/Services/ExecutionService.cs) – Execution orchestration
 
 **Logs & Journals:**
 - `logs/ramstockalerts-YYYYMMDD.txt` – Application logs
@@ -1174,26 +1183,26 @@ dotnet test RamStockAlerts.sln
 
 **Run API (signals enabled):**
 ```bash
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Record IBKR data:**
 ```bash
 $env:MODE = "record"
 $env:SYMBOL = "AAPL"
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Replay recorded data:**
 ```bash
 $env:MODE = "replay"
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Generate daily rollup report:**
 ```bash
 $env:Report:DailyRollup = "true"
-dotnet run --project RamStockAlerts.csproj
+dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 ```
 
 **Enable execution module (with fake broker):**
