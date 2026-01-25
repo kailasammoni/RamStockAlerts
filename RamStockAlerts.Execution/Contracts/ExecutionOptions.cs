@@ -12,9 +12,9 @@ public class ExecutionOptions
     public bool Enabled { get; set; } = false;
 
     /// <summary>
-    /// Trading mode (Paper | Live; default: Paper).
+    /// Treat execution as live trading (enables stricter safety checks).
     /// </summary>
-    public TradingMode Mode { get; set; } = TradingMode.Paper;
+    public bool Live { get; set; } = false;
 
     /// <summary>
     /// Emergency kill switch to reject all orders (default: false).

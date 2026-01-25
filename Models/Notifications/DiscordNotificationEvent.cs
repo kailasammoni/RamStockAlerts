@@ -9,7 +9,7 @@ public enum DiscordNotificationEventType
 
 public enum DiscordNotificationMode
 {
-    Shadow,
+    Signals,
     Live,
     Preview
 }

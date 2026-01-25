@@ -8,9 +8,8 @@ Scarcity > frequency: target 3–6 signals/day (hard cap 36/day).
 No prediction. No indicators. No momentum chasing.
 
 ## Guardrails (money-touching rules)
-- Never add auto-execution (alerts/blueprints only unless explicitly requested).
 - Never log or commit secrets (IBKR creds, tokens, Discord webhooks).
-- Prefer adding telemetry/diagnostics over adding features.
+- Also update telemetry/diagnostics when adding features where ever it touches signals and orders.
 - Any change that affects signal firing must add/adjust tests and include log evidence.
 - Keep diffs small; do not reformat unrelated files.
 
@@ -20,8 +19,6 @@ No prediction. No indicators. No momentum chasing.
 - Optional replay smoke test: `powershell -File scripts/replay.ps1 -Symbol AAPL`
 
 ## Repo conventions
-- Hot paths (market data loop): avoid allocations; do not add LINQ in tight loops.
-- Core business logic lives in `Services/` and `Engine/`.
 - When changing schemas or meaningfully changing gating/scoring, update:
   - `docs/DataContracts.md`
   - `docs/DecisionLog.md` (if present)

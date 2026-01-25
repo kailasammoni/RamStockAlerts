@@ -6,7 +6,7 @@ using Xunit;
 namespace RamStockAlerts.Tests;
 
 /// <summary>
-/// Phase 1.4 validation test: Load historical shadow trade journal and validate outcomes
+/// Phase 1.4 validation test: Load historical trade journal and validate outcomes
 /// are correctly labeled on real data.
 /// </summary>
 public class Phase1ValidationTests
@@ -17,13 +17,13 @@ public class Phase1ValidationTests
     public async Task ValidateOutcomeLabelingOnHistoricalData()
     {
         // Arrange
-        var journalPath = "logs/shadow-trade-journal.jsonl";
+        var journalPath = "logs/trade-journal.jsonl";
         if (!File.Exists(journalPath))
         {
             throw new FileNotFoundException($"Historical journal not found: {journalPath}");
         }
 
-        var acceptedEntries = new List<ShadowTradeJournalEntry>();
+        var acceptedEntries = new List<TradeJournalEntry>();
         var totalLines = 0;
 
         // Load journal and extract accepted entries
@@ -38,7 +38,7 @@ public class Phase1ValidationTests
 
                 try
                 {
-                    var entry = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(line, _jsonOptions);
+                    var entry = JsonSerializer.Deserialize<TradeJournalEntry>(line, _jsonOptions);
                     if (entry?.DecisionOutcome?.Equals("Accepted", StringComparison.OrdinalIgnoreCase) == true)
                     {
                         acceptedEntries.Add(entry);
@@ -84,16 +84,16 @@ public class Phase1ValidationTests
     public async Task ValidateOutcomeLabelingWithSampleData()
     {
         // Arrange - Create controlled test data
-        var entries = new List<ShadowTradeJournalEntry>
+        var entries = new List<TradeJournalEntry>
         {
             // Winning long trade
-            new ShadowTradeJournalEntry
+            new TradeJournalEntry
             {
                 DecisionId = Guid.NewGuid(),
                 Symbol = "AAPL",
                 Direction = "Long",
                 DecisionTimestampUtc = DateTimeOffset.UtcNow.AddHours(-1),
-                Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+                Blueprint = new TradeJournalEntry.BlueprintPlan
                 {
                     Entry = 100m,
                     Stop = 95m,
@@ -101,13 +101,13 @@ public class Phase1ValidationTests
                 }
             },
             // Losing short trade
-            new ShadowTradeJournalEntry
+            new TradeJournalEntry
             {
                 DecisionId = Guid.NewGuid(),
                 Symbol = "TSLA",
                 Direction = "Short",
                 DecisionTimestampUtc = DateTimeOffset.UtcNow.AddHours(-2),
-                Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+                Blueprint = new TradeJournalEntry.BlueprintPlan
                 {
                     Entry = 200m,
                     Stop = 210m,
@@ -182,3 +182,5 @@ public class Phase1ValidationTests
         }
     }
 }
+
+

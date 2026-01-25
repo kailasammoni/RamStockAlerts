@@ -1,6 +1,7 @@
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Microstructure;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -33,7 +34,7 @@ public class PostSignalQualityTests : IDisposable
         // Arrange: Symbol "AAPL" accepted with baseline tape velocity 10 tps
         // After acceptance, tape slows to 4 tps (60% drop, exceeds 50% threshold)
         
-        // TODO: Implementation requires mocking ShadowTradingCoordinator internals
+        // TODO: Implementation requires mocking SignalCoordinator internals
         // This is a placeholder for the test structure
         
         // Act: MonitorPostSignalQuality detects slowdown
@@ -48,7 +49,7 @@ public class PostSignalQualityTests : IDisposable
         // Arrange: Symbol "MSFT" accepted with baseline spread $0.10
         // After acceptance, spread widens to $0.16 (60% increase, exceeds 50% threshold)
         
-        // TODO: Implementation requires mocking ShadowTradingCoordinator internals
+        // TODO: Implementation requires mocking SignalCoordinator internals
         
         // Act: MonitorPostSignalQuality detects blowout
         
@@ -62,7 +63,7 @@ public class PostSignalQualityTests : IDisposable
         // Arrange: Symbol "GOOGL" accepted with baseline metrics
         // After acceptance, metrics remain stable (tape velocity and spread within thresholds)
         
-        // TODO: Implementation requires mocking ShadowTradingCoordinator internals
+        // TODO: Implementation requires mocking SignalCoordinator internals
         
         // Act: MonitorPostSignalQuality runs
         
@@ -162,3 +163,5 @@ public class PostSignalQualityTests : IDisposable
         Assert.True(true); // Placeholder
     }
 }
+
+

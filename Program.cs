@@ -2,6 +2,7 @@ using System;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Feeds;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Serilog;
 using Serilog.Events;
 using HealthChecks.UI.Client;
@@ -49,15 +50,49 @@ void LogSessionStart(string label) =>
 void LogSessionEnd(string label) =>
     Log.Information("[Session] Ending {Label} session at {Time:O}", label, DateTimeOffset.UtcNow);
 
+string ResolveJournalPathForReport(IConfiguration config)
+{
+    var configured = config.GetValue<string>("Report:JournalPath");
+    if (!string.IsNullOrWhiteSpace(configured))
+    {
+        return configured;
+    }
+
+    var path = config.GetValue<string>("SignalsJournal:FilePath");
+    if (!string.IsNullOrWhiteSpace(path))
+    {
+        return path;
+    }
+
+    path = config.GetValue<string>("TradeJournal:FilePath");
+    if (!string.IsNullOrWhiteSpace(path))
+    {
+        Log.Warning("Deprecated config key TradeJournal:FilePath used; migrate to SignalsJournal:FilePath.");
+        return path;
+    }
+
+    path = config.GetValue<string>("ShadowTradeJournal:FilePath");
+    if (!string.IsNullOrWhiteSpace(path))
+    {
+        Log.Warning("Deprecated config key ShadowTradeJournal:FilePath used; migrate to SignalsJournal:FilePath.");
+        return path;
+    }
+
+    var defaultPath = Path.Combine("logs", "trade-journal.jsonl");
+    var legacyPath = Path.Combine("logs", "shadow-trade-journal.jsonl");
+    if (!File.Exists(defaultPath) && File.Exists(legacyPath))
+    {
+        Log.Warning("Legacy journal file detected at {Path}. Migrate to trade-journal.jsonl.", legacyPath);
+        return legacyPath;
+    }
+
+    return defaultPath;
+}
+
 var dailyRollupRequested = initialConfig.GetValue("Report:DailyRollup", false);
 if (dailyRollupRequested)
 {
-    var journalPath = initialConfig.GetValue<string>("Report:JournalPath");
-    if (string.IsNullOrWhiteSpace(journalPath))
-    {
-        journalPath = initialConfig.GetValue<string>("ShadowTradeJournal:FilePath")
-                      ?? Path.Combine("logs", "shadow-trade-journal.jsonl");
-    }
+    var journalPath = ResolveJournalPathForReport(initialConfig);
     var writeToFile = initialConfig.GetValue("Report:WriteToFile", false);
     var outputPath = initialConfig.GetValue<string>("Report:OutputPath");
 
@@ -177,16 +212,10 @@ var builder = WebApplication.CreateBuilder(args);
 // Use Serilog
 builder.Host.UseSerilog();
 
-var tradingMode = builder.Configuration.GetValue<string>("TradingMode") ?? string.Empty;
 var recordBlueprints = builder.Configuration.GetValue("RecordBlueprints", true);
-var isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
-var sessionLabel = isShadowMode ? "Shadow trading" : "Trading";
-
- if (isShadowMode)
- {
-     Log.Information("TradingMode=Shadow (RecordBlueprints={RecordBlueprints})", recordBlueprints);
- }
- LogSessionStart(sessionLabel);
+const string sessionLabel = "Trading";
+Log.Information("Signal pipeline enabled (RecordBlueprints={RecordBlueprints})", recordBlueprints);
+LogSessionStart(sessionLabel);
 
 // Add Application Insights
 var appInsightsConnectionString = builder.Configuration["ApplicationInsights:ConnectionString"];
@@ -221,12 +250,12 @@ builder.Services.AddSingleton<DiscordDeliveryStatusStore>();
 builder.Services.AddSingleton<DiscordNotificationService>();
 
 // Register services
-builder.Services.AddSingleton<ShadowTradeJournal>();
-builder.Services.AddSingleton<IShadowTradeJournal>(sp => sp.GetRequiredService<ShadowTradeJournal>());
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ShadowTradeJournal>());
-builder.Services.AddHostedService<ShadowJournalHeartbeatService>();
+builder.Services.AddSingleton<TradeJournal>();
+builder.Services.AddSingleton<ITradeJournal>(sp => sp.GetRequiredService<TradeJournal>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TradeJournal>());
+builder.Services.AddHostedService<TradeJournalHeartbeatService>();
 builder.Services.AddSingleton<ScarcityController>();
-builder.Services.AddSingleton<ShadowTradingCoordinator>();
+builder.Services.AddSingleton<SignalCoordinator>();
 builder.Services.AddSingleton<PreviewSignalEmitter>();
 builder.Services.AddSingleton<IRequestIdSource>(sp => new IbkrRequestIdSource(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<ContractClassificationCache>();
@@ -243,7 +272,7 @@ builder.Services.AddSingleton<MarketDataSubscriptionManager>(sp =>
         sp.GetRequiredService<ContractClassificationService>(),
         sp.GetRequiredService<DepthEligibilityCache>(),
         sp.GetRequiredService<OrderFlowMetrics>(),
-        sp.GetService<IShadowTradeJournal>()));
+        sp.GetService<ITradeJournal>()));
 
 // Register order flow metrics and signal validation
 builder.Services.AddSingleton<OrderFlowMetrics>();

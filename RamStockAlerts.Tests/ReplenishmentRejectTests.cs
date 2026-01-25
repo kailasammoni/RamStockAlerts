@@ -2,6 +2,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Models.Decisions;
 using RamStockAlerts.Models.Microstructure;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -24,11 +25,11 @@ public class ReplenishmentRejectTests
             Symbol = "TEST",
             TradesIn3Sec = 0
         };
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForReplenishment(
+        var shouldReject = SignalCoordinator.ShouldRejectForReplenishment(
             "BUY",
             delta,
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 0m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 0m, null, null, null));
 
         Assert.True(shouldReject);
     }
@@ -50,11 +51,11 @@ public class ReplenishmentRejectTests
             TradesIn3Sec = 2
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForReplenishment(
+        var shouldReject = SignalCoordinator.ShouldRejectForReplenishment(
             "BUY",
             delta,
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 1m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 1m, null, null, null));
 
         Assert.False(shouldReject);
     }
@@ -76,11 +77,11 @@ public class ReplenishmentRejectTests
             TradesIn3Sec = 0
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForReplenishment(
+        var shouldReject = SignalCoordinator.ShouldRejectForReplenishment(
             "SELL",
             delta,
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 0m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 0m, null, null, null));
 
         Assert.True(shouldReject);
     }
@@ -102,11 +103,11 @@ public class ReplenishmentRejectTests
             TradesIn3Sec = 2
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForReplenishment(
+        var shouldReject = SignalCoordinator.ShouldRejectForReplenishment(
             "SELL",
             delta,
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 1m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 1m, null, null, null));
 
         Assert.False(shouldReject);
     }
@@ -138,3 +139,5 @@ public class ReplenishmentRejectTests
         Assert.Equal(0m, result.Snapshot?.TapeVolume3Sec);
     }
 }
+
+

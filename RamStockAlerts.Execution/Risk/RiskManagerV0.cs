@@ -124,7 +124,7 @@ public class RiskManagerV0 : IRiskManager
         }
 
         // 5. LIVE MODE SAFETY CHECKS
-        if (intent.Mode == TradingMode.Live)
+        if (_options.Live)
         {
             // Future: add account equity checks, max notional % validation, etc.
         }
@@ -156,7 +156,7 @@ public class RiskManagerV0 : IRiskManager
         }
 
         // 3. Require StopLoss in Live mode
-        if (intent.Entry.Mode == TradingMode.Live)
+        if (_options.Live)
         {
             if (intent.StopLoss is null)
             {

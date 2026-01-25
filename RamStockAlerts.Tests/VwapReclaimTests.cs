@@ -1,4 +1,5 @@
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -8,7 +9,7 @@ public class VwapReclaimTests
     [Fact]
     public void BuyReclaim_WhenPriceCrossesAboveVwapWithVolume()
     {
-        var reclaim = ShadowTradingCoordinator.IsVwapReclaim(
+        var reclaim = SignalCoordinator.IsVwapReclaim(
             "BUY",
             10.5m,
             10m,
@@ -21,7 +22,7 @@ public class VwapReclaimTests
     [Fact]
     public void SellReclaim_WhenPriceCrossesBelowVwapWithVolume()
     {
-        var reclaim = ShadowTradingCoordinator.IsVwapReclaim(
+        var reclaim = SignalCoordinator.IsVwapReclaim(
             "SELL",
             9.5m,
             10m,
@@ -34,7 +35,7 @@ public class VwapReclaimTests
     [Fact]
     public void NoReclaim_WhenVolumeLow()
     {
-        var reclaim = ShadowTradingCoordinator.IsVwapReclaim(
+        var reclaim = SignalCoordinator.IsVwapReclaim(
             "BUY",
             10.5m,
             10m,
@@ -44,3 +45,5 @@ public class VwapReclaimTests
         Assert.False(reclaim);
     }
 }
+
+

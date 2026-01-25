@@ -13,6 +13,10 @@
     <Compile Remove="RamStockAlerts.Tests/**" />
     <EmbeddedResource Remove="RamStockAlerts.Tests/**" />
     <None Remove="RamStockAlerts.Tests/**" />
+    <!-- Exclude vendored IBKR CSharp API sources (built via project reference) -->
+    <Compile Remove="lib/ibkr/CSharpClient/**" />
+    <EmbeddedResource Remove="lib/ibkr/CSharpClient/**" />
+    <None Remove="lib/ibkr/CSharpClient/**" />
     <!-- Exclude Execution module test project files -->
     <Compile Remove="RamStockAlerts.Execution/**" />
     <EmbeddedResource Remove="RamStockAlerts.Execution/**" />
@@ -42,7 +46,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="IBApi" Version="1.0.0-preview-975" />
+    <ProjectReference Include="lib/ibkr/CSharpClient/CSharpAPI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -21,6 +21,7 @@ public class ExecutionTests
     private static ExecutionOptions CreateDefaultOptions() => new()
     {
         Enabled = true,
+        Live = false,
         KillSwitch = false,
         MaxOrdersPerDay = 100,
         MaxBracketsPerDay = 100,
@@ -163,13 +164,12 @@ public class ExecutionTests
     public void RiskManagerV0_Reject_LiveBracketWithoutStopLoss()
     {
         // Arrange
-        var riskManager = new RiskManagerV0(CreateDefaultOptions());
+        var riskManager = new RiskManagerV0(new ExecutionOptions { Live = true });
         var bracket = new BracketIntent
         {
             Entry = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live, // Live mode
                 Side = OrderSide.Buy,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -179,7 +179,6 @@ public class ExecutionTests
             TakeProfit = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live,
                 Side = OrderSide.Sell,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -200,13 +199,12 @@ public class ExecutionTests
     public void RiskManagerV0_Accept_LiveBracketWithStopLoss()
     {
         // Arrange
-        var riskManager = new RiskManagerV0(CreateDefaultOptions());
+        var riskManager = new RiskManagerV0(new ExecutionOptions { Live = true });
         var bracket = new BracketIntent
         {
             Entry = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live,
                 Side = OrderSide.Buy,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -215,7 +213,6 @@ public class ExecutionTests
             StopLoss = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live,
                 Side = OrderSide.Sell,
                 Type = OrderType.Stop,
                 Quantity = 100m,
@@ -224,7 +221,6 @@ public class ExecutionTests
             TakeProfit = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live,
                 Side = OrderSide.Sell,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -240,16 +236,15 @@ public class ExecutionTests
     }
 
     [Fact]
-    public void RiskManagerV0_Accept_PaperBracketWithoutStopLoss()
+    public void RiskManagerV0_Accept_BracketWithoutStopLoss_WhenLiveDisabled()
     {
         // Arrange
-        var riskManager = new RiskManagerV0(CreateDefaultOptions());
+        var riskManager = new RiskManagerV0(new ExecutionOptions { Live = false });
         var bracket = new BracketIntent
         {
             Entry = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Paper, // Paper mode, so stop-loss not required
                 Side = OrderSide.Buy,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -259,7 +254,6 @@ public class ExecutionTests
             TakeProfit = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Paper,
                 Side = OrderSide.Sell,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -291,7 +285,6 @@ public class ExecutionTests
         {
             IntentId = Guid.NewGuid(),
             Symbol = "AAPL",
-            Mode = TradingMode.Paper,
             Side = OrderSide.Buy,
             Type = OrderType.Market,
             Quantity = 100m
@@ -328,7 +321,6 @@ public class ExecutionTests
         {
             IntentId = Guid.NewGuid(),
             Symbol = "AAPL",
-            Mode = TradingMode.Paper,
             Side = OrderSide.Buy,
             Type = OrderType.Market,
             Quantity = null,
@@ -366,7 +358,6 @@ public class ExecutionTests
             {
                 IntentId = Guid.NewGuid(),
                 Symbol = "AAPL",
-                Mode = TradingMode.Paper,
                 Side = OrderSide.Buy,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -375,7 +366,6 @@ public class ExecutionTests
             StopLoss = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Paper,
                 Side = OrderSide.Sell,
                 Type = OrderType.Stop,
                 Quantity = 100m,
@@ -384,7 +374,6 @@ public class ExecutionTests
             TakeProfit = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Paper,
                 Side = OrderSide.Sell,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -413,7 +402,7 @@ public class ExecutionTests
     public async Task ExecutionService_ExecuteAsync_Bracket_Rejected_DoesNotCallBroker()
     {
         // Arrange
-        var riskManager = new RiskManagerV0(CreateDefaultOptions());
+        var riskManager = new RiskManagerV0(new ExecutionOptions { Live = true });
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
         var service = new ExecutionService(riskManager, brokerClient, ledger);
@@ -423,7 +412,6 @@ public class ExecutionTests
             Entry = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live,
                 Side = OrderSide.Buy,
                 Type = OrderType.Limit,
                 Quantity = 100m,
@@ -433,7 +421,6 @@ public class ExecutionTests
             TakeProfit = new OrderIntent
             {
                 Symbol = "AAPL",
-                Mode = TradingMode.Live,
                 Side = OrderSide.Sell,
                 Type = OrderType.Limit,
                 Quantity = 100m,

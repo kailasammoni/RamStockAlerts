@@ -28,13 +28,13 @@
 
 ### What is RamStockAlerts?
 
-RamStockAlerts is an **order-flow intelligence platform** designed to detect transient liquidity dislocations in equity markets using Level II market depth and tick-by-tick tape data from Interactive Brokers (IBKR). The system operates in **shadow trading mode** by default, generating trade blueprints without executing real orders.
+RamStockAlerts is an **order-flow intelligence platform** designed to detect transient liquidity dislocations in equity markets using Level II market depth and tick-by-tick tape data from Interactive Brokers (IBKR). Signals and journaling are enabled by default, generating trade blueprints without executing real orders unless execution is explicitly enabled.
 
 ### Key Characteristics
 
 - **Money-touching system**: Production-grade safety, logging, and deterministic replay capabilities
 - **Scarcity over frequency**: Targets 3–6 high-quality signals per day, not high-frequency spam
-- **Shadow-first design**: Validates strategy and gate logic before enabling live execution
+- **Signals-first design**: Validates strategy and gate logic before enabling live execution
 - **Deterministic replay**: Records and replays IBKR market data for debugging and backtesting
 - **Depth evaluation windows**: Time-boxed market depth analysis with strict slot management
 
@@ -102,7 +102,7 @@ Detect **transient order-book imbalances** that statistically precede short-term
         │                     │                     │
         ▼                     ▼                     ▼
 ┌──────────────┐    ┌──────────────────┐    ┌──────────────┐
-│   Universe   │    │  Market Data     │    │   Shadow     │
+│   Universe   │    │  Market Data     │    │   Signal     │
 │   Service    │───▶│  Subscription    │───▶│   Trading    │
 │              │    │     Manager      │    │ Coordinator  │
 └──────────────┘    └──────────────────┘    └──────────────┘
@@ -116,7 +116,7 @@ Detect **transient order-book imbalances** that statistically precede short-term
         └─────────────────────┼─────────────────────┘
                               ▼
                     ┌──────────────────────┐
-                    │  Shadow Trade        │
+                    │  Trade        │
                     │     Journal          │
                     │  (JSONL Event Log)   │
                     └──────────────────────┘
@@ -131,9 +131,9 @@ RamStockAlerts/                     # Main API project
 │   ├── SignalsController.cs       # Signal history queries
 │   └── AdminController.cs          # Admin/diagnostics
 ├── Services/                       # Core business logic
-│   ├── ShadowTradingCoordinator.cs # Shadow trading loop
+│   ├── SignalCoordinator.cs # signals loop
 │   ├── MarketDataSubscriptionManager.cs  # IBKR subscription lifecycle
-│   ├── ShadowTradeJournal.cs      # Event journaling
+│   ├── TradeJournal.cs      # Event journaling
 │   └── ScarcityController.cs      # Signal throttling
 ├── Engine/                         # Strategy & metrics
 │   ├── OrderFlowMetrics.cs        # Microstructure calculations
@@ -148,7 +148,7 @@ RamStockAlerts/                     # Main API project
 ├── Models/                         # Domain models
 │   ├── OrderBookState.cs          # Level II depth state
 │   ├── TapeData.cs                # Tick-by-tick tape
-│   └── ShadowTradeJournalEntry.cs # Journal schema
+│   └── TradeJournalEntry.cs # Journal schema
 └── Data/                           # Persistence layer
     ├── AppDbContext.cs            # EF Core DbContext
     ├── FileEventStore.cs          # JSONL event store
@@ -207,7 +207,7 @@ The universe pipeline maintains four hierarchical sets:
 - Never subscribes depth without probe-level subscription
 - Logs subscription stats every cycle
 
-### 4.3 ShadowTradingCoordinator
+### 4.3 SignalCoordinator
 
 **Responsibilities:**
 - Receive OrderBookState snapshots from IBKR client
@@ -285,7 +285,7 @@ The universe pipeline maintains four hierarchical sets:
 
 ## 5. Data Flow & Pipelines
 
-### 5.1 Normal API Mode (Shadow Trading)
+### 5.1 Normal API Mode (Signals)
 
 ```
 1. UniverseService.GetUniverseAsync()
@@ -307,14 +307,14 @@ The universe pipeline maintains four hierarchical sets:
    ├─▶ OnTickByTick (tape prints)
    └─▶ Build OrderBookState snapshots
 
-4. ShadowTradingCoordinator.ProcessSnapshot()
+4. SignalCoordinator.ProcessSnapshot()
    ├─▶ ActiveUniverse gate (drop if not active)
    ├─▶ Evaluation throttle (250ms)
    ├─▶ OrderFlowMetrics.UpdateMetrics()
    ├─▶ OrderFlowSignalValidator.ValidateSignal()
    ├─▶ Gate checks (validity, freshness, scoring)
    ├─▶ ScarcityController.ShouldAccept()
-   └─▶ ShadowTradeJournal.WriteAsync() (accept/reject)
+   └─▶ TradeJournal.WriteAsync() (accept/reject)
 
 5. Trade Blueprint (if accepted)
    ├─▶ Entry: Last Ask
@@ -341,7 +341,7 @@ MODE=replay
   ├─▶ IbkrReplayHostedService
   ├─▶ Read logs/ibkr-depth-*.jsonl + logs/ibkr-tape-*.jsonl
   ├─▶ Reconstruct OrderBookState snapshots
-  ├─▶ Feed to ShadowTradingCoordinator
+  ├─▶ Feed to SignalCoordinator
   └─▶ Output to replay-output.txt (deterministic results)
 ```
 
@@ -357,10 +357,13 @@ MODE=replay
 
 ### 6.2 Key Configuration Sections
 
-#### Trading Mode
+#### Execution Flags
 ```json
 {
-  "TradingMode": "Shadow"  // Shadow (default) or Live (requires execution)
+  "Execution": {
+    "Enabled": false,
+    "Live": false
+  }
 }
 ```
 
@@ -410,11 +413,11 @@ MODE=replay
 }
 ```
 
-#### Shadow Journal
+#### Signals Journal
 ```json
 {
-  "ShadowTradeJournal": {
-    "FilePath": "logs/shadow-trade-journal.jsonl",
+  "SignalsJournal": {
+    "FilePath": "logs/trade-journal.jsonl",
     "EmitGateTrace": true        // Include gate diagnostic snapshots
   }
 }
@@ -467,11 +470,11 @@ MODE=replay
 - Starts ASP.NET Core web host
 - Runs UniverseService + MarketDataSubscriptionManager
 - Connects to IBKR TWS
-- Runs shadow trading loop
+- Runs signal loop
 - Exposes REST API endpoints
 
 **Endpoints:**
-- `GET /api/signals` – Recent shadow trade journal entries
+- `GET /api/signals` – Recent trade journal entries
 - `POST /api/execution/order` – Place single order (requires Execution:Enabled)
 - `POST /api/execution/bracket` – Place bracket order
 - `GET /api/execution/ledger` – Execution history
@@ -488,7 +491,7 @@ MODE=replay
 - Writes raw events to:
   - `logs/ibkr-depth-YYYYMMDD-HHmmss.jsonl`
   - `logs/ibkr-tape-YYYYMMDD-HHmmss.jsonl`
-- Does NOT run universe pipeline or shadow trading
+- Does NOT run universe pipeline or signal loop
 - Runs until terminated (Ctrl+C)
 
 **Use Case:** Capture real IBKR data for replay/debugging.
@@ -501,7 +504,7 @@ MODE=replay
 - Starts IbkrReplayHostedService
 - Reads depth + tape JSONL files from logs/
 - Reconstructs OrderBookState snapshots deterministically
-- Feeds snapshots to ShadowTradingCoordinator
+- Feeds snapshots to SignalCoordinator
 - Outputs evaluation results to `replay-output.txt`
 - Does NOT connect to IBKR or emit real journal entries
 
@@ -512,7 +515,7 @@ MODE=replay
 **Trigger:** `Report:DailyRollup=true`
 
 **Behavior:**
-- Reads shadow trade journal (config: `Report:JournalPath`)
+- Reads trade journal (config: `Report:JournalPath`)
 - Aggregates metrics (win rate, avg score, rejections by reason)
 - Prints to console or writes to file (config: `Report:WriteToFile`)
 - Exits after completion
@@ -612,10 +615,10 @@ MODE=replay
 
 ## 9. Journaling & Observability
 
-### 9.1 Shadow Trade Journal
+### 9.1 Trade Journal
 
 **Format:** JSONL (JSON Lines), one entry per line  
-**Location:** `logs/shadow-trade-journal.jsonl`  
+**Location:** `logs/trade-journal.jsonl`  
 **SchemaVersion:** 2 (current)
 
 **Entry Types:**
@@ -740,7 +743,6 @@ Place a single order.
 **Request:**
 ```json
 {
-  "mode": "Paper",
   "symbol": "AAPL",
   "side": "Buy",
   "type": "Market",
@@ -767,9 +769,9 @@ Place bracket order (entry + stop + take-profit).
 **Request:**
 ```json
 {
-  "entry": { "mode": "Paper", "symbol": "TSLA", "side": "Buy", "type": "Limit", "quantity": 50, "limitPrice": 200.00 },
-  "stopLoss": { "mode": "Paper", "symbol": "TSLA", "side": "Sell", "type": "Stop", "quantity": 50, "stopPrice": 190.00 },
-  "takeProfit": { "mode": "Paper", "symbol": "TSLA", "side": "Sell", "type": "Limit", "quantity": 50, "limitPrice": 210.00 }
+  "entry": { "symbol": "TSLA", "side": "Buy", "type": "Limit", "quantity": 50, "limitPrice": 200.00 },
+  "stopLoss": { "symbol": "TSLA", "side": "Sell", "type": "Stop", "quantity": 50, "stopPrice": 190.00 },
+  "takeProfit": { "symbol": "TSLA", "side": "Sell", "type": "Limit", "quantity": 50, "limitPrice": 210.00 }
 }
 ```
 
@@ -802,8 +804,7 @@ Query execution history.
 **Pre-Trade Checks:**
 - Max notional per trade: `Execution:MaxNotionalUsd` (default: $2000)
 - Max shares per trade: `Execution:MaxShares` (default: 500)
-- Live mode MUST include stop-loss in bracket orders
-- Paper mode allows stop-loss to be optional
+- Live execution (`Execution:Live=true`) MUST include stop-loss in bracket orders
 
 **Risk Rejection Reasons:**
 - `NotionalTooHigh`
@@ -816,7 +817,7 @@ Query execution history.
 - Always returns success
 - Generates fake order IDs: `FAKE-<guid>`
 - No real execution
-- Used for testing and shadow mode validation
+- Used for testing and non-live validation
 
 **IbkrBrokerClient (not implemented):**
 - Placeholder for real IBKR order placement
@@ -889,14 +890,13 @@ dotnet build RamStockAlerts.csproj -c Debug
 
 ### 12.2 Running Locally
 
-**API Host (shadow trading):**
+**API Host (signals enabled by default):**
 ```bash
 dotnet run --project RamStockAlerts.csproj
 ```
 
 **With environment overrides:**
 ```bash
-$env:TradingMode = "Shadow"
 $env:MarketData:MaxLines = 100
 dotnet run --project RamStockAlerts.csproj
 ```
@@ -1032,13 +1032,13 @@ dotnet run --project RamStockAlerts.csproj
 
 ## 14. Technical Decisions & Tradeoffs
 
-### 14.1 Why Shadow Trading First?
+### 14.1 Why Signals-First?
 
-**Decision:** Default to `TradingMode=Shadow`, execution disabled.
+**Decision:** Signals and journaling are always on; execution remains disabled by default.
 
 **Rationale:**
 - Money-touching systems require validation before live execution
-- Shadow mode allows strategy validation with zero risk
+- Signals-first allows strategy validation with zero risk
 - Journal provides audit trail for backtesting and compliance
 - Easier to iterate on strategy logic without broker integration overhead
 
@@ -1046,7 +1046,7 @@ dotnet run --project RamStockAlerts.csproj
 
 ### 14.2 Why JSONL for Journal?
 
-**Decision:** File-based JSONL for shadow trade journal and event store (default).
+**Decision:** File-based JSONL for Trade journal and event store (default).
 
 **Rationale:**
 - Human-readable, line-oriented (no partial writes)
@@ -1075,7 +1075,7 @@ dotnet run --project RamStockAlerts.csproj
 **Decision:** `Execution:Broker=Fake` and `Execution:Enabled=false` by default.
 
 **Rationale:**
-- Shadow mode requires no real broker
+- Signals-first requires no real broker
 - Fake broker enables execution API testing without IBKR account
 - IBKR broker implementation incomplete (WIP)
 - Safer default for development/staging environments
@@ -1138,18 +1138,18 @@ dotnet run --project RamStockAlerts.csproj
 
 **Core Source Files:**
 - [Program.cs](Program.cs) – Application entry point
-- [Services/ShadowTradingCoordinator.cs](Services/ShadowTradingCoordinator.cs) – Shadow trading loop
+- [Services/SignalCoordinator.cs](Services/SignalCoordinator.cs) – signals loop
 - [Services/MarketDataSubscriptionManager.cs](Services/MarketDataSubscriptionManager.cs) – Subscription lifecycle
 - [Universe/UniverseService.cs](Universe/UniverseService.cs) – Universe orchestration
 - [Engine/OrderFlowMetrics.cs](Engine/OrderFlowMetrics.cs) – Microstructure metrics
 - [Engine/OrderFlowSignalValidator.cs](Engine/OrderFlowSignalValidator.cs) – Signal scoring
 - [Feeds/IBkrMarketDataClient.cs](Feeds/IBkrMarketDataClient.cs) – IBKR TWS client
-- [Models/ShadowTradeJournalEntry.cs](Models/ShadowTradeJournalEntry.cs) – Journal schema
+- [Models/TradeJournalEntry.cs](Models/TradeJournalEntry.cs) – Journal schema
 - [RamStockAlerts.Execution/Services/ExecutionService.cs](RamStockAlerts.Execution/Services/ExecutionService.cs) – Execution orchestration
 
 **Logs & Journals:**
 - `logs/ramstockalerts-YYYYMMDD.txt` – Application logs
-- `logs/shadow-trade-journal.jsonl` – Shadow trade journal
+- `logs/trade-journal.jsonl` – Trade journal
 - `logs/ibkr-depth-*.jsonl` – Recorded depth data (record mode)
 - `logs/ibkr-tape-*.jsonl` – Recorded tape data (record mode)
 - `replay-output.txt` – Replay mode output
@@ -1172,7 +1172,7 @@ dotnet build RamStockAlerts.sln -c Debug
 dotnet test RamStockAlerts.sln
 ```
 
-**Run API (shadow mode):**
+**Run API (signals enabled):**
 ```bash
 dotnet run --project RamStockAlerts.csproj
 ```
@@ -1215,7 +1215,7 @@ curl http://localhost:5000/api/signals
 ```bash
 curl -X POST http://localhost:5000/api/execution/order \
   -H "Content-Type: application/json" \
-  -d '{"mode":"Paper","symbol":"AAPL","side":"Buy","type":"Market","quantity":100,"tif":"Day"}'
+  -d '{"symbol":"AAPL","side":"Buy","type":"Market","quantity":100,"tif":"Day"}'
 ```
 
 ---
@@ -1238,7 +1238,7 @@ curl -X POST http://localhost:5000/api/execution/order \
 
 **GateTrace:** Diagnostic snapshot emitted with rejections (tape age, depth age, config).
 
-**Journaling:** Append-only JSONL event log (shadow-trade-journal.jsonl).
+**Journaling:** Append-only JSONL event log (trade-journal.jsonl).
 
 **L1 / Level I:** Top-of-book market data (best bid/ask).
 
@@ -1248,7 +1248,7 @@ curl -X POST http://localhost:5000/api/execution/order \
 
 **SchemaVersion:** Versioning field in journal entries (current: 2).
 
-**Shadow Trading:** Generate trade blueprints without real execution.
+**Signals:** Generate trade blueprints without real execution.
 
 **Tape / Tick-by-Tick:** Time-and-sales data (every trade print).
 
@@ -1259,3 +1259,5 @@ curl -X POST http://localhost:5000/api/execution/order \
 **End of Documentation**
 
 For questions, issues, or contributions, refer to the source files and policies linked throughout this document.
+
+

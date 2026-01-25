@@ -64,7 +64,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     private bool _useFallback;
     private bool _fallbackAttempted;
     private double? _lastPrice;
-    private int? _lastSize;
+    private decimal? _lastSize;
 
     // Depth fallback tracking
     private List<string> _depthExchanges = new();
@@ -472,7 +472,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
         }
     }
 
-    public void error(int id, int errorCode, string errorMsg)
+    public void error(int id, long errorTime, int errorCode, string errorMsg, string advancedOrderRejectJson)
     {
         if (errorCode == 2104 || errorCode == 2106)
         {
@@ -543,7 +543,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
         }
     }
 
-    public void updateMktDepth(int tickerId, int position, int operation, int side, double price, int size)
+    public void updateMktDepth(int tickerId, int position, int operation, int side, double price, decimal size)
     {
         Interlocked.Increment(ref _depthCount);
 
@@ -569,7 +569,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
         _depthQueue.Enqueue(ToJsonLine(evt));
     }
 
-    public void updateMktDepthL2(int tickerId, int position, string marketMaker, int operation, int side, double price, int size, bool isSmartDepth)
+    public void updateMktDepthL2(int tickerId, int position, string marketMaker, int operation, int side, double price, decimal size, bool isSmartDepth)
     {
         Interlocked.Increment(ref _depthCount);
 
@@ -597,7 +597,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
         _depthQueue.Enqueue(ToJsonLine(evt));
     }
 
-    public void tickByTickAllLast(int reqId, int tickType, long time, double price, int size,
+    public void tickByTickAllLast(int reqId, int tickType, long time, double price, decimal size,
         TickAttribLast tickAttribLast, string exchange, string specialConditions)
     {
         Interlocked.Increment(ref _tapeCount);
@@ -626,7 +626,7 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
         }
     }
 
-    public void tickSize(int tickerId, int field, int size)
+    public void tickSize(int tickerId, int field, decimal size)
     {
         // Field 5 = LAST size
         if (field == 5)
@@ -665,15 +665,15 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     // EWrapper: Stubs (no-op)
     // ============================================================================
 
-    public void tickOptionComputation(int tickerId, int field, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) { }
+    public void tickOptionComputation(int tickerId, int field, int tickAttrib, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) { }
     public void tickGeneric(int tickerId, int field, double value) { }
     public void tickString(int tickerId, int field, string value) { }
     public void tickEFP(int tickerId, int tickType, double basisPoints, string formattedBasisPoints, double impliedFuture, int holdDays, string futureExpiry, double dividendImpact, double dividendsToExpiry) { }
-    public void orderStatus(int orderId, string status, double filled, double remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, string whyHeld, double mktCapPrice) { }
+    public void orderStatus(int orderId, string status, decimal filled, decimal remaining, double avgFillPrice, long permId, int parentId, double lastFillPrice, int clientId, string whyHeld, double mktCapPrice) { }
     public void openOrder(int orderId, Contract contract, Order order, OrderState orderState) { }
     public void openOrderEnd() { }
     public void updateAccountValue(string key, string value, string currency, string accountName) { }
-    public void updatePortfolio(Contract contract, double position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, string accountName) { }
+    public void updatePortfolio(Contract contract, decimal position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, string accountName) { }
     public void updateAccountTime(string timeStamp) { }
     public void accountDownloadEnd(string account) { }
     public void bondContractDetails(int reqId, ContractDetails contractDetails) { }
@@ -686,14 +686,15 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     public void scannerParameters(string xml) { }
     public void scannerData(int reqId, int rank, ContractDetails contractDetails, string distance, string benchmark, string projection, string legsStr) { }
     public void scannerDataEnd(int reqId) { }
-    public void realtimeBar(int reqId, long time, double open, double high, double low, double close, long volume, double wap, int count) { }
+    public void realtimeBar(int reqId, long time, double open, double high, double low, double close, decimal volume, decimal wap, int count) { }
     public void currentTime(long time) { }
+    public void currentTimeInMillis(long timeInMillis) { }
     public void fundamentalData(int reqId, string data) { }
     public void deltaNeutralValidation(int reqId, DeltaNeutralContract deltaNeutralContract) { }
     public void tickSnapshotEnd(int reqId) { }
     public void marketDataType(int reqId, int marketDataType) { }
-    public void commissionReport(CommissionReport commissionReport) { }
-    public void position(string account, Contract contract, double pos, double avgCost) { }
+    public void commissionAndFeesReport(CommissionAndFeesReport commissionAndFeesReport) { }
+    public void position(string account, Contract contract, decimal pos, double avgCost) { }
     public void positionEnd() { }
     public void accountSummary(int reqId, string account, string tag, string value, string currency) { }
     public void accountSummaryEnd(int reqId) { }
@@ -704,12 +705,10 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     public void displayGroupList(int reqId, string groups) { }
     public void displayGroupUpdated(int reqId, string contractInfo) { }
     public void connectAck() { }
-    public void positionMulti(int reqId, string account, string modelCode, Contract contract, double pos, double avgCost) { }
+    public void positionMulti(int reqId, string account, string modelCode, Contract contract, decimal pos, double avgCost) { }
     public void positionMultiEnd(int reqId) { }
     public void accountUpdateMulti(int reqId, string account, string modelCode, string key, string value, string currency) { }
     public void accountUpdateMultiEnd(int reqId) { }
-    public void securityDefinitionOptionalParameter(int reqId, string exchange, int underlyingConId, string tradingClass, string multiplier, HashSet<string> expirations, HashSet<double> strikes) { }
-    public void securityDefinitionOptionalParameterEnd(int reqId) { }
     public void softDollarTiers(int reqId, SoftDollarTier[] tiers) { }
     public void familyCodes(FamilyCode[] familyCodes) { }
     public void symbolSamples(int reqId, ContractDescription[] contractDescriptions) { }
@@ -727,11 +726,11 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     public void rerouteMktDepthReq(int reqId, int conId, string exchange) { }
     public void marketRule(int marketRuleId, PriceIncrement[] priceIncrements) { }
     public void pnl(int reqId, double dailyPnL, double unrealizedPnL, double realizedPnL) { }
-    public void pnlSingle(int reqId, int pos, double dailyPnL, double unrealizedPnL, double realizedPnL, double value) { }
+    public void pnlSingle(int reqId, decimal pos, double dailyPnL, double unrealizedPnL, double realizedPnL, double value) { }
     public void historicalTicks(int reqId, HistoricalTick[] ticks, bool done) { }
     public void historicalTicksBidAsk(int reqId, HistoricalTickBidAsk[] ticks, bool done) { }
     public void historicalTicksLast(int reqId, HistoricalTickLast[] ticks, bool done) { }
-    public void tickByTickBidAsk(int reqId, long time, double bidPrice, double askPrice, int bidSize, int askSize, TickAttribBidAsk tickAttribBidAsk) { }
+    public void tickByTickBidAsk(int reqId, long time, double bidPrice, double askPrice, decimal bidSize, decimal askSize, TickAttribBidAsk tickAttribBidAsk) { }
     public void tickByTickMidPoint(int reqId, long time, double midPoint) { }
     public void orderBound(long orderId, int apiClientId, int apiOrderId) { }
     public void completedOrder(Contract contract, Order order, OrderState orderState) { }
@@ -754,9 +753,94 @@ public sealed class IbkrRecorderHostedService : BackgroundService, EWrapper
     }
     public void historicalDataEnd(int reqId, string startDateStr, string endDateStr) { }
     public void historicalDataUpdate(int reqId, Bar bar) { }
+    public void historicalSchedule(int reqId, string startDateTime, string endDateTime, string timeZone, HistoricalSession[] sessions) { }
     public void securityDefinitionOptionParameter(int reqId, string exchange, int underlyingConId, string tradingClass, string multiplier, HashSet<string> expirations, HashSet<double> strikes) { }
     public void securityDefinitionOptionParameterEnd(int reqId) { }
     public void userInfo(int reqId, string whiteBrandingId) { }
+
+    // ============================================================================
+    // EWrapper: Protobuf stubs (no-op)
+    // ============================================================================
+    public void orderStatusProtoBuf(IBApi.protobuf.OrderStatus orderStatusProto) { }
+    public void openOrderProtoBuf(IBApi.protobuf.OpenOrder openOrderProto) { }
+    public void openOrdersEndProtoBuf(IBApi.protobuf.OpenOrdersEnd openOrdersEndProto) { }
+    public void errorProtoBuf(IBApi.protobuf.ErrorMessage errorMessageProto) { }
+    public void execDetailsProtoBuf(IBApi.protobuf.ExecutionDetails executionDetailsProto) { }
+    public void execDetailsEndProtoBuf(IBApi.protobuf.ExecutionDetailsEnd executionDetailsEndProto) { }
+    public void completedOrderProtoBuf(IBApi.protobuf.CompletedOrder completedOrderProto) { }
+    public void completedOrdersEndProtoBuf(IBApi.protobuf.CompletedOrdersEnd completedOrdersEndProto) { }
+    public void orderBoundProtoBuf(IBApi.protobuf.OrderBound orderBoundProto) { }
+    public void contractDataProtoBuf(IBApi.protobuf.ContractData contractDataProto) { }
+    public void bondContractDataProtoBuf(IBApi.protobuf.ContractData contractDataProto) { }
+    public void contractDataEndProtoBuf(IBApi.protobuf.ContractDataEnd contractDataEndProto) { }
+    public void tickPriceProtoBuf(IBApi.protobuf.TickPrice tickPriceProto) { }
+    public void tickSizeProtoBuf(IBApi.protobuf.TickSize tickSizeProto) { }
+    public void tickOptionComputationProtoBuf(IBApi.protobuf.TickOptionComputation tickOptionComputationProto) { }
+    public void tickGenericProtoBuf(IBApi.protobuf.TickGeneric tickGenericProto) { }
+    public void tickStringProtoBuf(IBApi.protobuf.TickString tickStringProto) { }
+    public void tickSnapshotEndProtoBuf(IBApi.protobuf.TickSnapshotEnd tickSnapshotEndProto) { }
+    public void updateMarketDepthProtoBuf(IBApi.protobuf.MarketDepth marketDepthProto) { }
+    public void updateMarketDepthL2ProtoBuf(IBApi.protobuf.MarketDepthL2 marketDepthL2Proto) { }
+    public void marketDataTypeProtoBuf(IBApi.protobuf.MarketDataType marketDataTypeProto) { }
+    public void tickReqParamsProtoBuf(IBApi.protobuf.TickReqParams tickReqParamsProto) { }
+    public void updateAccountValueProtoBuf(IBApi.protobuf.AccountValue accountValueProto) { }
+    public void updatePortfolioProtoBuf(IBApi.protobuf.PortfolioValue portfolioValueProto) { }
+    public void updateAccountTimeProtoBuf(IBApi.protobuf.AccountUpdateTime accountUpdateTimeProto) { }
+    public void accountDataEndProtoBuf(IBApi.protobuf.AccountDataEnd accountDataEndProto) { }
+    public void managedAccountsProtoBuf(IBApi.protobuf.ManagedAccounts managedAccountsProto) { }
+    public void positionProtoBuf(IBApi.protobuf.Position positionProto) { }
+    public void positionEndProtoBuf(IBApi.protobuf.PositionEnd positionEndProto) { }
+    public void accountSummaryProtoBuf(IBApi.protobuf.AccountSummary accountSummaryProto) { }
+    public void accountSummaryEndProtoBuf(IBApi.protobuf.AccountSummaryEnd accountSummaryEndProto) { }
+    public void positionMultiProtoBuf(IBApi.protobuf.PositionMulti positionMultiProto) { }
+    public void positionMultiEndProtoBuf(IBApi.protobuf.PositionMultiEnd positionMultiEndProto) { }
+    public void accountUpdateMultiProtoBuf(IBApi.protobuf.AccountUpdateMulti accountUpdateMultiProto) { }
+    public void accountUpdateMultiEndProtoBuf(IBApi.protobuf.AccountUpdateMultiEnd accountUpdateMultiEndProto) { }
+    public void historicalDataProtoBuf(IBApi.protobuf.HistoricalData historicalDataProto) { }
+    public void historicalDataUpdateProtoBuf(IBApi.protobuf.HistoricalDataUpdate historicalDataUpdateProto) { }
+    public void historicalDataEndProtoBuf(IBApi.protobuf.HistoricalDataEnd historicalDataEndProto) { }
+    public void realTimeBarTickProtoBuf(IBApi.protobuf.RealTimeBarTick realTimeBarTickProto) { }
+    public void headTimestampProtoBuf(IBApi.protobuf.HeadTimestamp headTimestampProto) { }
+    public void histogramDataProtoBuf(IBApi.protobuf.HistogramData histogramDataProto) { }
+    public void historicalTicksProtoBuf(IBApi.protobuf.HistoricalTicks historicalTicksProto) { }
+    public void historicalTicksBidAskProtoBuf(IBApi.protobuf.HistoricalTicksBidAsk historicalTicksBidAskProto) { }
+    public void historicalTicksLastProtoBuf(IBApi.protobuf.HistoricalTicksLast historicalTicksLastProto) { }
+    public void tickByTickDataProtoBuf(IBApi.protobuf.TickByTickData tickByTickDataProto) { }
+    public void updateNewsBulletinProtoBuf(IBApi.protobuf.NewsBulletin newsBulletinProto) { }
+    public void newsArticleProtoBuf(IBApi.protobuf.NewsArticle newsArticleProto) { }
+    public void newsProvidersProtoBuf(IBApi.protobuf.NewsProviders newsProvidersProto) { }
+    public void historicalNewsProtoBuf(IBApi.protobuf.HistoricalNews historicalNewsProto) { }
+    public void historicalNewsEndProtoBuf(IBApi.protobuf.HistoricalNewsEnd historicalNewsEndProto) { }
+    public void wshMetaDataProtoBuf(IBApi.protobuf.WshMetaData wshMetaDataProto) { }
+    public void wshEventDataProtoBuf(IBApi.protobuf.WshEventData wshEventDataProto) { }
+    public void tickNewsProtoBuf(IBApi.protobuf.TickNews tickNewsProto) { }
+    public void scannerParametersProtoBuf(IBApi.protobuf.ScannerParameters scannerParametersProto) { }
+    public void scannerDataProtoBuf(IBApi.protobuf.ScannerData scannerDataProto) { }
+    public void fundamentalsDataProtoBuf(IBApi.protobuf.FundamentalsData fundamentalsDataProto) { }
+    public void pnlProtoBuf(IBApi.protobuf.PnL pnlProto) { }
+    public void pnlSingleProtoBuf(IBApi.protobuf.PnLSingle pnlSingleProto) { }
+    public void receiveFAProtoBuf(IBApi.protobuf.ReceiveFA receiveFAProto) { }
+    public void replaceFAEndProtoBuf(IBApi.protobuf.ReplaceFAEnd replaceFAEndProto) { }
+    public void commissionAndFeesReportProtoBuf(IBApi.protobuf.CommissionAndFeesReport commissionAndFeesReportProto) { }
+    public void historicalScheduleProtoBuf(IBApi.protobuf.HistoricalSchedule historicalScheduleProto) { }
+    public void rerouteMarketDataRequestProtoBuf(IBApi.protobuf.RerouteMarketDataRequest rerouteMarketDataRequestProto) { }
+    public void rerouteMarketDepthRequestProtoBuf(IBApi.protobuf.RerouteMarketDepthRequest rerouteMarketDepthRequestProto) { }
+    public void secDefOptParameterProtoBuf(IBApi.protobuf.SecDefOptParameter secDefOptParameterProto) { }
+    public void secDefOptParameterEndProtoBuf(IBApi.protobuf.SecDefOptParameterEnd secDefOptParameterEndProto) { }
+    public void softDollarTiersProtoBuf(IBApi.protobuf.SoftDollarTiers softDollarTiersProto) { }
+    public void familyCodesProtoBuf(IBApi.protobuf.FamilyCodes familyCodesProto) { }
+    public void symbolSamplesProtoBuf(IBApi.protobuf.SymbolSamples symbolSamplesProto) { }
+    public void smartComponentsProtoBuf(IBApi.protobuf.SmartComponents smartComponentsProto) { }
+    public void marketRuleProtoBuf(IBApi.protobuf.MarketRule marketRuleProto) { }
+    public void userInfoProtoBuf(IBApi.protobuf.UserInfo userInfoProto) { }
+    public void nextValidIdProtoBuf(IBApi.protobuf.NextValidId nextValidIdProto) { }
+    public void currentTimeProtoBuf(IBApi.protobuf.CurrentTime currentTimeProto) { }
+    public void currentTimeInMillisProtoBuf(IBApi.protobuf.CurrentTimeInMillis currentTimeInMillisProto) { }
+    public void verifyMessageApiProtoBuf(IBApi.protobuf.VerifyMessageApi verifyMessageApiProto) { }
+    public void verifyCompletedProtoBuf(IBApi.protobuf.VerifyCompleted verifyCompletedProto) { }
+    public void displayGroupListProtoBuf(IBApi.protobuf.DisplayGroupList displayGroupListProto) { }
+    public void displayGroupUpdatedProtoBuf(IBApi.protobuf.DisplayGroupUpdated displayGroupUpdatedProto) { }
+    public void marketDepthExchangesProtoBuf(IBApi.protobuf.MarketDepthExchanges marketDepthExchangesProto) { }
 
 
 }

@@ -4,7 +4,7 @@ namespace RamStockAlerts.Services;
 
 /// <summary>
 /// File-based implementation of journal rotation.
-/// Rotates shadow-trade-journal.jsonl → shadow-trade-journal-yyyyMMdd.jsonl
+/// Rotates trade-journal.jsonl → trade-journal-yyyyMMdd.jsonl
 /// </summary>
 public sealed class FileBasedJournalRotationService : IJournalRotationService
 {

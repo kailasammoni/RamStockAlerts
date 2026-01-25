@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Notifications;
+using RamStockAlerts.Services.Signals;
 
 namespace RamStockAlerts.Services;
 
@@ -22,7 +23,7 @@ public sealed class PreviewSignalEmitter
     private readonly int _perSymbolCooldownSeconds;
     private readonly bool _requireBookValid;
     private readonly bool _requireTapeRecent;
-    private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
+    private readonly SignalHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _discordEnabled;
     private readonly string _discordChannelTag;
     private readonly Queue<DateTimeOffset> _recentSignals = new();
@@ -41,16 +42,15 @@ public sealed class PreviewSignalEmitter
         _discordNotificationService = discordNotificationService;
         _logger = logger;
 
-        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         var previewEnabled = configuration.GetValue("Preview:Enabled", true);
 
-        _enabled = string.Equals(tradingMode, "Preview", StringComparison.OrdinalIgnoreCase) && previewEnabled;
+        _enabled = previewEnabled;
         _minScore = configuration.GetValue("Preview:MinScore", 5.0m);
         _maxSignalsPerMinute = configuration.GetValue("Preview:MaxSignalsPerMinute", 30);
         _perSymbolCooldownSeconds = configuration.GetValue("Preview:PerSymbolCooldownSeconds", 0);
         _requireBookValid = configuration.GetValue("Preview:RequireBookValid", true);
         _requireTapeRecent = configuration.GetValue("Preview:RequireTapeRecent", false);
-        _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
+        _tapeGateConfig = SignalHelpers.ReadTapeGateConfig(configuration);
         _discordEnabled = configuration.GetValue("Preview:DiscordEnabled", true);
         _discordChannelTag = configuration.GetValue<string>("Preview:DiscordChannelTag") ?? "PREVIEW";
 
@@ -75,7 +75,7 @@ public sealed class PreviewSignalEmitter
             return;
         }
 
-        if (_requireTapeRecent && !ShadowTradingHelpers.HasRecentTape(book, nowMs, _tapeGateConfig))
+        if (_requireTapeRecent && !SignalHelpers.HasRecentTape(book, nowMs, _tapeGateConfig))
         {
             return;
         }
@@ -307,3 +307,4 @@ public sealed class PreviewSignalEmitter
         return true;
     }
 }
+

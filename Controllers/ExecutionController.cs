@@ -19,7 +19,6 @@ public class ExecutionController : ControllerBase
     private readonly IExecutionLedger _ledger;
     private readonly ILogger<ExecutionController> _logger;
     private readonly bool _executionEnabled;
-    private readonly bool _isShadowMode;
     private readonly DiscordNotificationService? _discordNotificationService;
 
     public ExecutionController(
@@ -33,8 +32,6 @@ public class ExecutionController : ControllerBase
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _executionEnabled = configuration.GetValue("Execution:Enabled", false);
-        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
-        _isShadowMode = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _discordNotificationService = discordNotificationService;
     }
 
@@ -66,8 +63,8 @@ public class ExecutionController : ControllerBase
         {
             var intent = dto.ToOrderIntent();
             _logger.LogInformation(
-                "Executing order: {Symbol} {Side} {Quantity} @ {Type} (Mode: {Mode})",
-                intent.Symbol, intent.Side, intent.Quantity, intent.Type, intent.Mode);
+                "Executing order: {Symbol} {Side} {Quantity} @ {Type}",
+                intent.Symbol, intent.Side, intent.Quantity, intent.Type);
 
             var result = await _executionService.ExecuteAsync(intent, ct);
 
@@ -120,9 +117,9 @@ public class ExecutionController : ControllerBase
         {
             var intent = dto.ToBracketIntent();
             _logger.LogInformation(
-                "Executing bracket: {Symbol} {Side} {Quantity} (Mode: {Mode}, HasStop: {HasStop}, HasTP: {HasTP})",
+                "Executing bracket: {Symbol} {Side} {Quantity} (HasStop: {HasStop}, HasTP: {HasTP})",
                 intent.Entry.Symbol, intent.Entry.Side, intent.Entry.Quantity, 
-                intent.Entry.Mode, intent.StopLoss != null, intent.TakeProfit != null);
+                intent.StopLoss != null, intent.TakeProfit != null);
 
             var result = await _executionService.ExecuteAsync(intent, ct);
 
@@ -185,7 +182,7 @@ public class ExecutionController : ControllerBase
 
     private void TryNotifyExecutionStatus(OrderIntent intent, ExecutionResult result)
     {
-        if (_discordNotificationService == null || _isShadowMode || string.IsNullOrWhiteSpace(intent.Symbol))
+        if (_discordNotificationService == null || string.IsNullOrWhiteSpace(intent.Symbol))
         {
             return;
         }
@@ -203,7 +200,7 @@ public class ExecutionController : ControllerBase
 
     private void TryNotifyExecutionStatus(BracketIntent intent, ExecutionResult result)
     {
-        if (_discordNotificationService == null || _isShadowMode || string.IsNullOrWhiteSpace(intent.Entry.Symbol))
+        if (_discordNotificationService == null || string.IsNullOrWhiteSpace(intent.Entry.Symbol))
         {
             return;
         }

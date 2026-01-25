@@ -14,12 +14,6 @@ public class OrderIntentDto
     public Guid? DecisionId { get; set; }
 
     /// <summary>
-    /// Trading mode (Shadow, Paper, Live).
-    /// </summary>
-    [Required]
-    public string Mode { get; set; } = null!;
-
-    /// <summary>
     /// Symbol to trade (e.g., "AAPL").
     /// </summary>
     [Required]
@@ -72,7 +66,6 @@ public class OrderIntentDto
         return new OrderIntent
         {
             DecisionId = DecisionId,
-            Mode = Enum.Parse<TradingMode>(Mode, ignoreCase: true),
             Symbol = Symbol,
             Side = Enum.Parse<OrderSide>(Side, ignoreCase: true),
             Type = Enum.Parse<OrderType>(Type, ignoreCase: true),

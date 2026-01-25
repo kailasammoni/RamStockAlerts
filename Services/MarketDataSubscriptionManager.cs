@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Services.Universe;
 
 namespace RamStockAlerts.Services;
@@ -70,7 +71,7 @@ public sealed class MarketDataSubscriptionManager
     private readonly DepthEligibilityCache _depthEligibilityCache;
     private readonly OrderFlowMetrics _metrics;
     private readonly SemaphoreSlim _sync = new(1, 1);
-    private readonly IShadowTradeJournal? _journal;
+    private readonly ITradeJournal? _journal;
     private readonly ConcurrentDictionary<string, SubscriptionState> _active = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<int, RequestMapping> _requestMap = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _depthDisabledUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -87,7 +88,7 @@ public sealed class MarketDataSubscriptionManager
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private int _lastMaxLines;
     private int _lastTickByTickMaxSymbols;
-    private ShadowTradingHelpers.TapeGateConfig? _lastTapeGateConfig;
+    private SignalHelpers.TapeGateConfig? _lastTapeGateConfig;
     private readonly ConcurrentDictionary<string, byte> _depthIneligibleLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<DepthIneligibleEntry> _lastDepthIneligibleSymbols = new();
     private const int LastDepthIneligibleSymbolsLimit = 5;
@@ -126,7 +127,7 @@ public sealed class MarketDataSubscriptionManager
         ContractClassificationService classificationService,
         DepthEligibilityCache depthEligibilityCache,
         OrderFlowMetrics metrics,
-        IShadowTradeJournal? journal = null)
+        ITradeJournal? journal = null)
     {
         _configuration = configuration;
         _logger = logger;
@@ -746,7 +747,7 @@ public sealed class MarketDataSubscriptionManager
         var nowMs = now.ToUnixTimeMilliseconds();
         var activeSnapshot = GetActiveUniverseSnapshot();
         var triageScoreLookup = triageScores.ToDictionary(t => t.Symbol, t => t, StringComparer.OrdinalIgnoreCase);
-        var tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(_configuration);
+        var tapeGateConfig = SignalHelpers.ReadTapeGateConfig(_configuration);
 
         // Collect counts
         var tapeCount = _active.Values.Count(state => state.MktDataRequestId.HasValue);
@@ -754,14 +755,14 @@ public sealed class MarketDataSubscriptionManager
         var tickByTickCount = _active.Values.Count(state => state.TickByTickRequestId.HasValue);
         
         // Build ActiveSymbolDetail for each active symbol with diagnostics
-        var activeSymbols = new List<ShadowTradeJournalEntry.ActiveSymbolDetail>();
+        var activeSymbols = new List<TradeJournalEntry.ActiveSymbolDetail>();
         foreach (var symbol in activeSnapshot)
         {
             var book = _metrics.GetOrderBookSnapshot(symbol);
             if (book == null)
             {
                 // No book data available - add symbol with nulls for diagnostic fields
-                activeSymbols.Add(new ShadowTradeJournalEntry.ActiveSymbolDetail
+                activeSymbols.Add(new TradeJournalEntry.ActiveSymbolDetail
                 {
                     Symbol = symbol,
                     LastTapeRecvAgeMs = null,
@@ -775,14 +776,14 @@ public sealed class MarketDataSubscriptionManager
                 continue;
             }
             
-            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, IsTapeEnabled(symbol), tapeGateConfig);
+            var tapeStatus = SignalHelpers.GetTapeStatus(book, nowMs, IsTapeEnabled(symbol), tapeGateConfig);
             
-            var detail = new ShadowTradeJournalEntry.ActiveSymbolDetail
+            var detail = new TradeJournalEntry.ActiveSymbolDetail
             {
                 Symbol = symbol,
                 LastTapeRecvAgeMs = tapeStatus.AgeMs,
                 TradesInWarmupWindow = tapeStatus.TradesInWarmupWindow,
-                WarmedUp = tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready,
+                WarmedUp = tapeStatus.Kind == SignalHelpers.TapeStatusKind.Ready,
                 LastDepthRecvAgeMs = book.LastDepthRecvMs.HasValue 
                     ? nowMs - book.LastDepthRecvMs.Value 
                     : null,
@@ -794,7 +795,7 @@ public sealed class MarketDataSubscriptionManager
         }
 
         // Identify exclusions (symbols with tape but not in ActiveUniverse)
-        var exclusions = new List<ShadowTradeJournalEntry.UniverseExclusion>();
+        var exclusions = new List<TradeJournalEntry.UniverseExclusion>();
         var activeSet = new HashSet<string>(activeSnapshot, StringComparer.OrdinalIgnoreCase);
 
         foreach (var state in _active.Values)
@@ -820,7 +821,7 @@ public sealed class MarketDataSubscriptionManager
                     reason = "Unknown";
                 }
 
-                exclusions.Add(new ShadowTradeJournalEntry.UniverseExclusion
+                exclusions.Add(new TradeJournalEntry.UniverseExclusion
                 {
                     Symbol = state.Symbol,
                     Reason = reason
@@ -828,14 +829,14 @@ public sealed class MarketDataSubscriptionManager
             }
         }
 
-        var entry = new ShadowTradeJournalEntry
+        var entry = new TradeJournalEntry
         {
-            SchemaVersion = ShadowTradeJournal.CurrentSchemaVersion,
+            SchemaVersion = TradeJournal.CurrentSchemaVersion,
             SessionId = _journal.SessionId,
             EntryType = "UniverseUpdate",
             Source = "MarketDataSubscriptionManager",
             MarketTimestampUtc = now,
-            UniverseUpdate = new ShadowTradeJournalEntry.UniverseUpdateSnapshot
+            UniverseUpdate = new TradeJournalEntry.UniverseUpdateSnapshot
             {
                 SchemaVersion = 1,
                 NowMs = nowMs,
@@ -843,7 +844,7 @@ public sealed class MarketDataSubscriptionManager
                 Candidates = candidates.Take(20).ToList(),
                 ActiveSymbols = activeSymbols,
                 Exclusions = exclusions,
-                Counts = new ShadowTradeJournalEntry.UniverseCounts
+                Counts = new TradeJournalEntry.UniverseCounts
                 {
                     CandidatesCount = candidates.Count,
                     ActiveCount = activeSnapshot.Count,
@@ -1512,14 +1513,14 @@ public sealed class MarketDataSubscriptionManager
             config.StaleWindowMs);
     }
 
-    private ShadowTradingHelpers.TapeGateConfig GetTapeGateConfig()
+    private SignalHelpers.TapeGateConfig GetTapeGateConfig()
     {
-        var defaults = ShadowTradingHelpers.TapeGateConfig.Default;
+        var defaults = SignalHelpers.TapeGateConfig.Default;
         var warmupMinTrades = _configuration.GetValue("MarketData:TapeWarmupMinTrades", defaults.WarmupMinTrades);
         var warmupWindowMs = _configuration.GetValue("MarketData:TapeWarmupWindowMs", defaults.WarmupWindowMs);
         var staleWindowMs = _configuration.GetValue("MarketData:TapeStaleWindowMs", defaults.StaleWindowMs);
 
-        return new ShadowTradingHelpers.TapeGateConfig(
+        return new SignalHelpers.TapeGateConfig(
             Math.Max(0, warmupMinTrades),
             Math.Max(0, warmupWindowMs),
             Math.Max(0, staleWindowMs));
@@ -2518,7 +2519,7 @@ public sealed class MarketDataSubscriptionManager
 
     /// <summary>
     /// Phase 3.3: Handles PartialBook detection by triggering depth re-subscription with retry logic.
-    /// Called by ShadowTradingCoordinator when PartialBook flag is detected.
+    /// Called by SignalCoordinator when PartialBook flag is detected.
     /// </summary>
     public async Task<bool> HandlePartialBookAsync(
         string symbol,
@@ -2634,3 +2635,4 @@ public sealed class MarketDataSubscriptionManager
         return state.DepthAttemptedExchanges;
     }
 }
+

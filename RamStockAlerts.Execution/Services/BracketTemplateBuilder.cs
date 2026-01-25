@@ -51,7 +51,6 @@ public sealed class BracketTemplateBuilder
         var entry = new OrderIntent
         {
             IntentId = intentId,
-            Mode = TradingMode.Paper, // Default to Paper for now
             Symbol = req.Symbol,
             Side = req.Side,
             Type = OrderType.Market, // Templates use Market entry for now
@@ -69,7 +68,6 @@ public sealed class BracketTemplateBuilder
         var stopLoss = new OrderIntent
         {
             IntentId = Guid.NewGuid(),
-            Mode = TradingMode.Paper,
             Symbol = req.Symbol,
             Side = req.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
             Type = OrderType.Stop,
@@ -86,7 +84,6 @@ public sealed class BracketTemplateBuilder
         var takeProfit = new OrderIntent
         {
             IntentId = Guid.NewGuid(),
-            Mode = TradingMode.Paper,
             Symbol = req.Symbol,
             Side = req.Side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
             Type = OrderType.Limit,
@@ -175,7 +172,6 @@ public sealed class BracketTemplateBuilder
         var entry = new OrderIntent
         {
             IntentId = intentId,
-            Mode = TradingMode.Paper,
             Symbol = req.Symbol,
             Side = req.Side,
             Type = OrderType.Market,

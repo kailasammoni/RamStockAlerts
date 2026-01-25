@@ -2,17 +2,17 @@
 
 This system uses append-only JSONL files as an audit trail. Changes here must be intentional and versioned.
 
-## `logs/shadow-trade-journal.jsonl` (ShadowTradeJournalEntry)
+## `logs/trade-journal.jsonl` (TradeJournalEntry)
 - Serialization: System.Text.Json default (PascalCase property names).
 - Top-level fields (selected):
   - `SchemaVersion` (int)
   - `DecisionId` (guid), `SessionId` (guid)
   - `EntryType` (string), `Source` (string)
   - `MarketTimestampUtc` / `DecisionTimestampUtc` / `JournalWriteTimestampUtc` (ISO timestamps)
-  - `TradingMode` (string), `Symbol` (string), `Direction` (string)
+  - `TradingMode` (string; default `Signals`), `Symbol` (string), `Direction` (string)
   - `DecisionOutcome` (string), `RejectionReason` (string)
   - `DataQualityFlags` (string[])
-  - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `Models/ShadowTradeJournalEntry.cs`)
+  - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `Models/TradeJournalEntry.cs`)
 
 ## `logs/trade-outcomes.jsonl` (TradeOutcome)
 - Serialization: System.Text.Json default (PascalCase property names).

@@ -28,7 +28,7 @@ sequenceDiagram
     MDM->>Journal: Write UniverseUpdate Entry
 ```
 
-## 2. Shadow Trading Loop (Real-Time Analysis)
+## 2. Signal Loop (Real-Time Analysis)
 
 This flow describes how market data is processed to detect signals and journal them.
 
@@ -36,11 +36,11 @@ This flow describes how market data is processed to detect signals and journal t
 sequenceDiagram
     participant IBKR as IBkrMarketDataClient
     participant OBS as OrderBookState
-    participant STC as ShadowTradingCoordinator
+    participant STC as SignalCoordinator
     participant OFM as OrderFlowMetrics
     participant OFV as OrderFlowSignalValidator
     participant SC as ScarcityController
-    participant Journal as ShadowTradeJournal
+    participant Journal as TradeJournal
 
     IBKR->>OBS: Update Depth / Trade Print
     OBS->>STC: ProcessSnapshot(book)
@@ -112,7 +112,7 @@ sequenceDiagram
     participant Replayer as IbkrReplayHostedService
     participant File as JSONL Log Files
     participant OBS as OrderBookState
-    participant STC as ShadowTradingCoordinator
+    participant STC as SignalCoordinator
 
     Replayer->>File: Read Events
     Replayer->>OBS: Reconstruct State
@@ -130,7 +130,7 @@ sequenceDiagram
     participant RS as RollupStats
     participant OTL as TradeOutcomeLabeler
     participant Store as FileOutcomeSummaryStore
-    participant Journal as ShadowTradeJournal (JSONL)
+    participant Journal as TradeJournal (JSONL)
 
     CLI->>DRR: RunAsync(journalPath)
     DRR->>Journal: Read Entries
@@ -151,7 +151,7 @@ sequenceDiagram
 
 ## 6. Preview Signal Flow
 
-This flow describes how "Preview" mode provides immediate Discord alerts for high-confidence setups without the full shadow-trading constraints.
+This flow describes how "Preview" mode provides immediate Discord alerts for high-confidence setups without the full gating constraints.
 
 ```mermaid
 sequenceDiagram
@@ -193,7 +193,7 @@ Always run from a published output folder to avoid:
 ## Folder Layout
 
 C:\workspace\RamStockAlerts\        # Git working directory (dev only)
-C:\run\RamStockAlerts\shadow\       # Stable running instance
+C:\run\RamStockAlerts\signals\      # Stable running instance
 C:\run\RamStockAlerts\dev\          # Test / next build (optional)
 
 ---
@@ -204,6 +204,7 @@ C:\run\RamStockAlerts\dev\          # Test / next build (optional)
 Creates a self-contained output folder that will not change while running.
 
 ```powershell
-dotnet publish -c Release -o C:\run\RamStockAlerts\shadow
+dotnet publish -c Release -o C:\run\RamStockAlerts\signals
 
 $env:Report__ExecutionDailyRollup="true"
+

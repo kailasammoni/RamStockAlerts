@@ -184,7 +184,7 @@ It detects **liquidity failure points** — moments where institutions cannot hi
 - Entry = Ask
 - Stop = Entry − 4×Spread
 - Target = Entry + 8×Spread
-- Stored per signal in shadow journal
+- Stored per signal in trade journal
 
 ## Universe Construction
 - IBKR Scanner live
@@ -198,7 +198,7 @@ It detects **liquidity failure points** — moments where institutions cannot hi
 - Used for: strategy audit, replay testing, outcome tracking
 
 ## Performance Tracking (WIP)
-- Shadow trades journaled but not yet scored as wins/losses
+- Signals journaled but not yet scored as wins/losses
 - Outcome tagging (TP/hit/SL/miss) needed
 - Profit factor, drawdown, hit rate → not implemented yet
 

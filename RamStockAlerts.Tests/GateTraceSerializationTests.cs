@@ -14,7 +14,7 @@ public class GateTraceSerializationTests
     public void GateTrace_SerializesToJson_WithAllFields()
     {
         // Arrange
-        var gateTrace = new ShadowTradeJournalEntry.GateTraceSnapshot
+        var gateTrace = new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = 1768480310000,
@@ -40,7 +40,7 @@ public class GateTraceSerializationTests
 
         // Act
         var json = JsonSerializer.Serialize(gateTrace, new JsonSerializerOptions { WriteIndented = true });
-        var deserialized = JsonSerializer.Deserialize<ShadowTradeJournalEntry.GateTraceSnapshot>(json);
+        var deserialized = JsonSerializer.Deserialize<TradeJournalEntry.GateTraceSnapshot>(json);
 
         // Assert
         Assert.NotNull(deserialized);
@@ -70,7 +70,7 @@ public class GateTraceSerializationTests
     public void GateTrace_WithNullOptionalFields_SerializesProperly()
     {
         // Arrange: Simulates scenario where tape has no trades and depth not initialized
-        var gateTrace = new ShadowTradeJournalEntry.GateTraceSnapshot
+        var gateTrace = new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = 1768480310000,
@@ -96,7 +96,7 @@ public class GateTraceSerializationTests
 
         // Act
         var json = JsonSerializer.Serialize(gateTrace, new JsonSerializerOptions { WriteIndented = true });
-        var deserialized = JsonSerializer.Deserialize<ShadowTradeJournalEntry.GateTraceSnapshot>(json);
+        var deserialized = JsonSerializer.Deserialize<TradeJournalEntry.GateTraceSnapshot>(json);
 
         // Assert
         Assert.NotNull(deserialized);
@@ -114,7 +114,7 @@ public class GateTraceSerializationTests
     public void GateTrace_InJournalEntry_SerializesComplete()
     {
         // Arrange
-        var entry = new ShadowTradeJournalEntry
+        var entry = new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
@@ -123,7 +123,7 @@ public class GateTraceSerializationTests
             EntryType = "Rejection",
             Symbol = "AAPL",
             RejectionReason = "NotReady_TapeNotWarmedUp",
-            GateTrace = new ShadowTradeJournalEntry.GateTraceSnapshot
+            GateTrace = new TradeJournalEntry.GateTraceSnapshot
             {
                 SchemaVersion = 1,
                 NowMs = 1768480310000,
@@ -144,7 +144,7 @@ public class GateTraceSerializationTests
 
         // Act
         var json = JsonSerializer.Serialize(entry, new JsonSerializerOptions { WriteIndented = true });
-        var deserialized = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(json);
+        var deserialized = JsonSerializer.Deserialize<TradeJournalEntry>(json);
 
         // Assert
         Assert.NotNull(deserialized);
@@ -159,7 +159,7 @@ public class GateTraceSerializationTests
     public void GateTrace_SchemaVersioning_IsEnforced()
     {
         // Arrange
-        var gateTrace = new ShadowTradeJournalEntry.GateTraceSnapshot
+        var gateTrace = new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = 1768480310000,
@@ -183,7 +183,7 @@ public class GateTraceSerializationTests
     public void GateTrace_DeterministicSerialization_NoImplicitDefaults()
     {
         // Arrange: Two identical instances
-        var gateTrace1 = new ShadowTradeJournalEntry.GateTraceSnapshot
+        var gateTrace1 = new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = 1768480310000,
@@ -201,7 +201,7 @@ public class GateTraceSerializationTests
             DepthStaleWindowMs = 2000
         };
 
-        var gateTrace2 = new ShadowTradeJournalEntry.GateTraceSnapshot
+        var gateTrace2 = new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = 1768480310000,
@@ -231,7 +231,7 @@ public class GateTraceSerializationTests
     public void GateTrace_JsonStructure_MatchesExpectedSchema()
     {
         // Arrange
-        var gateTrace = new ShadowTradeJournalEntry.GateTraceSnapshot
+        var gateTrace = new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = 1768480310000,
@@ -273,7 +273,7 @@ public class GateTraceSerializationTests
     public void GateTrace_WhenDisabled_NotEmitted()
     {
         // Arrange: Entry without GateTrace (feature disabled)
-        var entry = new ShadowTradeJournalEntry
+        var entry = new TradeJournalEntry
         {
             SchemaVersion = 2,
             Symbol = "AAPL",
@@ -285,7 +285,8 @@ public class GateTraceSerializationTests
         var json = JsonSerializer.Serialize(entry);
 
         // Assert: GateTrace field should be null/absent
-        var deserialized = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(json);
+        var deserialized = JsonSerializer.Deserialize<TradeJournalEntry>(json);
         Assert.Null(deserialized?.GateTrace);
     }
 }
+

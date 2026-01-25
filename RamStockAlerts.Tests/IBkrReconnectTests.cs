@@ -291,8 +291,7 @@ public class IBkrReconnectTests
                 ["IBKR:Port"] = "7497",
                 ["IBKR:ClientId"] = "1",
                 ["IBKR:ReconnectMaxAttempts"] = "5",
-                ["IBKR:ReconnectMaxDelayMs"] = "60000",
-                ["TradingMode"] = "Shadow"
+                ["IBKR:ReconnectMaxDelayMs"] = "60000"
             })
             .Build();
     }

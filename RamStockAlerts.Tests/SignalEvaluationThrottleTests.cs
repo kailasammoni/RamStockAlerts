@@ -1,6 +1,6 @@
 using System;
 using RamStockAlerts.Models;
-using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -44,15 +44,17 @@ public sealed class SignalEvaluationThrottleTests
             book.RecordTrade(nowMs - 5000 + (i * 1000), nowMs - 5000 + (i * 1000), 200.0, 10m);
         }
 
-        var config = new ShadowTradingHelpers.TapeGateConfig(1, 15_000, 30_000);
+        var config = new SignalHelpers.TapeGateConfig(1, 15_000, 30_000);
 
         // Check status 100 times rapidly
         for (int i = 0; i < 100; i++)
         {
-            var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, true, config);
-            Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+            var status = SignalHelpers.GetTapeStatus(book, nowMs, true, config);
+            Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
         }
 
         Assert.True(true, "Rapid status checks handled without issues");
     }
 }
+
+
