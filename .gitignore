@@ -61,5 +61,13 @@ Desktop.ini
 AGENTS.override.md
 
 # Codex local state (keep out of git)
-.codex/
-!.codex/skills/
+.codex/log/
+.codex/tmp/
+.codex/sessions/
+.codex/auth.json
+.codex/config.toml
+.codex/history.json
+.codex/models_cache.json
+.codex/version.json
+.codex/history.jsonl
+.codex/skills/.system/
