@@ -11,3 +11,6 @@ Order-flow intelligence platform for detecting transient liquidity dislocations 
 - `docs/System_charter.md`
 - `docs/Runbook.md`
 - `docs/DataContracts.md`
+- `docs/Architecture.md`
+- `docs/AgenticWorkflow.md`
+- `SKILLS.md`

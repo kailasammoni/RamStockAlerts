@@ -16,4 +16,4 @@ $env:SYMBOL = $Symbol
 #   $env:Replay__DepthFile = "path"
 #   $env:Replay__TapeFile  = "path"
 
-dotnet run --project .\\RamStockAlerts.csproj -c $Configuration
+dotnet run --project .\\src\\RamStockAlerts\\RamStockAlerts.csproj -c $Configuration

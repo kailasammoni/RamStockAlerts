@@ -12,7 +12,7 @@ This system uses append-only JSONL files as an audit trail. Changes here must be
   - `TradingMode` (string; default `Signals`), `Symbol` (string), `Direction` (string)
   - `DecisionOutcome` (string), `RejectionReason` (string)
   - `DataQualityFlags` (string[])
-  - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `Models/TradeJournalEntry.cs`)
+- `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `src/RamStockAlerts/Models/TradeJournalEntry.cs`)
 
 ## `logs/trade-outcomes.jsonl` (TradeOutcome)
 - Serialization: System.Text.Json default (PascalCase property names).

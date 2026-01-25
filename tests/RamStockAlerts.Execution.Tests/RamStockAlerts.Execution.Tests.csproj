@@ -18,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\RamStockAlerts.Execution\RamStockAlerts.Execution.csproj" />
+    <ProjectReference Include="..\\..\\src\\RamStockAlerts.Execution\\RamStockAlerts.Execution.csproj" />
   </ItemGroup>
 
 </Project>
