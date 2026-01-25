@@ -180,7 +180,8 @@ public class TapeWatchlistTests
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(
             NullLogger<OrderFlowSignalValidator>.Instance,
-            metrics);
+            metrics,
+            config);
         var journal = new TestTradeJournal();
         var scarcityController = new ScarcityController(config);
         
@@ -249,4 +250,3 @@ public class TapeWatchlistTests
         return book;
     }
 }
-

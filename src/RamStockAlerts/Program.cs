@@ -317,11 +317,19 @@ else
         RamStockAlerts.Execution.Storage.InMemoryExecutionLedger>();
     Log.Information("Execution ledger: InMemory");
 }
+builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IOrderStateTracker>(sp =>
+    new RamStockAlerts.Execution.Services.OrderStateTracker(
+        sp.GetRequiredService<ILogger<RamStockAlerts.Execution.Services.OrderStateTracker>>(),
+        sp.GetService<RamStockAlerts.Execution.Interfaces.IExecutionLedger>()));
 builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IRiskManager>(sp =>
 {
     var maxNotional = builder.Configuration.GetValue("Execution:MaxNotionalUsd", 2000m);
     var maxShares = builder.Configuration.GetValue("Execution:MaxShares", 500m);
-    return new RamStockAlerts.Execution.Risk.RiskManagerV0(executionOptions, maxNotional, maxShares);
+    return new RamStockAlerts.Execution.Risk.RiskManagerV0(
+        executionOptions,
+        sp.GetService<RamStockAlerts.Execution.Interfaces.IOrderStateTracker>(),
+        maxNotional,
+        maxShares);
 });
 
 // Broker selection

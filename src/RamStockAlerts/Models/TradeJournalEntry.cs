@@ -37,6 +37,7 @@ public class TradeJournalEntry
         public decimal? Entry { get; set; }
         public decimal? Stop { get; set; }
         public decimal? Target { get; set; }
+        public int? ShareCount { get; set; }
     }
 
     /// <summary>
@@ -220,5 +221,4 @@ public class TradeJournalEntry
         public int TapeCount { get; set; }
     }
 }
-
 

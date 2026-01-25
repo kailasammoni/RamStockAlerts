@@ -111,10 +111,8 @@ public class OutcomeLabelingTests
         Assert.NotNull(outcome);
         Assert.Equal("HitTarget", outcome.OutcomeType);
         Assert.True(outcome.IsWin);
-        Assert.Equal(-15m, outcome.PnlUsd); // 435 - 450 (short profit is negative)
-        // For short: moveRange = 435 - 450 = -15, riskRange = 10, R = -15/10 = -1.5
-        // The sign indicates profit in the short direction
-        Assert.Equal(-1.5m, outcome.RiskMultiple);
+        Assert.Equal(15m, outcome.PnlUsd); // (450 - 435) profit for short
+        Assert.Equal(1.5m, outcome.RiskMultiple);
     }
 
     [Fact]
@@ -138,10 +136,32 @@ public class OutcomeLabelingTests
         Assert.NotNull(outcome);
         Assert.Equal("HitStop", outcome.OutcomeType);
         Assert.False(outcome.IsWin);
-        Assert.Equal(12m, outcome.PnlUsd); // 362 - 350 (loss for short)
-        // For short: moveRange = 362 - 350 = 12, riskRange = 10, R = 12/10 = 1.2
-        // The sign indicates loss in the short direction
-        Assert.Equal(1.2m, outcome.RiskMultiple);
+        Assert.Equal(-12m, outcome.PnlUsd); // (350 - 362) loss for short
+        Assert.Equal(-1.2m, outcome.RiskMultiple);
+    }
+
+    [Fact]
+    public async Task LabelOutcome_ShortWin_PositiveRMultiple()
+    {
+        var entry = CreateJournalEntry("Short", 100m, 105m, 90m, shareCount: 10);
+
+        var outcome = await _labeler.LabelOutcomeAsync(entry, 92m, DateTimeOffset.UtcNow);
+
+        Assert.True(outcome.IsWin);
+        Assert.Equal(80m, outcome.PnlUsd);
+        Assert.True(outcome.RiskMultiple > 0);
+    }
+
+    [Fact]
+    public async Task LabelOutcome_LongWin_PositiveRMultiple()
+    {
+        var entry = CreateJournalEntry("Long", 100m, 95m, 110m, shareCount: 10);
+
+        var outcome = await _labeler.LabelOutcomeAsync(entry, 108m, DateTimeOffset.UtcNow);
+
+        Assert.True(outcome.IsWin);
+        Assert.Equal(80m, outcome.PnlUsd);
+        Assert.True(outcome.RiskMultiple > 0);
     }
 
     [Fact]
@@ -249,7 +269,8 @@ public class OutcomeLabelingTests
         string direction,
         decimal entry,
         decimal stop,
-        decimal target)
+        decimal target,
+        int? shareCount = null)
     {
         return new TradeJournalEntry
         {
@@ -261,7 +282,8 @@ public class OutcomeLabelingTests
             {
                 Entry = entry,
                 Stop = stop,
-                Target = target
+                Target = target,
+                ShareCount = shareCount
             }
         };
     }
@@ -454,4 +476,3 @@ public class OutcomeSummaryStoreTests : IDisposable
         };
     }
 }
-

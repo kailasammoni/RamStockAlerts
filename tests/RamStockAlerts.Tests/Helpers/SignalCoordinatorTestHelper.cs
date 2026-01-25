@@ -24,6 +24,9 @@ internal static class SignalCoordinatorTestHelper
             ["MarketData:MaxLines"] = "10",
             ["MarketData:TickByTickMaxSymbols"] = "1",
             ["MarketData:GateRejectLogMinIntervalMs"] = "0",
+            ["Signals:HardGates:MaxSpoofScore"] = "1.0",
+            ["Signals:HardGates:MinTapeAcceleration"] = "0.0",
+            ["Signals:HardGates:MinWallPersistenceMs"] = "0",
             // Set longer triage lookback (30s) so symbols with old trades still pass triage eligibility,
             // while keeping warmup window at 15s to test "TapeNotWarmedUp" scenarios
             ["MarketData:TriageLookbackMs"] = "30000"
@@ -49,7 +52,7 @@ internal static class SignalCoordinatorTestHelper
     {
         // Use shared metrics if provided (to share with subscription manager), otherwise create new instance
         var metrics = sharedMetrics ?? new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
-        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
+        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics, config);
         var journal = new TestTradeJournal();
         var scarcity = new ScarcityController(config);
         var coordinator = new SignalCoordinator(
@@ -181,4 +184,3 @@ internal static class SignalCoordinatorTestHelper
             metrics);
     }
 }
-

@@ -1,4 +1,5 @@
 using RamStockAlerts.Models;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 
@@ -20,6 +21,7 @@ public class OrderFlowSignalValidator
 {
     private readonly ILogger<OrderFlowSignalValidator> _logger;
     private readonly OrderFlowMetrics _metrics;
+    private readonly HardGateConfig _hardGateConfig;
     
     // Cooldown tracking: symbol -> last signal time
     private readonly ConcurrentDictionary<string, long> _lastSignalMs = new();
@@ -32,6 +34,15 @@ public class OrderFlowSignalValidator
     private const int MAX_ALERTS_PER_HOUR = 3;
     private const long HOUR_MS = 60 * 60 * 1000;
     
+    public sealed class HardGateConfig
+    {
+        public decimal MaxSpoofScore { get; set; } = 0.3m;
+        public decimal MinTapeAcceleration { get; set; } = 2.0m;
+        public long MinWallPersistenceMs { get; set; } = 1000;
+    }
+
+    public sealed record HardGateResult(bool Passed, string? FailedGate, string? Details);
+
     public class OrderFlowSignal
     {
         public string Symbol { get; set; } = string.Empty;
@@ -64,10 +75,16 @@ public class OrderFlowSignalValidator
         OrderFlowMetrics.MetricSnapshot? Snapshot,
         string? Direction);
     
-    public OrderFlowSignalValidator(ILogger<OrderFlowSignalValidator> logger, OrderFlowMetrics metrics)
+    public OrderFlowSignalValidator(
+        ILogger<OrderFlowSignalValidator> logger,
+        OrderFlowMetrics metrics,
+        IConfiguration configuration)
     {
         _logger = logger;
         _metrics = metrics;
+        var gateConfig = new HardGateConfig();
+        configuration.GetSection("Signals:HardGates").Bind(gateConfig);
+        _hardGateConfig = gateConfig;
     }
     
     /// <summary>
@@ -104,6 +121,23 @@ public class OrderFlowSignalValidator
 
         var direction = isBuyCandidate ? "BUY" : "SELL";
         var signal = BuildSignal(snapshot, currentTimeMs, isBuyCandidate);
+
+        var hardGateResult = CheckHardGates(snapshot, isBuyCandidate);
+        if (!hardGateResult.Passed)
+        {
+            _logger.LogInformation(
+                "[HardGate] {Symbol} rejected: {Gate} - {Details}",
+                snapshot.Symbol,
+                hardGateResult.FailedGate,
+                hardGateResult.Details);
+            return new OrderFlowSignalDecision(
+                true,
+                false,
+                $"HardGate:{hardGateResult.FailedGate}",
+                signal,
+                snapshot,
+                direction);
+        }
 
         if (IsInCooldown(snapshot.Symbol, currentTimeMs))
         {
@@ -151,6 +185,37 @@ public class OrderFlowSignalValidator
             TapeAcceleration = snapshot.TapeAcceleration,
             Confidence = confidence
         };
+    }
+
+    public HardGateResult CheckHardGates(OrderFlowMetrics.MetricSnapshot snapshot, bool isBuy)
+    {
+        var wallAge = isBuy ? snapshot.BidWallAgeMs : snapshot.AskWallAgeMs;
+
+        if (snapshot.SpoofScore >= _hardGateConfig.MaxSpoofScore)
+        {
+            return new HardGateResult(
+                false,
+                "SpoofScore",
+                $"SpoofScore={snapshot.SpoofScore:F2} >= {_hardGateConfig.MaxSpoofScore}");
+        }
+
+        if (snapshot.TapeAcceleration < _hardGateConfig.MinTapeAcceleration)
+        {
+            return new HardGateResult(
+                false,
+                "TapeAcceleration",
+                $"TapeAccel={snapshot.TapeAcceleration:F1} < {_hardGateConfig.MinTapeAcceleration}");
+        }
+
+        if (wallAge < _hardGateConfig.MinWallPersistenceMs)
+        {
+            return new HardGateResult(
+                false,
+                "WallPersistence",
+                $"WallAge={wallAge}ms < {_hardGateConfig.MinWallPersistenceMs}ms");
+        }
+
+        return new HardGateResult(true, null, null);
     }
 
     public void RecordAcceptedSignal(string symbol, long currentTimeMs)

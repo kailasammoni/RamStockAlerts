@@ -341,6 +341,12 @@ public class RiskManagerV0Tests
             var symbol = $"SYM{i}"; // Different symbol each time
             var order = CreateOrder(symbol, created: now.AddSeconds(i * 30)); // 30s apart (exceeds min time)
             ledger.RecordIntent(order);
+            ledger.RecordResult(order.IntentId, new ExecutionResult
+            {
+                IntentId = order.IntentId,
+                Status = ExecutionStatus.Submitted,
+                TimestampUtc = order.CreatedUtc
+            });
         }
 
         // Try to add 6th order (different symbol, after min time)
@@ -369,6 +375,12 @@ public class RiskManagerV0Tests
         {
             var order = CreateOrder(created: now.AddSeconds(i * 60));
             ledger.RecordIntent(order);
+            ledger.RecordResult(order.IntentId, new ExecutionResult
+            {
+                IntentId = order.IntentId,
+                Status = ExecutionStatus.Submitted,
+                TimestampUtc = order.CreatedUtc
+            });
         }
 
         // Try to add 11th order
@@ -400,6 +412,7 @@ public class RiskManagerV0Tests
             var symbol = $"SYM{i}";
             var bracket = CreateBracket(symbol, created: now.AddSeconds(i * 200)); // 200s apart
             ledger.RecordBracket(bracket);
+            ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.Open);
         }
 
         // Try to add order (which would increase open positions, after min time and different symbol)
@@ -428,6 +441,7 @@ public class RiskManagerV0Tests
         {
             var bracket = CreateBracket(created: now.AddSeconds(i * 180));
             ledger.RecordBracket(bracket);
+            ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.Open);
         }
 
         var order = CreateOrder(created: now.AddSeconds(2 * 180 + 120));
@@ -522,6 +536,12 @@ public class RiskManagerV0Tests
             var symbol = $"SYM{i}";
             var bracket = CreateBracket(symbol, created: now.AddSeconds(i * 200));
             ledger.RecordBracket(bracket);
+            ledger.RecordResult(bracket.Entry.IntentId, new ExecutionResult
+            {
+                IntentId = bracket.Entry.IntentId,
+                Status = ExecutionStatus.Submitted,
+                TimestampUtc = bracket.Entry.CreatedUtc
+            });
         }
 
         // Try to add 3rd bracket (different symbol, after min time)
@@ -534,6 +554,48 @@ public class RiskManagerV0Tests
         Assert.False(result.Allowed);
         Assert.Contains("Daily bracket limit", result.Reason);
         Assert.Contains("DailyBracketLimit", result.Tags);
+    }
+
+    #endregion
+
+    #region Daily Loss Limit Tests
+
+    [Fact]
+    public void Validate_DailyLossLimitReached_Rejects()
+    {
+        var tracker = new FakeOrderStateTracker { RealizedPnlToday = -200m };
+        var options = new ExecutionOptions { MaxLossPerDayUsd = 200m };
+        var rm = new RiskManagerV0(options, tracker);
+
+        var intent = CreateOrder();
+        var result = rm.Validate(intent);
+
+        Assert.False(result.Allowed);
+        Assert.Contains("DailyLossLimit", result.Tags);
+    }
+
+    [Fact]
+    public void Validate_OrderWouldBreachLimit_RejectsPreventively()
+    {
+        var tracker = new FakeOrderStateTracker { RealizedPnlToday = -150m };
+        var options = new ExecutionOptions { MaxLossPerDayUsd = 200m };
+        var rm = new RiskManagerV0(options, tracker);
+
+        var intent = new OrderIntent
+        {
+            Symbol = "AAPL",
+            Side = OrderSide.Buy,
+            Type = OrderType.Limit,
+            Quantity = 10m,
+            LimitPrice = 100m,
+            StopPrice = 90m,
+            CreatedUtc = DateTimeOffset.UtcNow
+        };
+
+        var result = rm.Validate(intent);
+
+        Assert.False(result.Allowed);
+        Assert.Contains("DailyLossLimitPreventive", result.Tags);
     }
 
     #endregion
@@ -589,6 +651,7 @@ public class FakeExecutionLedger : IExecutionLedger
     private readonly List<OrderIntent> _intents = new();
     private readonly List<BracketIntent> _brackets = new();
     private readonly List<ExecutionResult> _results = new();
+    private readonly Dictionary<Guid, BracketState> _bracketStates = new();
 
     public void RecordIntent(OrderIntent intent)
     {
@@ -610,4 +673,72 @@ public class FakeExecutionLedger : IExecutionLedger
     public IReadOnlyList<BracketIntent> GetBrackets() => _brackets.AsReadOnly();
 
     public IReadOnlyList<ExecutionResult> GetResults() => _results.AsReadOnly();
+
+    public int GetSubmittedIntentCountToday(DateTimeOffset now)
+    {
+        var todayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var todayEnd = todayStart.AddDays(1);
+
+        return _results
+            .Where(r => r.Status == ExecutionStatus.Submitted
+                        && r.TimestampUtc >= todayStart
+                        && r.TimestampUtc < todayEnd)
+            .Select(r => r.IntentId)
+            .ToHashSet()
+            .Count;
+    }
+
+    public int GetSubmittedBracketCountToday(DateTimeOffset now)
+    {
+        var todayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var todayEnd = todayStart.AddDays(1);
+
+        var submitted = _results
+            .Where(r => r.Status == ExecutionStatus.Submitted
+                        && r.TimestampUtc >= todayStart
+                        && r.TimestampUtc < todayEnd)
+            .Select(r => r.IntentId)
+            .ToHashSet();
+
+        return _brackets.Count(b => submitted.Contains(b.Entry.IntentId)
+                                    && b.Entry.CreatedUtc >= todayStart
+                                    && b.Entry.CreatedUtc < todayEnd);
+    }
+
+    public int GetOpenBracketCount()
+    {
+        return _bracketStates.Values.Count(state => state == BracketState.Open);
+    }
+
+    public void UpdateBracketState(Guid entryIntentId, BracketState newState)
+    {
+        _bracketStates[entryIntentId] = newState;
+    }
+}
+
+public class FakeOrderStateTracker : IOrderStateTracker
+{
+    public decimal RealizedPnlToday { get; set; }
+
+    public void TrackSubmittedOrder(int orderId, Guid intentId, string symbol, decimal quantity, OrderSide side)
+    {
+    }
+
+    public void ProcessOrderStatus(OrderStatusUpdate update)
+    {
+    }
+
+    public void ProcessFill(FillReport fill)
+    {
+    }
+
+    public BrokerOrderStatus GetOrderStatus(int orderId) => BrokerOrderStatus.Unknown;
+
+    public IReadOnlyList<FillReport> GetFillsForOrder(int orderId) => Array.Empty<FillReport>();
+
+    public IReadOnlyList<FillReport> GetFillsForIntent(Guid intentId) => Array.Empty<FillReport>();
+
+    public decimal GetRealizedPnlToday() => RealizedPnlToday;
+
+    public int GetOpenBracketCount() => 0;
 }

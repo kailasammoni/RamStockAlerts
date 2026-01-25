@@ -16,6 +16,7 @@ using RamStockAlerts.Execution.Interfaces;
 public class RiskManagerV0 : IRiskManager
 {
     private readonly ExecutionOptions _options;
+    private readonly IOrderStateTracker? _orderTracker;
     private readonly decimal _maxNotionalUsd;
     private readonly decimal _maxShares;
 
@@ -27,10 +28,12 @@ public class RiskManagerV0 : IRiskManager
     /// <param name="maxShares">Legacy maximum shares per order (default 500).</param>
     public RiskManagerV0(
         ExecutionOptions options,
+        IOrderStateTracker? orderTracker = null,
         decimal maxNotionalUsd = 2000m,
         decimal maxShares = 500m)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _orderTracker = orderTracker;
         _maxNotionalUsd = maxNotionalUsd;
         _maxShares = maxShares;
     }
@@ -123,7 +126,27 @@ public class RiskManagerV0 : IRiskManager
             }
         }
 
-        // 5. LIVE MODE SAFETY CHECKS
+        // 5. CHECK DAILY LOSS LIMIT (if order tracker available)
+        if (_orderTracker is not null)
+        {
+            var realizedPnlToday = _orderTracker.GetRealizedPnlToday();
+            if (realizedPnlToday < 0 && Math.Abs(realizedPnlToday) >= _options.MaxLossPerDayUsd)
+            {
+                return RiskDecision.Reject(
+                    $"Daily loss limit (${_options.MaxLossPerDayUsd}) reached. Current P&L: ${realizedPnlToday:F2}",
+                    new List<string> { "DailyLossLimit" });
+            }
+
+            var estimatedMaxLoss = EstimateMaxLoss(intent);
+            if (realizedPnlToday - estimatedMaxLoss < -_options.MaxLossPerDayUsd)
+            {
+                return RiskDecision.Reject(
+                    $"Order would breach daily loss limit. Current P&L: ${realizedPnlToday:F2}, Est. max loss: ${estimatedMaxLoss:F2}",
+                    new List<string> { "DailyLossLimitPreventive" });
+            }
+        }
+
+        // 6. LIVE MODE SAFETY CHECKS
         if (_options.Live)
         {
             // Future: add account equity checks, max notional % validation, etc.
@@ -203,6 +226,19 @@ public class RiskManagerV0 : IRiskManager
             }
         }
 
+        // 7. CHECK DAILY LOSS LIMIT (if order tracker available)
+        if (_orderTracker is not null && intent.Entry is not null && intent.StopLoss is not null)
+        {
+            var realizedPnlToday = _orderTracker.GetRealizedPnlToday();
+            var estimatedMaxLoss = EstimateBracketMaxLoss(intent);
+            if (realizedPnlToday - estimatedMaxLoss < -_options.MaxLossPerDayUsd)
+            {
+                return RiskDecision.Reject(
+                    $"Bracket would breach daily loss limit. Current P&L: ${realizedPnlToday:F2}, Est. max loss: ${estimatedMaxLoss:F2}",
+                    new List<string> { "DailyLossLimitPreventive" });
+            }
+        }
+
         return RiskDecision.Allow();
     }
 
@@ -210,18 +246,12 @@ public class RiskManagerV0 : IRiskManager
 
     private int CountOrdersToday(IExecutionLedger ledger, DateTimeOffset now)
     {
-        var today_start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
-        var today_end = today_start.AddDays(1);
-        return ledger.GetIntents()
-            .Count(o => o.CreatedUtc >= today_start && o.CreatedUtc < today_end);
+        return ledger.GetSubmittedIntentCountToday(now);
     }
 
     private int CountBracketsToday(IExecutionLedger ledger, DateTimeOffset now)
     {
-        var today_start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
-        var today_end = today_start.AddDays(1);
-        return ledger.GetBrackets()
-            .Count(b => b.Entry.CreatedUtc >= today_start && b.Entry.CreatedUtc < today_end);
+        return ledger.GetSubmittedBracketCountToday(now);
     }
 
     private OrderIntent? GetLastOrder(IExecutionLedger ledger, DateTimeOffset now)
@@ -241,11 +271,41 @@ public class RiskManagerV0 : IRiskManager
 
     private int CountOpenPositions(IExecutionLedger ledger, DateTimeOffset now)
     {
-        // Simplified: count active brackets (not yet closed/cancelled)
-        // F6 will track order status properly; for now, assume all brackets are open
-        var today_start = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
-        var today_end = today_start.AddDays(1);
-        return ledger.GetBrackets()
-            .Count(b => b.Entry.CreatedUtc >= today_start && b.Entry.CreatedUtc < today_end);
+        return ledger.GetOpenBracketCount();
+    }
+
+    private static decimal EstimateMaxLoss(OrderIntent intent)
+    {
+        if (intent.StopPrice is null || intent.LimitPrice is null)
+        {
+            return 0m;
+        }
+
+        var qty = intent.Quantity ??
+                  (intent.NotionalUsd.HasValue && intent.LimitPrice > 0
+                      ? Math.Floor(intent.NotionalUsd.Value / intent.LimitPrice.Value)
+                      : 0m);
+
+        var riskPerShare = Math.Abs(intent.LimitPrice.Value - intent.StopPrice.Value);
+        return qty * riskPerShare;
+    }
+
+    private static decimal EstimateBracketMaxLoss(BracketIntent intent)
+    {
+        var entry = intent.Entry;
+        var stop = intent.StopLoss;
+
+        if (entry?.LimitPrice is null || stop?.StopPrice is null)
+        {
+            return 0m;
+        }
+
+        var qty = entry.Quantity ??
+                  (entry.NotionalUsd.HasValue && entry.LimitPrice > 0
+                      ? Math.Floor(entry.NotionalUsd.Value / entry.LimitPrice.Value)
+                      : 0m);
+
+        var riskPerShare = Math.Abs(entry.LimitPrice.Value - stop.StopPrice.Value);
+        return qty * riskPerShare;
     }
 }

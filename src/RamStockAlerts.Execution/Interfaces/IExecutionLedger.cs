@@ -36,4 +36,24 @@ public interface IExecutionLedger
     /// Get all recorded results.
     /// </summary>
     IReadOnlyList<ExecutionResult> GetResults();
+
+    /// <summary>
+    /// Get count of submitted (non-rejected) intents today.
+    /// </summary>
+    int GetSubmittedIntentCountToday(DateTimeOffset now);
+
+    /// <summary>
+    /// Get count of submitted (non-rejected) brackets today.
+    /// </summary>
+    int GetSubmittedBracketCountToday(DateTimeOffset now);
+
+    /// <summary>
+    /// Get count of currently open brackets (entry filled, not yet closed).
+    /// </summary>
+    int GetOpenBracketCount();
+
+    /// <summary>
+    /// Update bracket state when order status changes.
+    /// </summary>
+    void UpdateBracketState(Guid entryIntentId, BracketState newState);
 }

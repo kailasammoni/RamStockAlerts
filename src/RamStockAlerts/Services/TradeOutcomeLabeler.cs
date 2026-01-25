@@ -96,23 +96,26 @@ public sealed class TradeOutcomeLabeler : ITradeOutcomeLabeler
         // Calculate P&L, risk multiple, and win flag
         if (exitPrice.HasValue && outcome.EntryPrice.HasValue)
         {
-            var rawPnl = exitPrice.Value - outcome.EntryPrice.Value;
-            outcome.PnlUsd = rawPnl; // TODO: Multiply by shares when available
+            var isLong = journalEntry.Direction?.Equals("Long", StringComparison.OrdinalIgnoreCase) == true;
+            var priceMove = exitPrice.Value - outcome.EntryPrice.Value;
+            var rawPnl = isLong ? priceMove : -priceMove;
+
+            var shareCount = journalEntry.Blueprint?.ShareCount ?? 1;
+            outcome.PnlUsd = rawPnl * shareCount;
 
             // Calculate risk multiple
             if (outcome.StopPrice.HasValue && outcome.EntryPrice.Value != outcome.StopPrice.Value)
             {
                 var riskRange = Math.Abs(outcome.EntryPrice.Value - outcome.StopPrice.Value);
-                var moveRange = exitPrice.Value - outcome.EntryPrice.Value;
 
                 if (riskRange > 0)
                 {
-                    outcome.RiskMultiple = moveRange / riskRange;
+                    outcome.RiskMultiple = rawPnl / riskRange;
                 }
             }
 
             // Determine win
-            outcome.IsWin = IsWin(rawPnl, journalEntry.Direction);
+            outcome.IsWin = rawPnl > 0;
         }
 
         _logger.Information(
@@ -182,4 +185,3 @@ public sealed class TradeOutcomeLabeler : ITradeOutcomeLabeler
             : pnl < 0;
     }
 }
-

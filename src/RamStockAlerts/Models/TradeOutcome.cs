@@ -67,8 +67,9 @@ public sealed class TradeOutcome
     public decimal? PnlUsd { get; set; }
 
     /// <summary>
-    /// Risk multiple: (entry_price - exit_price) / (entry_price - stop_price).
-    /// Negative means trade is profitable; positive means loss.
+    /// Risk multiple: (profit) / (risk per share).
+    /// Positive means profitable; negative means loss.
+    /// Example: +2.0 = made 2R; -1.0 = lost 1R (hit stop)
     /// </summary>
     public decimal? RiskMultiple { get; set; }
 
@@ -87,4 +88,3 @@ public sealed class TradeOutcome
     /// </summary>
     public int SchemaVersion { get; set; } = 1;
 }
-

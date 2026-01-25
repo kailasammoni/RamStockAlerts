@@ -13,6 +13,7 @@ This system uses append-only JSONL files as an audit trail. Changes here must be
   - `DecisionOutcome` (string), `RejectionReason` (string)
   - `DataQualityFlags` (string[])
 - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `src/RamStockAlerts/Models/TradeJournalEntry.cs`)
+  - `Blueprint.ShareCount` (int?, optional): number of shares used for P&L calculations.
 
 ## `logs/trade-outcomes.jsonl` (TradeOutcome)
 - Serialization: System.Text.Json default (PascalCase property names).
@@ -35,4 +36,3 @@ This system uses append-only JSONL files as an audit trail. Changes here must be
 ## `logs/ibkr-depth-<SYMBOL>-YYYYMMDD.jsonl` / `logs/ibkr-tape-<SYMBOL>-YYYYMMDD.jsonl`
 - Serialization: System.Text.Json Web defaults (camelCase property names).
 - Each line is one recorded event with `eventType` plus event-specific fields.
-

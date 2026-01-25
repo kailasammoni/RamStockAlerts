@@ -51,6 +51,8 @@ public sealed class SignalCoordinator
     private readonly bool _postSignalMonitoringEnabled;
     private readonly double _tapeSlowdownThreshold; // 50% = 0.5
     private readonly double _spreadBlowoutThreshold; // 50% = 0.5
+    private readonly int _postSignalConsecutiveThreshold;
+    private readonly long _postSignalMaxAgeMs;
     
     // Phase 3.2: Tape Warm-up Watchlist
     private readonly ConcurrentDictionary<string, TapeWarmupWatchlistEntry> _tapeWarmupWatchlist = new(StringComparer.OrdinalIgnoreCase);
@@ -128,6 +130,21 @@ public sealed class SignalCoordinator
             0.5,
             out var legacySpreadKey); // 50%
         LogLegacyKeyIfUsed(legacySpreadKey, "Signals:SpreadBlowoutThreshold");
+        var consecutiveThreshold = ReadLongWithLegacy(
+            configuration,
+            "Signals:PostSignalConsecutiveThreshold",
+            "ShadowTrading:PostSignalConsecutiveThreshold",
+            3L,
+            out var legacyPostSignalConsecutiveKey);
+        LogLegacyKeyIfUsed(legacyPostSignalConsecutiveKey, "Signals:PostSignalConsecutiveThreshold");
+        _postSignalConsecutiveThreshold = (int)Math.Max(1, consecutiveThreshold);
+        _postSignalMaxAgeMs = ReadLongWithLegacy(
+            configuration,
+            "Signals:PostSignalMaxAgeMs",
+            "ShadowTrading:PostSignalMaxAgeMs",
+            300_000L,
+            out var legacyPostSignalAgeKey);
+        LogLegacyKeyIfUsed(legacyPostSignalAgeKey, "Signals:PostSignalMaxAgeMs");
         
         // Phase 3.2: Tape Warm-up Watchlist configuration
         _tapeWatchlistEnabled = ReadBoolWithLegacy(
@@ -177,6 +194,7 @@ public sealed class SignalCoordinator
 
         // Phase 3.1: Monitor post-signal quality for accepted signals
         MonitorPostSignalQuality(book, nowMs);
+        CleanupStaleTrackers(nowMs);
 
         // Evaluation throttle: Prevent signal spam by limiting evaluations per symbol
         if (_lastEvaluationMs.TryGetValue(book.Symbol, out var lastEval))
@@ -1088,6 +1106,9 @@ public sealed class SignalCoordinator
             "SymbolCooldown" => HardRejectReason.ScarcitySymbolCooldown,
             "RejectedRankedOut" => HardRejectReason.ScarcityRankedOut,
             "SpoofSuspected" => HardRejectReason.SpoofSuspected,
+            "HardGate:SpoofScore" => HardRejectReason.SpoofSuspected,
+            "HardGate:TapeAcceleration" => HardRejectReason.TapeAccelerationInsufficient,
+            "HardGate:WallPersistence" => HardRejectReason.WallPersistenceInsufficient,
             "ReplenishmentSuspected" => HardRejectReason.ReplenishmentSuspected,
             "AbsorptionInsufficient" => HardRejectReason.AbsorptionInsufficient,
             _ => HardRejectReason.Unknown
@@ -1130,19 +1151,16 @@ public sealed class SignalCoordinator
                     
                     // Side-aware baseline velocity
                     int baselineSideVelocity = 0;
-                    int baselineOppositeVelocity = 0;
                     if (string.Equals(entry.Direction, "BUY", StringComparison.OrdinalIgnoreCase))
                     {
                         baselineSideVelocity = entry.ObservedMetrics?.AskTradesIn3Sec ?? 0;
-                        baselineOppositeVelocity = entry.ObservedMetrics?.BidTradesIn3Sec ?? 0;
                     }
                     else if (string.Equals(entry.Direction, "SELL", StringComparison.OrdinalIgnoreCase))
                     {
                         baselineSideVelocity = entry.ObservedMetrics?.BidTradesIn3Sec ?? 0;
-                        baselineOppositeVelocity = entry.ObservedMetrics?.AskTradesIn3Sec ?? 0;
                     }
 
-                    TrackAcceptedSignal(entry.Symbol, entry.Direction ?? "Unknown", entry.DecisionId, baselineSpread, baselineSideVelocity, baselineOppositeVelocity, pending.TimestampMsUtc);
+                    TrackAcceptedSignal(entry.Symbol, entry.Direction ?? "Unknown", entry.DecisionId, baselineSpread, baselineSideVelocity, pending.TimestampMsUtc);
                 }
                 _logger.LogInformation("[Signals] Signal accepted for {Symbol} ({Direction}) Score={Score}",
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
@@ -1295,6 +1313,16 @@ public sealed class SignalCoordinator
         try
         {
             var result = await _executionService!.ExecuteAsync(bracket);
+            if (result.Status == ExecutionStatus.Submitted && result.BrokerOrderIds.Count > 0)
+            {
+                if (_acceptedSignals.TryGetValue(symbol, out var tracker))
+                {
+                    lock (tracker)
+                    {
+                        tracker.BrokerOrderIds.AddRange(result.BrokerOrderIds);
+                    }
+                }
+            }
             _logger.LogInformation(
                 "[Exec] AutoExecute complete symbol={Symbol} intent={IntentId} status={Status} broker={Broker} orderIds={OrderIds}",
                 symbol,
@@ -1887,129 +1915,187 @@ public sealed class SignalCoordinator
     }
     
     // Phase 3.1: Post-Signal Quality Monitoring
-    
+
     /// <summary>
     /// Monitors tape velocity and spread after a signal is accepted.
-    /// Detects degradation (tape slowdown >50%, spread blowout >50%) and journals cancellation.
+    /// Detects degradation and requests cancellation.
     /// </summary>
     public void MonitorPostSignalQuality(OrderBookState book, long nowMs)
     {
-        if (!_postSignalMonitoringEnabled || !_acceptedSignals.TryGetValue(book.Symbol, out var tracker))
+        if (!_postSignalMonitoringEnabled)
         {
             return;
         }
 
-        // Already canceled - no further monitoring
-        if (tracker.IsCanceled)
+        if (!_acceptedSignals.TryGetValue(book.Symbol, out var tracker))
         {
             return;
         }
 
-        // 1. Grace Period check: allow some time for the trade to breathe (3s)
-        var monitoringAgeMs = nowMs - tracker.AcceptanceTimestampMs;
-        if (monitoringAgeMs < 3000)
+        if (tracker.CancelRequested)
         {
             return;
         }
 
-        var currentSpread = book.BestAsk - book.BestBid;
         var snapshot = _metrics.GetLatestSnapshot(book.Symbol);
-        if (snapshot == null) return;
-
-        // 2. Side-aware velocity check
-        int currentSideVelocity;
-        int currentOppositeVelocity;
-        bool isBuy = string.Equals(tracker.Direction, "BUY", StringComparison.OrdinalIgnoreCase);
-
-        if (isBuy)
+        if (snapshot is null)
         {
-            currentSideVelocity = snapshot.AskTradesIn3Sec;
-            currentOppositeVelocity = snapshot.BidTradesIn3Sec;
-        }
-        else
-        {
-            currentSideVelocity = snapshot.BidTradesIn3Sec;
-            currentOppositeVelocity = snapshot.AskTradesIn3Sec;
+            return;
         }
 
-        // Slowdown check: Only cancel if side-velocity drops significantly AND opposite side isn't also dead
-        decimal velocityFloor = tracker.BaselineSideVelocity * (1m - (decimal)_tapeSlowdownThreshold);
-        if (tracker.BaselineSideVelocity > 2 && currentSideVelocity < (int)velocityFloor)
+        var currentSpread = book.Spread;
+        var currentTapeVelocity = GetCurrentTapeVelocity(snapshot, tracker.Direction);
+
+        if (tracker.BaselineSpread > 0m)
         {
-            tracker.ConsecutiveSlowdownCount++;
-            if (tracker.ConsecutiveSlowdownCount >= 2)
+            var spreadRatio = currentSpread / tracker.BaselineSpread;
+            if (spreadRatio > 1.0m + (decimal)_spreadBlowoutThreshold)
             {
-                CancelSignal(tracker, "TapeSlowdown", (decimal)currentSideVelocity, (decimal)tracker.BaselineSideVelocity, nowMs);
-                return;
+                tracker.ConsecutiveSpreadBlowouts++;
+                _logger.LogWarning(
+                    "[PostSignal] {Symbol} spread blowout {Count}/{Threshold}: {Current} vs baseline {Baseline} (ratio {Ratio:F2})",
+                    book.Symbol,
+                    tracker.ConsecutiveSpreadBlowouts,
+                    _postSignalConsecutiveThreshold,
+                    currentSpread,
+                    tracker.BaselineSpread,
+                    spreadRatio);
+            }
+            else
+            {
+                tracker.ConsecutiveSpreadBlowouts = 0;
             }
         }
-        else
+
+        if (tracker.BaselineTapeVelocity > 0)
         {
-            tracker.ConsecutiveSlowdownCount = 0;
+            var velocityRatio = (double)currentTapeVelocity / tracker.BaselineTapeVelocity;
+            if (velocityRatio < 1.0 - _tapeSlowdownThreshold)
+            {
+                tracker.ConsecutiveTapeSlowdowns++;
+                _logger.LogWarning(
+                    "[PostSignal] {Symbol} tape slowdown {Count}/{Threshold}: {Current} vs baseline {Baseline} (ratio {Ratio:F2})",
+                    book.Symbol,
+                    tracker.ConsecutiveTapeSlowdowns,
+                    _postSignalConsecutiveThreshold,
+                    currentTapeVelocity,
+                    tracker.BaselineTapeVelocity,
+                    velocityRatio);
+            }
+            else
+            {
+                tracker.ConsecutiveTapeSlowdowns = 0;
+            }
         }
 
-        // 3. Reversal check: if opposite side velocity dominates heavily (e.g. 5+ prints AND 3x side velocity)
-        if (currentOppositeVelocity > 5 && currentOppositeVelocity > currentSideVelocity * 3)
+        if (tracker.ConsecutiveSpreadBlowouts >= _postSignalConsecutiveThreshold ||
+            tracker.ConsecutiveTapeSlowdowns >= _postSignalConsecutiveThreshold)
         {
-            CancelSignal(tracker, "TapeReversal", (decimal)currentOppositeVelocity, (decimal)currentSideVelocity, nowMs);
-            return;
-        }
-
-        // 4. Spread blowout check
-        if (tracker.BaselineSpread > 0m && currentSpread > tracker.BaselineSpread * (1m + (decimal)_spreadBlowoutThreshold))
-        {
-            CancelSignal(tracker, "SpreadBlowout", currentSpread, tracker.BaselineSpread, nowMs);
-            return;
+            RequestCancelSignal(tracker, nowMs);
         }
     }
 
-    private void CancelSignal(AcceptedSignalTracker tracker, string reason, decimal currentValue, decimal baselineValue, long nowMs)
+    private int GetCurrentTapeVelocity(OrderFlowMetrics.MetricSnapshot snapshot, string direction)
     {
-        tracker.IsCanceled = true;
-        tracker.CancellationReason = reason;
-        tracker.CancellationTimestampMs = nowMs;
+        return direction.Equals("BUY", StringComparison.OrdinalIgnoreCase)
+            ? snapshot.AskTradesIn3Sec
+            : snapshot.BidTradesIn3Sec;
+    }
+
+    private void RequestCancelSignal(AcceptedSignalTracker tracker, long nowMs)
+    {
+        if (tracker.CancelRequested)
+        {
+            return;
+        }
+
+        tracker.CancelRequested = true;
+        tracker.CancelRequestedUtc = DateTimeOffset.UtcNow;
+
+        var reason = tracker.ConsecutiveSpreadBlowouts >= _postSignalConsecutiveThreshold
+            ? "SpreadBlowout"
+            : "TapeSlowdown";
 
         _logger.LogWarning(
-            "[Signals] Post-signal quality degradation: {Symbol} canceled due to {Reason}. Current={Current:F4}, Baseline={Baseline:F4}",
-            tracker.Symbol, reason, currentValue, baselineValue);
+            "[PostSignal] Requesting cancellation for {Symbol} {Direction}: {Reason}",
+            tracker.Symbol,
+            tracker.Direction,
+            reason);
 
-        // Journal the cancellation
-        var cancellationEntry = new TradeJournalEntry
+        if (_executionService is not null && tracker.BrokerOrderIds.Count > 0)
         {
-            SchemaVersion = 2,
-            DecisionId = tracker.DecisionId,
-            SessionId = _sessionId,
+            foreach (var orderId in tracker.BrokerOrderIds)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var result = await _executionService.CancelAsync(orderId);
+                        _logger.LogInformation(
+                            "[PostSignal] Cancel result for order {OrderId}: {Status}",
+                            orderId,
+                            result.Status);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "[PostSignal] Failed to cancel order {OrderId}", orderId);
+                    }
+                });
+            }
+        }
+
+        _acceptedSignals.TryRemove(tracker.Symbol, out _);
+        JournalCancellation(tracker, reason, nowMs);
+    }
+
+    private void JournalCancellation(AcceptedSignalTracker tracker, string reason, long nowMs)
+    {
+        var entry = new TradeJournalEntry
+        {
+            DecisionId = Guid.NewGuid(),
             Symbol = tracker.Symbol,
             Direction = tracker.Direction,
-            DecisionOutcome = "Canceled",
-            RejectionReason = reason,
-            DecisionTimestampUtc = DateTimeOffset.FromUnixTimeMilliseconds(nowMs),
-            DecisionInputs = new TradeJournalEntry.DecisionInputsSnapshot
-            {
-                Score = 0m // Post-signal cancellation has no score
-            },
-            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot
-            {
-                Spread = currentValue, // Current degraded value
-                QueueImbalance = 0m,
-                TapeAcceleration = 0m
-            },
-            DecisionTrace = new List<string>
-            {
-                $"PostSignalCancel:{reason}",
-                $"Baseline={baselineValue:F4}",
-                $"Current={currentValue:F4}",
-                $"AcceptedAt={DateTimeOffset.FromUnixTimeMilliseconds(tracker.AcceptanceTimestampMs):O}"
-            }
+            DecisionOutcome = "Cancelled",
+            RejectionReason = $"PostSignal:{reason}",
+            DecisionTimestampUtc = DateTimeOffset.UtcNow,
+            SessionId = _sessionId,
+            TradingMode = TradingModeLabel,
+            DataQualityFlags = new List<string> { $"OriginalDecisionId:{tracker.DecisionId}" }
         };
 
-        EnqueueEntry(cancellationEntry);
+        EnqueueEntry(entry);
+    }
+
+    private void CleanupStaleTrackers(long nowMs)
+    {
+        var stale = _acceptedSignals
+            .Where(kvp => nowMs - kvp.Value.AcceptedAtMs > _postSignalMaxAgeMs)
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var symbol in stale)
+        {
+            if (_acceptedSignals.TryRemove(symbol, out var tracker))
+            {
+                _logger.LogDebug(
+                    "[PostSignal] Removed stale tracker for {Symbol} (age={AgeMs}ms)",
+                    symbol,
+                    nowMs - tracker.AcceptedAtMs);
+            }
+        }
     }
 
     /// <summary>
     /// Tracks an accepted signal for post-signal quality monitoring.
     /// </summary>
-    private void TrackAcceptedSignal(string symbol, string direction, Guid decisionId, decimal baselineSpread, int baselineSideVelocity, int baselineOppositeVelocity, long nowMs)
+    internal void TrackAcceptedSignal(
+        string symbol,
+        string direction,
+        Guid decisionId,
+        decimal baselineSpread,
+        int baselineTapeVelocity,
+        long nowMs,
+        List<string>? brokerOrderIds = null)
     {
         if (!_postSignalMonitoringEnabled)
         {
@@ -2021,18 +2107,20 @@ public sealed class SignalCoordinator
             Symbol = symbol,
             Direction = direction,
             DecisionId = decisionId,
+            AcceptedAtMs = nowMs,
             BaselineSpread = baselineSpread,
-            BaselineSideVelocity = baselineSideVelocity,
-            BaselineOppositeVelocity = baselineOppositeVelocity,
-            AcceptanceTimestampMs = nowMs,
-            IsCanceled = false
+            BaselineTapeVelocity = baselineTapeVelocity,
+            BrokerOrderIds = brokerOrderIds ?? new List<string>()
         };
 
         _acceptedSignals[symbol] = tracker;
-        
-        _logger.LogDebug(
-            "[Signals] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, SideVel={SideVel}, OppVel={OppVel}",
-            symbol, direction, baselineSpread, baselineSideVelocity, baselineOppositeVelocity);
+
+        _logger.LogInformation(
+            "[PostSignal] Tracking {Symbol} {Direction} baseline: spread={Spread} tapeVel={Velocity}",
+            symbol,
+            direction,
+            baselineSpread,
+            baselineTapeVelocity);
     }
 
     /// <summary>
@@ -2125,14 +2213,14 @@ public sealed class SignalCoordinator
         public required string Symbol { get; init; }
         public required string Direction { get; init; }
         public required Guid DecisionId { get; init; }
+        public required long AcceptedAtMs { get; init; }
         public required decimal BaselineSpread { get; init; }
-        public required int BaselineSideVelocity { get; init; }
-        public required int BaselineOppositeVelocity { get; init; }
-        public required long AcceptanceTimestampMs { get; init; }
-        public bool IsCanceled { get; set; }
-        public string? CancellationReason { get; set; }
-        public long CancellationTimestampMs { get; set; }
-        public int ConsecutiveSlowdownCount { get; set; }
+        public required int BaselineTapeVelocity { get; init; }
+        public required List<string> BrokerOrderIds { get; init; }
+        public int ConsecutiveSpreadBlowouts { get; set; }
+        public int ConsecutiveTapeSlowdowns { get; set; }
+        public bool CancelRequested { get; set; }
+        public DateTimeOffset? CancelRequestedUtc { get; set; }
     }
 
     /// <summary>

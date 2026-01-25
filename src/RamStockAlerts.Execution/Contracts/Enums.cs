@@ -41,3 +41,16 @@ public enum ExecutionStatus
     Cancelled,
     Error
 }
+
+/// <summary>
+/// Bracket order lifecycle state.
+/// </summary>
+public enum BracketState
+{
+    Pending,
+    Open,
+    ClosedWin,
+    ClosedLoss,
+    Cancelled,
+    Error
+}
