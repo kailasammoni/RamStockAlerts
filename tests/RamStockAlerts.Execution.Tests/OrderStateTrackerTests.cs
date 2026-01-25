@@ -135,6 +135,39 @@ public class OrderStateTrackerTests
         Assert.Equal(BracketState.ClosedWin, ledger.GetBracketState(entryIntent.IntentId));
     }
 
+    [Theory]
+    [InlineData(BrokerOrderStatus.Cancelled)]
+    [InlineData(BrokerOrderStatus.Inactive)]
+    public void ProcessOrderStatus_EntryCancelled_StateIsPropagated(BrokerOrderStatus status)
+    {
+        var ledger = new TestExecutionLedger();
+        var entryIntent = new OrderIntent { IntentId = Guid.NewGuid(), Symbol = "AAPL" };
+
+        ledger.RecordBracket(new BracketIntent
+        {
+            Entry = entryIntent
+        });
+        ledger.UpdateBracketState(entryIntent.IntentId, BracketState.Pending);
+
+        var tracker = new OrderStateTracker(NullLogger<OrderStateTracker>.Instance, ledger);
+
+        tracker.TrackSubmittedOrder(1, entryIntent.IntentId, "AAPL", 10m, OrderSide.Buy);
+        tracker.ProcessOrderStatus(new OrderStatusUpdate
+        {
+            OrderId = 1,
+            Status = status,
+            FilledQuantity = 0m,
+            RemainingQuantity = 10m,
+            AvgFillPrice = 0m,
+            LastFillPrice = 0m,
+            PermId = 1,
+            ParentId = 0,
+            TimestampUtc = DateTimeOffset.UtcNow
+        });
+
+        Assert.Equal(BracketState.Cancelled, ledger.GetBracketState(entryIntent.IntentId));
+    }
+
     [Fact]
     public void GetRealizedPnlToday_DayRollover_Resets()
     {

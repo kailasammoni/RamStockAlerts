@@ -18,6 +18,7 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
     private readonly ConcurrentDictionary<string, decimal> _realizedPnlByExecId = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<Guid, List<int>> _intentOrders = new();
 
+    private readonly object _bracketStateLock = new();
     private readonly TimeSpan _orderStatusTimeout = TimeSpan.FromSeconds(30);
     private readonly Timer _staleOrderTimer;
 
@@ -289,49 +290,61 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
             return;
         }
 
-        var brackets = _ledger.GetBrackets();
-        foreach (var bracket in brackets)
+        string? entrySymbolToNotify = null;
+        bool entryOpened = false;
+        var handled = false;
+
+        lock (_bracketStateLock)
         {
-            if (bracket.Entry.IntentId == intentId)
+            var brackets = _ledger.GetBrackets();
+            foreach (var bracket in brackets)
             {
-                if (status == BrokerOrderStatus.Filled)
+                if (bracket.Entry.IntentId == intentId)
                 {
-                    _ledger.UpdateBracketState(intentId, BracketState.Open);
-                    var symbol = bracket.Entry.Symbol;
-                    if (!string.IsNullOrWhiteSpace(symbol))
+                    handled = true;
+                    var targetState = status == BrokerOrderStatus.Filled ? BracketState.Open : fallbackState;
+                    if (targetState.HasValue)
                     {
-                        _postSignalMonitor?.OnEntryFilled(symbol);
+                        _ledger.UpdateBracketState(intentId, targetState.Value);
+                        entryOpened = targetState.Value == BracketState.Open;
+                        if (entryOpened)
+                        {
+                            entrySymbolToNotify = bracket.Entry.Symbol;
+                        }
                     }
+                    break;
                 }
-                else if (fallbackState.HasValue)
+
+                if (bracket.StopLoss?.IntentId == intentId)
                 {
-                    _ledger.UpdateBracketState(intentId, fallbackState.Value);
+                    handled = true;
+                    if (status == BrokerOrderStatus.Filled)
+                    {
+                        _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedLoss);
+                    }
+                    break;
                 }
-                return;
+
+                if (bracket.TakeProfit?.IntentId == intentId)
+                {
+                    handled = true;
+                    if (status == BrokerOrderStatus.Filled)
+                    {
+                        _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedWin);
+                    }
+                    break;
+                }
             }
 
-            if (bracket.StopLoss?.IntentId == intentId)
+            if (!handled && fallbackState.HasValue)
             {
-                if (status == BrokerOrderStatus.Filled)
-                {
-                    _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedLoss);
-                }
-                return;
-            }
-
-            if (bracket.TakeProfit?.IntentId == intentId)
-            {
-                if (status == BrokerOrderStatus.Filled)
-                {
-                    _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedWin);
-                }
-                return;
+                _ledger.UpdateBracketState(intentId, fallbackState.Value);
             }
         }
 
-        if (fallbackState.HasValue)
+        if (entryOpened && !string.IsNullOrWhiteSpace(entrySymbolToNotify))
         {
-            _ledger.UpdateBracketState(intentId, fallbackState.Value);
+            _postSignalMonitor?.OnEntryFilled(entrySymbolToNotify);
         }
     }
 
