@@ -31,7 +31,7 @@ public class Phase2ManualVerificationTests : IDisposable
     public async Task Phase2_ManualVerification_RealisticTradingDay()
     {
         // Arrange: Simulate a realistic trading day with multiple trades
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
         var reportPath = Path.Combine(_tempDir, "rollup-report.txt");
 
@@ -162,7 +162,7 @@ public class Phase2ManualVerificationTests : IDisposable
         var report = await File.ReadAllTextAsync(reportPath);
 
         // Verify report contains expected sections
-        Assert.Contains("Shadow Trade Daily Rollup", report);
+        Assert.Contains("Trade Daily Rollup", report);
         Assert.Contains("Total candidates:", report);  // Count format flexible
         Assert.Contains("Performance Metrics", report);
 
@@ -290,13 +290,13 @@ public class Phase2ManualVerificationTests : IDisposable
     /// <summary>
     /// Helper: Create a journal entry for testing.
     /// </summary>
-    private static ShadowTradeJournalEntry CreateEntry(
+    private static TradeJournalEntry CreateEntry(
         string symbol = "TEST",
         string direction = "Long",
         string decisionOutcome = "Accepted",
         string? rejectionReason = null)
     {
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
@@ -306,11 +306,11 @@ public class Phase2ManualVerificationTests : IDisposable
             DecisionOutcome = decisionOutcome,
             RejectionReason = rejectionReason,
             DecisionTimestampUtc = DateTimeOffset.UtcNow.AddSeconds(-System.Random.Shared.Next(3600)),
-            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot 
+            DecisionInputs = new TradeJournalEntry.DecisionInputsSnapshot 
             { 
                 Score = (decimal)(50 + System.Random.Shared.Next(40))
             },
-            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot 
+            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot 
             { 
                 Spread = (decimal)(0.02 + System.Random.Shared.NextDouble() * 0.08),
                 QueueImbalance = (decimal)(0.8 + System.Random.Shared.NextDouble() * 0.8),
@@ -320,3 +320,6 @@ public class Phase2ManualVerificationTests : IDisposable
         };
     }
 }
+
+
+

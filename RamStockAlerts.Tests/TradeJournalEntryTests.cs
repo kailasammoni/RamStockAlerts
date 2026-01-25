@@ -8,20 +8,20 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Models;
-using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Tests.Helpers;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
 
-public class ShadowTradeJournalEntryTests
+public class TradeJournalEntryTests
 {
     [Fact]
     public void JournalEntry_IsFullyPopulated_WhenAccepted()
     {
-        var entry = ShadowTradeJournalEntryTestHelper.BuildAcceptedEntry();
+        var entry = TradeJournalEntryTestHelper.BuildAcceptedEntry();
 
-        Assert.Equal(ShadowTradeJournal.CurrentSchemaVersion, entry.SchemaVersion);
+        Assert.Equal(TradeJournal.CurrentSchemaVersion, entry.SchemaVersion);
         Assert.Equal("Accepted", entry.DecisionOutcome);
         Assert.NotNull(entry.ObservedMetrics);
         Assert.NotNull(entry.DecisionInputs);
@@ -47,7 +47,7 @@ public class ShadowTradeJournalEntryTests
     [Fact]
     public void JournalEntry_IsFullyPopulated_WhenRejected()
     {
-        var entry = ShadowTradeJournalEntryTestHelper.BuildRejectedEntry();
+        var entry = TradeJournalEntryTestHelper.BuildRejectedEntry();
 
         Assert.Equal("Rejected", entry.DecisionOutcome);
         Assert.Equal("TapeStale", entry.RejectionReason);
@@ -62,7 +62,7 @@ public class ShadowTradeJournalEntryTests
     [Fact]
     public void JournalEntry_MissingContextReject_HasNullDecisionInputs_AndFlagsMissingContext()
     {
-        var entry = ShadowTradeJournalEntryTestHelper.BuildMissingContextRejectionEntry();
+        var entry = TradeJournalEntryTestHelper.BuildMissingContextRejectionEntry();
 
         Assert.Equal("Rejected", entry.DecisionOutcome);
         Assert.Equal("MissingBookContext", entry.RejectionReason);
@@ -81,10 +81,10 @@ public class ShadowTradeJournalEntryTests
     [Fact]
     public async Task JournalEntry_MissingContextReject_WritesAndDeserializesSuccessfully()
     {
-        var entry = ShadowTradeJournalEntryTestHelper.BuildMissingContextRejectionEntry();
+        var entry = TradeJournalEntryTestHelper.BuildMissingContextRejectionEntry();
 
-        var line = await ShadowTradeJournalEntryTestHelper.WriteEntryAsync(entry);
-        var parsed = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(line);
+        var line = await TradeJournalEntryTestHelper.WriteEntryAsync(entry);
+        var parsed = JsonSerializer.Deserialize<TradeJournalEntry>(line);
 
         Assert.NotNull(parsed);
         Assert.Equal("Rejected", parsed!.DecisionOutcome);
@@ -100,21 +100,21 @@ public class ShadowTradeJournalEntryTests
     [Fact]
     public async Task JournalSchemaVersion_Bumps_WhenModelChanges()
     {
-        var entry = ShadowTradeJournalEntryTestHelper.BuildAcceptedEntry();
+        var entry = TradeJournalEntryTestHelper.BuildAcceptedEntry();
         entry.SchemaVersion = 0;
 
-        var line = await ShadowTradeJournalEntryTestHelper.WriteEntryAsync(entry);
+        var line = await TradeJournalEntryTestHelper.WriteEntryAsync(entry);
         var json = JsonDocument.Parse(line);
-        Assert.Equal(ShadowTradeJournal.CurrentSchemaVersion, json.RootElement.GetProperty("SchemaVersion").GetInt32());
+        Assert.Equal(TradeJournal.CurrentSchemaVersion, json.RootElement.GetProperty("SchemaVersion").GetInt32());
     }
 
     [Fact]
     public async Task JournalWriter_WritesSingleLine_WithRequiredFields()
     {
-        var entry = ShadowTradeJournalEntryTestHelper.BuildAcceptedEntry();
+        var entry = TradeJournalEntryTestHelper.BuildAcceptedEntry();
 
-        var line = await ShadowTradeJournalEntryTestHelper.WriteEntryAsync(entry);
-        var parsed = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(line);
+        var line = await TradeJournalEntryTestHelper.WriteEntryAsync(entry);
+        var parsed = JsonSerializer.Deserialize<TradeJournalEntry>(line);
 
         Assert.NotNull(parsed);
         Assert.Equal("Accepted", parsed!.DecisionOutcome);
@@ -128,3 +128,4 @@ public class ShadowTradeJournalEntryTests
     }
 
 }
+

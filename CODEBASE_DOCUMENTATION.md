@@ -102,7 +102,7 @@ Detect **transient order-book imbalances** that statistically precede short-term
         │                     │                     │
         ▼                     ▼                     ▼
 ┌──────────────┐    ┌──────────────────┐    ┌──────────────┐
-│   Universe   │    │  Market Data     │    │   Shadow     │
+│   Universe   │    │  Market Data     │    │   Signal     │
 │   Service    │───▶│  Subscription    │───▶│   Trading    │
 │              │    │     Manager      │    │ Coordinator  │
 └──────────────┘    └──────────────────┘    └──────────────┘
@@ -116,7 +116,7 @@ Detect **transient order-book imbalances** that statistically precede short-term
         └─────────────────────┼─────────────────────┘
                               ▼
                     ┌──────────────────────┐
-                    │  Shadow Trade        │
+                    │  Trade        │
                     │     Journal          │
                     │  (JSONL Event Log)   │
                     └──────────────────────┘
@@ -131,9 +131,9 @@ RamStockAlerts/                     # Main API project
 │   ├── SignalsController.cs       # Signal history queries
 │   └── AdminController.cs          # Admin/diagnostics
 ├── Services/                       # Core business logic
-│   ├── ShadowTradingCoordinator.cs # Shadow trading loop
+│   ├── SignalCoordinator.cs # signals loop
 │   ├── MarketDataSubscriptionManager.cs  # IBKR subscription lifecycle
-│   ├── ShadowTradeJournal.cs      # Event journaling
+│   ├── TradeJournal.cs      # Event journaling
 │   └── ScarcityController.cs      # Signal throttling
 ├── Engine/                         # Strategy & metrics
 │   ├── OrderFlowMetrics.cs        # Microstructure calculations
@@ -148,7 +148,7 @@ RamStockAlerts/                     # Main API project
 ├── Models/                         # Domain models
 │   ├── OrderBookState.cs          # Level II depth state
 │   ├── TapeData.cs                # Tick-by-tick tape
-│   └── ShadowTradeJournalEntry.cs # Journal schema
+│   └── TradeJournalEntry.cs # Journal schema
 └── Data/                           # Persistence layer
     ├── AppDbContext.cs            # EF Core DbContext
     ├── FileEventStore.cs          # JSONL event store
@@ -207,7 +207,7 @@ The universe pipeline maintains four hierarchical sets:
 - Never subscribes depth without probe-level subscription
 - Logs subscription stats every cycle
 
-### 4.3 ShadowTradingCoordinator
+### 4.3 SignalCoordinator
 
 **Responsibilities:**
 - Receive OrderBookState snapshots from IBKR client
@@ -307,14 +307,14 @@ The universe pipeline maintains four hierarchical sets:
    ├─▶ OnTickByTick (tape prints)
    └─▶ Build OrderBookState snapshots
 
-4. ShadowTradingCoordinator.ProcessSnapshot()
+4. SignalCoordinator.ProcessSnapshot()
    ├─▶ ActiveUniverse gate (drop if not active)
    ├─▶ Evaluation throttle (250ms)
    ├─▶ OrderFlowMetrics.UpdateMetrics()
    ├─▶ OrderFlowSignalValidator.ValidateSignal()
    ├─▶ Gate checks (validity, freshness, scoring)
    ├─▶ ScarcityController.ShouldAccept()
-   └─▶ ShadowTradeJournal.WriteAsync() (accept/reject)
+   └─▶ TradeJournal.WriteAsync() (accept/reject)
 
 5. Trade Blueprint (if accepted)
    ├─▶ Entry: Last Ask
@@ -341,7 +341,7 @@ MODE=replay
   ├─▶ IbkrReplayHostedService
   ├─▶ Read logs/ibkr-depth-*.jsonl + logs/ibkr-tape-*.jsonl
   ├─▶ Reconstruct OrderBookState snapshots
-  ├─▶ Feed to ShadowTradingCoordinator
+  ├─▶ Feed to SignalCoordinator
   └─▶ Output to replay-output.txt (deterministic results)
 ```
 
@@ -413,11 +413,11 @@ MODE=replay
 }
 ```
 
-#### Trade Journal
+#### Signals Journal
 ```json
 {
-  "ShadowTradeJournal": {
-    "FilePath": "logs/shadow-trade-journal.jsonl",
+  "SignalsJournal": {
+    "FilePath": "logs/trade-journal.jsonl",
     "EmitGateTrace": true        // Include gate diagnostic snapshots
   }
 }
@@ -504,7 +504,7 @@ MODE=replay
 - Starts IbkrReplayHostedService
 - Reads depth + tape JSONL files from logs/
 - Reconstructs OrderBookState snapshots deterministically
-- Feeds snapshots to ShadowTradingCoordinator
+- Feeds snapshots to SignalCoordinator
 - Outputs evaluation results to `replay-output.txt`
 - Does NOT connect to IBKR or emit real journal entries
 
@@ -618,7 +618,7 @@ MODE=replay
 ### 9.1 Trade Journal
 
 **Format:** JSONL (JSON Lines), one entry per line  
-**Location:** `logs/shadow-trade-journal.jsonl`  
+**Location:** `logs/trade-journal.jsonl`  
 **SchemaVersion:** 2 (current)
 
 **Entry Types:**
@@ -1046,7 +1046,7 @@ dotnet run --project RamStockAlerts.csproj
 
 ### 14.2 Why JSONL for Journal?
 
-**Decision:** File-based JSONL for shadow trade journal and event store (default).
+**Decision:** File-based JSONL for Trade journal and event store (default).
 
 **Rationale:**
 - Human-readable, line-oriented (no partial writes)
@@ -1138,18 +1138,18 @@ dotnet run --project RamStockAlerts.csproj
 
 **Core Source Files:**
 - [Program.cs](Program.cs) – Application entry point
-- [Services/ShadowTradingCoordinator.cs](Services/ShadowTradingCoordinator.cs) – Shadow trading loop
+- [Services/SignalCoordinator.cs](Services/SignalCoordinator.cs) – signals loop
 - [Services/MarketDataSubscriptionManager.cs](Services/MarketDataSubscriptionManager.cs) – Subscription lifecycle
 - [Universe/UniverseService.cs](Universe/UniverseService.cs) – Universe orchestration
 - [Engine/OrderFlowMetrics.cs](Engine/OrderFlowMetrics.cs) – Microstructure metrics
 - [Engine/OrderFlowSignalValidator.cs](Engine/OrderFlowSignalValidator.cs) – Signal scoring
 - [Feeds/IBkrMarketDataClient.cs](Feeds/IBkrMarketDataClient.cs) – IBKR TWS client
-- [Models/ShadowTradeJournalEntry.cs](Models/ShadowTradeJournalEntry.cs) – Journal schema
+- [Models/TradeJournalEntry.cs](Models/TradeJournalEntry.cs) – Journal schema
 - [RamStockAlerts.Execution/Services/ExecutionService.cs](RamStockAlerts.Execution/Services/ExecutionService.cs) – Execution orchestration
 
 **Logs & Journals:**
 - `logs/ramstockalerts-YYYYMMDD.txt` – Application logs
-- `logs/shadow-trade-journal.jsonl` – Shadow trade journal
+- `logs/trade-journal.jsonl` – Trade journal
 - `logs/ibkr-depth-*.jsonl` – Recorded depth data (record mode)
 - `logs/ibkr-tape-*.jsonl` – Recorded tape data (record mode)
 - `replay-output.txt` – Replay mode output
@@ -1238,7 +1238,7 @@ curl -X POST http://localhost:5000/api/execution/order \
 
 **GateTrace:** Diagnostic snapshot emitted with rejections (tape age, depth age, config).
 
-**Journaling:** Append-only JSONL event log (shadow-trade-journal.jsonl).
+**Journaling:** Append-only JSONL event log (trade-journal.jsonl).
 
 **L1 / Level I:** Top-of-book market data (best bid/ask).
 
@@ -1259,3 +1259,5 @@ curl -X POST http://localhost:5000/api/execution/order \
 **End of Documentation**
 
 For questions, issues, or contributions, refer to the source files and policies linked throughout this document.
+
+

@@ -6,6 +6,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Microstructure;
 using RamStockAlerts.Services.Universe;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Tests.TestDoubles;
 using Xunit;
 
@@ -151,19 +152,19 @@ public class TapeWatchlistTests
 
     // Helper Methods
 
-    private ShadowTradingCoordinator CreateTestCoordinator(
+    private SignalCoordinator CreateTestCoordinator(
         bool tapeWatchlistEnabled = true,
         long recheckIntervalMs = 5000)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ShadowTrading:Enabled"] = "true",
-                ["ShadowTrading:TapeWatchlistEnabled"] = tapeWatchlistEnabled.ToString(),
-                ["ShadowTrading:TapeWatchlistRecheckIntervalMs"] = recheckIntervalMs.ToString(),
-                ["ShadowTrading:PostSignalMonitoringEnabled"] = "false",
-                ["ShadowTrading:MinSignalsPerDay"] = "3",
-                ["ShadowTrading:MaxSignalsPerDay"] = "6",
+                ["Signals:Enabled"] = "true",
+                ["Signals:TapeWatchlistEnabled"] = tapeWatchlistEnabled.ToString(),
+                ["Signals:TapeWatchlistRecheckIntervalMs"] = recheckIntervalMs.ToString(),
+                ["Signals:PostSignalMonitoringEnabled"] = "false",
+                ["Signals:MinSignalsPerDay"] = "3",
+                ["Signals:MaxSignalsPerDay"] = "6",
                 ["AlertsEnabled"] = "false",
                 ["RecordBlueprints"] = "false",
                 ["MarketData:MaxLines"] = "95",
@@ -180,7 +181,7 @@ public class TapeWatchlistTests
         var validator = new OrderFlowSignalValidator(
             NullLogger<OrderFlowSignalValidator>.Instance,
             metrics);
-        var journal = new TestShadowTradeJournal();
+        var journal = new TestTradeJournal();
         var scarcityController = new ScarcityController(config);
         
         var classificationCache = new ContractClassificationCache(
@@ -202,14 +203,14 @@ public class TapeWatchlistTests
             eligibilityCache,
             metrics);
 
-        return new ShadowTradingCoordinator(
+        return new SignalCoordinator(
             config,
             metrics,
             validator,
             journal,
             scarcityController,
             subscriptionManager,
-            NullLogger<ShadowTradingCoordinator>.Instance);
+            NullLogger<SignalCoordinator>.Instance);
     }
 
     private OrderBookState CreateBookWithTapeNotWarmedUp(string symbol)
@@ -248,3 +249,4 @@ public class TapeWatchlistTests
         return book;
     }
 }
+

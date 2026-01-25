@@ -7,12 +7,13 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Services.Universe;
 using RamStockAlerts.Tests.TestDoubles;
 
 namespace RamStockAlerts.Tests.Helpers;
 
-internal static class ShadowTradingCoordinatorTestHelper
+internal static class SignalCoordinatorTestHelper
 {
     public static IConfiguration BuildConfig(Dictionary<string, string?>? overrides = null)
     {
@@ -41,7 +42,7 @@ internal static class ShadowTradingCoordinatorTestHelper
             .Build();
     }
 
-    public static (ShadowTradingCoordinator Coordinator, TestShadowTradeJournal Journal, OrderFlowMetrics Metrics) BuildCoordinator(
+    public static (SignalCoordinator Coordinator, TestTradeJournal Journal, OrderFlowMetrics Metrics) BuildCoordinator(
         IConfiguration config,
         MarketDataSubscriptionManager manager,
         OrderFlowMetrics? sharedMetrics = null)
@@ -49,16 +50,16 @@ internal static class ShadowTradingCoordinatorTestHelper
         // Use shared metrics if provided (to share with subscription manager), otherwise create new instance
         var metrics = sharedMetrics ?? new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
-        var journal = new TestShadowTradeJournal();
+        var journal = new TestTradeJournal();
         var scarcity = new ScarcityController(config);
-        var coordinator = new ShadowTradingCoordinator(
+        var coordinator = new SignalCoordinator(
             config,
             metrics,
             validator,
             journal,
             scarcity,
             manager,
-            NullLogger<ShadowTradingCoordinator>.Instance);
+            NullLogger<SignalCoordinator>.Instance);
 
         return (coordinator, journal, metrics);
     }
@@ -180,3 +181,4 @@ internal static class ShadowTradingCoordinatorTestHelper
             metrics);
     }
 }
+

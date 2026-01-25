@@ -36,11 +36,11 @@ This flow describes how market data is processed to detect signals and journal t
 sequenceDiagram
     participant IBKR as IBkrMarketDataClient
     participant OBS as OrderBookState
-    participant STC as ShadowTradingCoordinator
+    participant STC as SignalCoordinator
     participant OFM as OrderFlowMetrics
     participant OFV as OrderFlowSignalValidator
     participant SC as ScarcityController
-    participant Journal as ShadowTradeJournal
+    participant Journal as TradeJournal
 
     IBKR->>OBS: Update Depth / Trade Print
     OBS->>STC: ProcessSnapshot(book)
@@ -112,7 +112,7 @@ sequenceDiagram
     participant Replayer as IbkrReplayHostedService
     participant File as JSONL Log Files
     participant OBS as OrderBookState
-    participant STC as ShadowTradingCoordinator
+    participant STC as SignalCoordinator
 
     Replayer->>File: Read Events
     Replayer->>OBS: Reconstruct State
@@ -130,7 +130,7 @@ sequenceDiagram
     participant RS as RollupStats
     participant OTL as TradeOutcomeLabeler
     participant Store as FileOutcomeSummaryStore
-    participant Journal as ShadowTradeJournal (JSONL)
+    participant Journal as TradeJournal (JSONL)
 
     CLI->>DRR: RunAsync(journalPath)
     DRR->>Journal: Read Entries
@@ -207,3 +207,4 @@ Creates a self-contained output folder that will not change while running.
 dotnet publish -c Release -o C:\run\RamStockAlerts\signals
 
 $env:Report__ExecutionDailyRollup="true"
+

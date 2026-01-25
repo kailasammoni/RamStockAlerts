@@ -1,6 +1,7 @@
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models.Decisions;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -16,10 +17,10 @@ public class AbsorptionRejectTests
             TradesIn3Sec = 0
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForAbsorption(
+        var shouldReject = SignalCoordinator.ShouldRejectForAbsorption(
             "BUY",
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 0m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 0m, null, null, null));
 
         Assert.True(shouldReject);
     }
@@ -33,10 +34,10 @@ public class AbsorptionRejectTests
             TradesIn3Sec = 3
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForAbsorption(
+        var shouldReject = SignalCoordinator.ShouldRejectForAbsorption(
             "BUY",
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 2m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 2m, null, null, null));
 
         Assert.False(shouldReject);
     }
@@ -50,10 +51,10 @@ public class AbsorptionRejectTests
             TradesIn3Sec = 0
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForAbsorption(
+        var shouldReject = SignalCoordinator.ShouldRejectForAbsorption(
             "SELL",
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 0m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 0m, null, null, null));
 
         Assert.True(shouldReject);
     }
@@ -67,11 +68,13 @@ public class AbsorptionRejectTests
             TradesIn3Sec = 2
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForAbsorption(
+        var shouldReject = SignalCoordinator.ShouldRejectForAbsorption(
             "SELL",
             metrics,
-            new ShadowTradingCoordinator.TapeStats(0m, 1m, null, null, null));
+            new SignalCoordinator.TapeStats(0m, 1m, null, null, null));
 
         Assert.False(shouldReject);
     }
 }
+
+

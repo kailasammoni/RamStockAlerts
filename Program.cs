@@ -2,6 +2,7 @@ using System;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Feeds;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Serilog;
 using Serilog.Events;
 using HealthChecks.UI.Client;
@@ -49,15 +50,49 @@ void LogSessionStart(string label) =>
 void LogSessionEnd(string label) =>
     Log.Information("[Session] Ending {Label} session at {Time:O}", label, DateTimeOffset.UtcNow);
 
+string ResolveJournalPathForReport(IConfiguration config)
+{
+    var configured = config.GetValue<string>("Report:JournalPath");
+    if (!string.IsNullOrWhiteSpace(configured))
+    {
+        return configured;
+    }
+
+    var path = config.GetValue<string>("SignalsJournal:FilePath");
+    if (!string.IsNullOrWhiteSpace(path))
+    {
+        return path;
+    }
+
+    path = config.GetValue<string>("TradeJournal:FilePath");
+    if (!string.IsNullOrWhiteSpace(path))
+    {
+        Log.Warning("Deprecated config key TradeJournal:FilePath used; migrate to SignalsJournal:FilePath.");
+        return path;
+    }
+
+    path = config.GetValue<string>("ShadowTradeJournal:FilePath");
+    if (!string.IsNullOrWhiteSpace(path))
+    {
+        Log.Warning("Deprecated config key ShadowTradeJournal:FilePath used; migrate to SignalsJournal:FilePath.");
+        return path;
+    }
+
+    var defaultPath = Path.Combine("logs", "trade-journal.jsonl");
+    var legacyPath = Path.Combine("logs", "shadow-trade-journal.jsonl");
+    if (!File.Exists(defaultPath) && File.Exists(legacyPath))
+    {
+        Log.Warning("Legacy journal file detected at {Path}. Migrate to trade-journal.jsonl.", legacyPath);
+        return legacyPath;
+    }
+
+    return defaultPath;
+}
+
 var dailyRollupRequested = initialConfig.GetValue("Report:DailyRollup", false);
 if (dailyRollupRequested)
 {
-    var journalPath = initialConfig.GetValue<string>("Report:JournalPath");
-    if (string.IsNullOrWhiteSpace(journalPath))
-    {
-        journalPath = initialConfig.GetValue<string>("TradeJournal:FilePath")
-                      ?? Path.Combine("logs", "shadow-trade-journal.jsonl");
-    }
+    var journalPath = ResolveJournalPathForReport(initialConfig);
     var writeToFile = initialConfig.GetValue("Report:WriteToFile", false);
     var outputPath = initialConfig.GetValue<string>("Report:OutputPath");
 

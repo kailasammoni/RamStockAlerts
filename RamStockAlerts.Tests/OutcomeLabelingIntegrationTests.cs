@@ -19,7 +19,7 @@ public class OutcomeLabelingIntegrationTests
         try
         {
             // Create a test journal with an accepted entry
-            var acceptedEntry = new ShadowTradeJournalEntry
+            var acceptedEntry = new TradeJournalEntry
             {
                 SchemaVersion = 2,
                 DecisionId = Guid.NewGuid(),
@@ -27,7 +27,7 @@ public class OutcomeLabelingIntegrationTests
                 Direction = "Long",
                 DecisionOutcome = "Accepted",
                 DecisionTimestampUtc = DateTimeOffset.UtcNow,
-                Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+                Blueprint = new TradeJournalEntry.BlueprintPlan
                 {
                     Entry = 100m,
                     Stop = 95m,
@@ -73,7 +73,7 @@ public class OutcomeLabelingIntegrationTests
 
         try
         {
-            var acceptedEntry = new ShadowTradeJournalEntry
+            var acceptedEntry = new TradeJournalEntry
             {
                 SchemaVersion = 2,
                 DecisionId = Guid.NewGuid(),
@@ -81,7 +81,7 @@ public class OutcomeLabelingIntegrationTests
                 Direction = "Long",
                 DecisionOutcome = "Accepted",
                 DecisionTimestampUtc = DateTimeOffset.UtcNow,
-                Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+                Blueprint = new TradeJournalEntry.BlueprintPlan
                 {
                     Entry = 100m,
                     Stop = 95m,
@@ -108,3 +108,4 @@ public class OutcomeLabelingIntegrationTests
         }
     }
 }
+

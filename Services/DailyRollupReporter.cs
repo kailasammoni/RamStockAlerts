@@ -53,7 +53,7 @@ public sealed class DailyRollupReporter
 
         if (!File.Exists(journalPath))
         {
-            Log.Error("Shadow trade journal not found at {Path}", journalPath);
+            Log.Error("Trade journal not found at {Path}", journalPath);
             return 1;
         }
 
@@ -83,7 +83,7 @@ public sealed class DailyRollupReporter
         }
 
         var stats = new RollupStats();
-        var acceptedEntries = new List<ShadowTradeJournalEntry>();
+        var acceptedEntries = new List<TradeJournalEntry>();
 
         try
         {
@@ -102,10 +102,10 @@ public sealed class DailyRollupReporter
                     continue;
                 }
 
-                ShadowTradeJournalEntry? entry;
+                TradeJournalEntry? entry;
                 try
                 {
-                    entry = JsonSerializer.Deserialize<ShadowTradeJournalEntry>(line, _jsonOptions);
+                    entry = JsonSerializer.Deserialize<TradeJournalEntry>(line, _jsonOptions);
                 }
                 catch (Exception ex)
                 {
@@ -213,7 +213,7 @@ public sealed class DailyRollupReporter
         private readonly Dictionary<string, int> _validatorRejections = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _scarcityRejections = new(StringComparer.OrdinalIgnoreCase);
         private readonly SortedDictionary<int, int> _scoreBuckets = new();
-        private readonly List<ShadowTradeJournalEntry> _accepted = new();
+        private readonly List<TradeJournalEntry> _accepted = new();
 
         // Outcome tracking for Phase 2
         private int _outcomeWins = 0;
@@ -232,7 +232,7 @@ public sealed class DailyRollupReporter
         public int ScarcityAccepted { get; private set; }
         public int ScarcityRejected { get; private set; }
 
-        public void Record(ShadowTradeJournalEntry entry)
+        public void Record(TradeJournalEntry entry)
         {
             TotalCandidates++;
             var decision = entry.DecisionOutcome ?? string.Empty;
@@ -323,7 +323,7 @@ public sealed class DailyRollupReporter
         public string Render(string journalPath)
         {
             var sb = new StringBuilder();
-            sb.AppendLine("Shadow Trade Daily Rollup");
+            sb.AppendLine("Trade Daily Rollup");
             sb.AppendLine($"Source: {journalPath}");
             sb.AppendLine($"Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
             sb.AppendLine();
@@ -522,3 +522,4 @@ public sealed class DailyRollupReporter
         }
     }
 }
+

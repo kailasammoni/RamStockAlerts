@@ -221,6 +221,4 @@ public class TradeJournalEntry
     }
 }
 
-public sealed class ShadowTradeJournalEntry : TradeJournalEntry
-{
-}
+

@@ -87,22 +87,63 @@ public sealed class SignalCoordinator
             configuration.GetValue("Execution:AutoExecuteFromSignals", false);
         _autoExecuteNotionalUsd = configuration.GetValue("Execution:AutoExecuteNotionalUsd", 500m);
         _tapeGateConfig = SignalHelpers.ReadTapeGateConfig(configuration);
-        var gatingRejectSuppressionSeconds = configuration.GetValue<double?>("Signals:GatingRejectSuppressionSeconds")
-            ?? configuration.GetValue("Signals:GatingRejectDedupeSeconds", 10d);
+        var gatingRejectSuppressionSeconds = ReadDoubleWithLegacy(
+            configuration,
+            "Signals:GatingRejectSuppressionSeconds",
+            "ShadowTrading:GatingRejectSuppressionSeconds",
+            configuration.GetValue("Signals:GatingRejectDedupeSeconds", 10d),
+            out var legacyGateKey);
+        LogLegacyKeyIfUsed(legacyGateKey, "Signals:GatingRejectSuppressionSeconds");
         _gatingRejectionThrottle = new GatingRejectionThrottle(
             TimeSpan.FromSeconds(Math.Max(0d, gatingRejectSuppressionSeconds)));
         var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
-        _emitGateTrace = configuration.GetValue("SignalsJournal:EmitGateTrace", true);
+        _emitGateTrace = ReadBoolWithLegacy(
+            configuration,
+            "SignalsJournal:EmitGateTrace",
+            "ShadowTradeJournal:EmitGateTrace",
+            true,
+            out var legacyGateTraceKey);
+        LogLegacyKeyIfUsed(legacyGateTraceKey, "SignalsJournal:EmitGateTrace");
         
         // Phase 3.1: Post-Signal Quality Monitoring configuration
-        _postSignalMonitoringEnabled = configuration.GetValue("Signals:PostSignalMonitoringEnabled", true);
-        _tapeSlowdownThreshold = configuration.GetValue("Signals:TapeSlowdownThreshold", 0.5); // 50%
-        _spreadBlowoutThreshold = configuration.GetValue("Signals:SpreadBlowoutThreshold", 0.5); // 50%
+        _postSignalMonitoringEnabled = ReadBoolWithLegacy(
+            configuration,
+            "Signals:PostSignalMonitoringEnabled",
+            "ShadowTrading:PostSignalMonitoringEnabled",
+            true,
+            out var legacyPostSignalKey);
+        LogLegacyKeyIfUsed(legacyPostSignalKey, "Signals:PostSignalMonitoringEnabled");
+        _tapeSlowdownThreshold = ReadDoubleWithLegacy(
+            configuration,
+            "Signals:TapeSlowdownThreshold",
+            "ShadowTrading:TapeSlowdownThreshold",
+            0.5,
+            out var legacySlowdownKey); // 50%
+        LogLegacyKeyIfUsed(legacySlowdownKey, "Signals:TapeSlowdownThreshold");
+        _spreadBlowoutThreshold = ReadDoubleWithLegacy(
+            configuration,
+            "Signals:SpreadBlowoutThreshold",
+            "ShadowTrading:SpreadBlowoutThreshold",
+            0.5,
+            out var legacySpreadKey); // 50%
+        LogLegacyKeyIfUsed(legacySpreadKey, "Signals:SpreadBlowoutThreshold");
         
         // Phase 3.2: Tape Warm-up Watchlist configuration
-        _tapeWatchlistEnabled = configuration.GetValue("Signals:TapeWatchlistEnabled", true);
-        _tapeWatchlistRecheckIntervalMs = configuration.GetValue("Signals:TapeWatchlistRecheckIntervalMs", 5000L); // 5 sec
+        _tapeWatchlistEnabled = ReadBoolWithLegacy(
+            configuration,
+            "Signals:TapeWatchlistEnabled",
+            "ShadowTrading:TapeWatchlistEnabled",
+            true,
+            out var legacyWatchlistKey);
+        LogLegacyKeyIfUsed(legacyWatchlistKey, "Signals:TapeWatchlistEnabled");
+        _tapeWatchlistRecheckIntervalMs = ReadLongWithLegacy(
+            configuration,
+            "Signals:TapeWatchlistRecheckIntervalMs",
+            "ShadowTrading:TapeWatchlistRecheckIntervalMs",
+            5000L,
+            out var legacyWatchlistIntervalKey); // 5 sec
+        LogLegacyKeyIfUsed(legacyWatchlistIntervalKey, "Signals:TapeWatchlistRecheckIntervalMs");
         
         // Start periodic rejection summary timer (every 60s)
         _summaryTimer = new System.Threading.Timer(
@@ -2102,5 +2143,93 @@ public sealed class SignalCoordinator
         public required string Symbol { get; init; }
         public required long FirstRejectionMs { get; init; }
         public long LastRecheckMs { get; set; }
+    }
+
+    private static bool ReadBoolWithLegacy(
+        IConfiguration configuration,
+        string primaryKey,
+        string legacyKey,
+        bool defaultValue,
+        out string? legacyKeyUsed)
+    {
+        var primary = configuration.GetValue<bool?>(primaryKey);
+        if (primary.HasValue)
+        {
+            legacyKeyUsed = null;
+            return primary.Value;
+        }
+
+        var legacy = configuration.GetValue<bool?>(legacyKey);
+        if (legacy.HasValue)
+        {
+            legacyKeyUsed = legacyKey;
+            return legacy.Value;
+        }
+
+        legacyKeyUsed = null;
+        return defaultValue;
+    }
+
+    private static double ReadDoubleWithLegacy(
+        IConfiguration configuration,
+        string primaryKey,
+        string legacyKey,
+        double defaultValue,
+        out string? legacyKeyUsed)
+    {
+        var primary = configuration.GetValue<double?>(primaryKey);
+        if (primary.HasValue)
+        {
+            legacyKeyUsed = null;
+            return primary.Value;
+        }
+
+        var legacy = configuration.GetValue<double?>(legacyKey);
+        if (legacy.HasValue)
+        {
+            legacyKeyUsed = legacyKey;
+            return legacy.Value;
+        }
+
+        legacyKeyUsed = null;
+        return defaultValue;
+    }
+
+    private static long ReadLongWithLegacy(
+        IConfiguration configuration,
+        string primaryKey,
+        string legacyKey,
+        long defaultValue,
+        out string? legacyKeyUsed)
+    {
+        var primary = configuration.GetValue<long?>(primaryKey);
+        if (primary.HasValue)
+        {
+            legacyKeyUsed = null;
+            return primary.Value;
+        }
+
+        var legacy = configuration.GetValue<long?>(legacyKey);
+        if (legacy.HasValue)
+        {
+            legacyKeyUsed = legacyKey;
+            return legacy.Value;
+        }
+
+        legacyKeyUsed = null;
+        return defaultValue;
+    }
+
+    private void LogLegacyKeyIfUsed(string? legacyKey, string primaryKey)
+    {
+        if (string.IsNullOrWhiteSpace(legacyKey))
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "[Signals] Deprecated config key {LegacyKey} used; migrate to {PrimaryKey}.",
+            legacyKey,
+            primaryKey);
     }
 }

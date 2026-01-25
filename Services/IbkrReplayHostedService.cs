@@ -273,7 +273,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
         {
             timestampUtc = DateTimeOffset.UtcNow.ToString("o"),
             symbol = orderBook.Symbol,
-            eventType = "ShadowTradingReadiness",
+            eventType = "SignalsReadiness",
             validBookPercent = Math.Round(validBookPercent, 2),
             tapePresent = tapePresent,
             replayPass = replayPass,
@@ -285,7 +285,7 @@ public sealed class IbkrReplayHostedService : BackgroundService
             crossedBookCount = crossedBookCount,
             exceptionsCount = exceptionsCount,
             totalSecondsReplayed = totalSecondsReplayed,
-            recommendation = replayPass ? "Ready for shadow trading" : "Not ready - review failures above"
+            recommendation = replayPass ? "Ready for signals" : "Not ready - review failures above"
         };
 
         var checklistLine = JsonSerializer.Serialize(readinessChecklist);
@@ -298,13 +298,13 @@ public sealed class IbkrReplayHostedService : BackgroundService
 
         if (!replayPass)
         {
-            _logger.LogError("Shadow trading not ready. ReplayPass=false. InvalidSeconds={Invalid} CrossedSeconds={Crossed} ExceptionsSeconds={Exc}",
+            _logger.LogError("Signals not ready. ReplayPass=false. InvalidSeconds={Invalid} CrossedSeconds={Crossed} ExceptionsSeconds={Exc}",
                 invalidSeconds, crossedSeconds, exceptionsSeconds);
             Environment.ExitCode = 1;
         }
         else
         {
-            _logger.LogInformation("Shadow trading readiness PASSED.");
+            _logger.LogInformation("Signals readiness PASSED.");
         }
     }
 

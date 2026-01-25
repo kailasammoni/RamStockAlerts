@@ -5,12 +5,12 @@ using Xunit;
 
 namespace RamStockAlerts.Tests;
 
-public class ShadowTradeJournalEntrySerializationTests
+public class TradeJournalEntrySerializationTests
 {
     [Fact]
     public void JournalSerialization_IsStable_AndOneLineJson()
     {
-        var entry = new ShadowTradeJournalEntry
+        var entry = new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
@@ -23,7 +23,7 @@ public class ShadowTradeJournalEntrySerializationTests
             Symbol = "TEST",
             Direction = "BUY",
             DecisionOutcome = "Accepted",
-            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot
             {
                 QueueImbalance = 2.9m,
                 Spread = 0.02m,
@@ -40,6 +40,7 @@ public class ShadowTradeJournalEntrySerializationTests
         Assert.DoesNotContain("\n", json);
         Assert.DoesNotContain("\r", json);
         Assert.Contains("\"DecisionInputs\":null", json);
-        Assert.NotNull(JsonSerializer.Deserialize<ShadowTradeJournalEntry>(json));
+        Assert.NotNull(JsonSerializer.Deserialize<TradeJournalEntry>(json));
     }
 }
+

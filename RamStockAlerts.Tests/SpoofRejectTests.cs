@@ -2,6 +2,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Microstructure;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -25,7 +26,7 @@ public class SpoofRejectTests
             TradesIn3Sec = 0
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForSpoof("BUY", delta, snapshot, 0m);
+        var shouldReject = SignalCoordinator.ShouldRejectForSpoof("BUY", delta, snapshot, 0m);
 
         Assert.True(shouldReject);
     }
@@ -47,8 +48,10 @@ public class SpoofRejectTests
             TradesIn3Sec = 2
         };
 
-        var shouldReject = ShadowTradingCoordinator.ShouldRejectForSpoof("BUY", delta, snapshot, 0m);
+        var shouldReject = SignalCoordinator.ShouldRejectForSpoof("BUY", delta, snapshot, 0m);
 
         Assert.False(shouldReject);
     }
 }
+
+

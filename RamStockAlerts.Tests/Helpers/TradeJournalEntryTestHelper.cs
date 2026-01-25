@@ -7,17 +7,17 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Models;
-using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 
 namespace RamStockAlerts.Tests.Helpers;
 
-internal static class ShadowTradeJournalEntryTestHelper
+internal static class TradeJournalEntryTestHelper
 {
-    public static ShadowTradeJournalEntry BuildAcceptedEntry()
+    public static TradeJournalEntry BuildAcceptedEntry()
     {
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
-            SchemaVersion = ShadowTradeJournal.CurrentSchemaVersion,
+            SchemaVersion = TradeJournal.CurrentSchemaVersion,
             DecisionId = Guid.NewGuid(),
             SessionId = Guid.NewGuid(),
             Source = "IBKR",
@@ -38,7 +38,7 @@ internal static class ShadowTradeJournalEntryTestHelper
                 "ScarcityPass"
             },
             DataQualityFlags = new List<string>(),
-            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot
             {
                 QueueImbalance = 3.1m,
                 BidDepth4Level = 450m,
@@ -68,7 +68,7 @@ internal static class ShadowTradeJournalEntryTestHelper
                 CumulativeVwap = 100.08m,
                 PriceVsVwap = 0.04m,
                 VwapReclaimDetected = true,
-                DepthDelta = new ShadowTradeJournalEntry.DepthDeltaMetrics
+                DepthDelta = new TradeJournalEntry.DepthDeltaMetrics
                 {
                     BidCancelToAddRatio1s = 0.8m,
                     AskCancelToAddRatio1s = 0.7m,
@@ -83,16 +83,16 @@ internal static class ShadowTradeJournalEntryTestHelper
                     BidTotalAddedSize1s = 25m,
                     AskTotalAddedSize1s = 22m
                 },
-                BidsTopN = new List<ShadowTradeJournalEntry.DepthLevelSnapshot>
+                BidsTopN = new List<TradeJournalEntry.DepthLevelSnapshot>
                 {
                     new() { Level = 0, Price = 100.10m, Size = 500m }
                 },
-                AsksTopN = new List<ShadowTradeJournalEntry.DepthLevelSnapshot>
+                AsksTopN = new List<TradeJournalEntry.DepthLevelSnapshot>
                 {
                     new() { Level = 0, Price = 100.12m, Size = 420m }
                 }
             },
-            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot
+            DecisionInputs = new TradeJournalEntry.DecisionInputsSnapshot
             {
                 Score = 82m,
                 VwapBonus = 0.5m,
@@ -112,7 +112,7 @@ internal static class ShadowTradeJournalEntryTestHelper
                 BestBidPrice = 100.10m,
                 BestAskPrice = 100.12m,
                 VwapReclaimDetected = true,
-                DepthDelta = new ShadowTradeJournalEntry.DepthDeltaMetrics
+                DepthDelta = new TradeJournalEntry.DepthDeltaMetrics
                 {
                     BidCancelToAddRatio1s = 0.8m,
                     AskCancelToAddRatio1s = 0.7m,
@@ -131,7 +131,7 @@ internal static class ShadowTradeJournalEntryTestHelper
         };
     }
 
-    public static ShadowTradeJournalEntry BuildRejectedEntry()
+    public static TradeJournalEntry BuildRejectedEntry()
     {
         var entry = BuildAcceptedEntry();
         entry.DecisionOutcome = "Rejected";
@@ -141,11 +141,11 @@ internal static class ShadowTradeJournalEntryTestHelper
         return entry;
     }
 
-    public static ShadowTradeJournalEntry BuildMissingContextRejectionEntry()
+    public static TradeJournalEntry BuildMissingContextRejectionEntry()
     {
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
-            SchemaVersion = ShadowTradeJournal.CurrentSchemaVersion,
+            SchemaVersion = TradeJournal.CurrentSchemaVersion,
             DecisionId = Guid.NewGuid(),
             SessionId = Guid.NewGuid(),
             Source = "IBKR",
@@ -163,7 +163,7 @@ internal static class ShadowTradeJournalEntryTestHelper
         };
     }
 
-    public static async Task<string> WriteEntryAsync(ShadowTradeJournalEntry entry)
+    public static async Task<string> WriteEntryAsync(TradeJournalEntry entry)
     {
         var journalPath = Path.Combine(Path.GetTempPath(), "ramstockalerts-tests", $"{Guid.NewGuid()}.jsonl");
         Directory.CreateDirectory(Path.GetDirectoryName(journalPath)!);
@@ -171,11 +171,11 @@ internal static class ShadowTradeJournalEntryTestHelper
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new[]
             {
-                new KeyValuePair<string, string?>("ShadowTradeJournal:FilePath", journalPath)
+                new KeyValuePair<string, string?>("SignalsJournal:FilePath", journalPath)
             })
             .Build();
 
-        var journal = new ShadowTradeJournal(config, NullLogger<ShadowTradeJournal>.Instance);
+        var journal = new TradeJournal(config, NullLogger<TradeJournal>.Instance);
         await journal.StartAsync(CancellationToken.None);
 
         try
@@ -215,3 +215,5 @@ internal static class ShadowTradeJournalEntryTestHelper
         throw new InvalidOperationException("Journal did not write a line within the timeout.");
     }
 }
+
+

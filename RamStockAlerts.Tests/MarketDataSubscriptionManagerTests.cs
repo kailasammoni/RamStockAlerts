@@ -793,7 +793,7 @@ public class MarketDataSubscriptionManagerTests
                 CancellationToken.None);
         }
 
-        var journal = new TestShadowTradeJournal();
+        var journal = new TestTradeJournal();
         var manager = new MarketDataSubscriptionManager(
             config,
             NullLogger<MarketDataSubscriptionManager>.Instance,
@@ -901,7 +901,7 @@ public class MarketDataSubscriptionManagerTests
                 CancellationToken.None);
         }
 
-        var journal = new TestShadowTradeJournal();
+        var journal = new TestTradeJournal();
         var manager = new MarketDataSubscriptionManager(
             config,
             NullLogger<MarketDataSubscriptionManager>.Instance,

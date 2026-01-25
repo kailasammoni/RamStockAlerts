@@ -1,12 +1,12 @@
 using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Models;
-using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
 
 /// <summary>
-/// Unit tests for tape staleness calculation in ShadowTradingHelpers.GetTapeStatus.
+/// Unit tests for tape staleness calculation in SignalHelpers.GetTapeStatus.
 /// Tests boundary conditions: just-fresh, just-stale, negative age (clock skew).
 /// </summary>
 public class TapeStalenessTests
@@ -20,10 +20,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
         Assert.Equal(1000, status.AgeMs); // 1 second
     }
 
@@ -37,10 +37,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Stale, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Stale, status.Kind);
         Assert.Equal(5001, status.AgeMs);
     }
 
@@ -54,10 +54,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
         Assert.Equal(4999, status.AgeMs);
     }
 
@@ -71,10 +71,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Stale, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Stale, status.Kind);
         Assert.Equal(60000, status.AgeMs);
     }
 
@@ -88,11 +88,11 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
         // Negative age (-1000ms) should not be stale (age > staleWindow check: -1000 > 5000 = false)
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
         Assert.Equal(-1000, status.AgeMs);
     }
 
@@ -108,10 +108,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.NotWarmedUp, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.NotWarmedUp, status.Kind);
     }
 
     [Fact]
@@ -123,10 +123,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 1, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: false, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: false, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.MissingSubscription, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.MissingSubscription, status.Kind);
     }
 
     [Fact]
@@ -143,10 +143,10 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 5, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.NotWarmedUp, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.NotWarmedUp, status.Kind);
         Assert.Equal(2, status.TradesInWarmupWindow);
         Assert.Equal(5, status.WarmupMinTrades);
     }
@@ -168,11 +168,11 @@ public class TapeStalenessTests
         var config = CreateConfig(staleWindowMs: 5000, warmupMinTrades: 3, warmupWindowMs: 10000);
 
         // Act
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Assert
         // Staleness check happens first, so should return Stale even though warmup condition is also failed
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Stale, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Stale, status.Kind);
         Assert.Equal(11000, status.AgeMs); // Age of last trade
     }
 
@@ -186,11 +186,13 @@ public class TapeStalenessTests
         return book;
     }
 
-    private static ShadowTradingHelpers.TapeGateConfig CreateConfig(int staleWindowMs, int warmupMinTrades, int warmupWindowMs)
+    private static SignalHelpers.TapeGateConfig CreateConfig(int staleWindowMs, int warmupMinTrades, int warmupWindowMs)
     {
-        return new ShadowTradingHelpers.TapeGateConfig(
+        return new SignalHelpers.TapeGateConfig(
             StaleWindowMs: staleWindowMs,
             WarmupMinTrades: warmupMinTrades,
             WarmupWindowMs: warmupWindowMs);
     }
 }
+
+

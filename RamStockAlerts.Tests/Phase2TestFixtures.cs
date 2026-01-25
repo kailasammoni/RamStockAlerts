@@ -276,13 +276,13 @@ public static class Phase2TestFixtures
     /// <summary>
     /// Helper: Create a journal entry.
     /// </summary>
-    private static ShadowTradeJournalEntry JournalEntry(
+    private static TradeJournalEntry JournalEntry(
         string symbol,
         string direction,
         string outcome,
         string? rejectionReason = null)
     {
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
@@ -292,8 +292,8 @@ public static class Phase2TestFixtures
             DecisionOutcome = outcome,
             RejectionReason = rejectionReason,
             DecisionTimestampUtc = DateTimeOffset.UtcNow,
-            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot { Score = 75m },
-            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+            DecisionInputs = new TradeJournalEntry.DecisionInputsSnapshot { Score = 75m },
+            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot
             {
                 Spread = 0.05m,
                 QueueImbalance = 1.2m,
@@ -340,7 +340,7 @@ public class Phase2TestData
 {
     public required string Name { get; init; }
     public required string Description { get; init; }
-    public required ShadowTradeJournalEntry[] JournalEntries { get; init; }
+    public required TradeJournalEntry[] JournalEntries { get; init; }
     public required TradeOutcome[] PreviousOutcomes { get; init; }
     public required TradeOutcome[] NewOutcomes { get; init; }
     public ExpectedMetrics? ExpectedMetrics { get; init; }
@@ -414,3 +414,4 @@ public class ExpectedMetrics
             Assert.Contains("unfavorable risk/reward", reportContent);
     }
 }
+

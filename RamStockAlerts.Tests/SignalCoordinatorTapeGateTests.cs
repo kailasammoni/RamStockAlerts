@@ -3,12 +3,13 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Linq;
 using RamStockAlerts.Models;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Tests.Helpers;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
 
-public class ShadowTradingCoordinatorTapeGateTests
+public class SignalCoordinatorTapeGateTests
 {
     private static OrderBookState BuildValidBookNoTrades(string symbol, long nowMs)
     {
@@ -21,12 +22,12 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task TapeMissingSubscription_RejectsWithFlagsAndTrace()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig();
+        var config = SignalCoordinatorTestHelper.BuildConfig();
         var symbol = $"TEST_{Guid.NewGuid():N}";
-            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
-            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+            var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
+        var book = SignalCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
 
         coordinator.ProcessSnapshot(book, nowMs);
@@ -42,10 +43,10 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task TapeNotWarmedUp_RejectsWithFlagsAndTrace()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig();
+        var config = SignalCoordinatorTestHelper.BuildConfig();
         var symbol = $"TEST_{Guid.NewGuid():N}";
-        var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
-        var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+        var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
+        var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = BuildValidBookNoTrades(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -63,16 +64,16 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task GatingRejection_SuppressesSameReasonWithinInterval()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
+        var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
         {
             ["MarketData:GateRejectLogMinIntervalMs"] = "0",
-            ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
+            ["Signals:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = $"TEST_{Guid.NewGuid():N}";
-            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
-            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+            var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
+        var book = SignalCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
 
         coordinator.ProcessSnapshot(book, nowMs);
@@ -86,21 +87,21 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task GatingRejection_LogsWhenReasonChanges()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
+        var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
         {
             ["MarketData:GateRejectLogMinIntervalMs"] = "0",
-            ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
+            ["Signals:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = $"TEST_{Guid.NewGuid():N}";
-            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
-            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+            var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var invalidBook = new OrderBookState(symbol);
 
         coordinator.ProcessSnapshot(invalidBook, nowMs);
 
         // Allow enough time to bypass evaluation throttle (250ms)
-        var validBook = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs + 300);
+        var validBook = SignalCoordinatorTestHelper.BuildValidBook(symbol, nowMs + 300);
         metrics.UpdateMetrics(validBook, nowMs + 300);
         coordinator.ProcessSnapshot(validBook, nowMs + 300);
 
@@ -113,14 +114,14 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task GateReject_NotWarmedUp_WritesOnceWithinInterval()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
+        var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
         {
             ["MarketData:GateRejectLogMinIntervalMs"] = "2000",
-            ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
+            ["Signals:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = $"TEST_{Guid.NewGuid():N}";
-            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
-            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+            var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
+            var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = BuildValidBookNoTrades(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -137,16 +138,16 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task GateReject_NotWarmedUp_EmitsDiagnosticsFlags()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
+        var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
         {
             ["MarketData:TapeWarmupMinTrades"] = "1",
             ["MarketData:TapeWarmupWindowMs"] = "15000",
             ["MarketData:GateRejectLogMinIntervalMs"] = "0",
-            ["ShadowTrading:GatingRejectSuppressionSeconds"] = "5"
+            ["Signals:GatingRejectSuppressionSeconds"] = "5"
         });
         var symbol = $"TEST_{Guid.NewGuid():N}";
-            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
-            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+            var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: true);
+            var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var book = BuildValidBookNoTrades(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
@@ -170,16 +171,16 @@ public class ShadowTradingCoordinatorTapeGateTests
     [Fact]
     public async Task GatingRejection_AllowsNewEntryAfterSuppressionWindow()
     {
-        var config = ShadowTradingCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
+        var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
         {
             ["MarketData:GateRejectLogMinIntervalMs"] = "0",
-            ["ShadowTrading:GatingRejectSuppressionSeconds"] = "0.01"
+            ["Signals:GatingRejectSuppressionSeconds"] = "0.01"
         });
         var symbol = $"TEST_{Guid.NewGuid():N}";
-            var (manager, sharedMetrics) = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
-            var (coordinator, journal, metrics) = ShadowTradingCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
+            var (manager, sharedMetrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(config, symbol, enableTickByTick: false);
+            var (coordinator, journal, metrics) = SignalCoordinatorTestHelper.BuildCoordinator(config, manager, sharedMetrics);
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var book = ShadowTradingCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
+        var book = SignalCoordinatorTestHelper.BuildValidBook(symbol, nowMs);
         metrics.UpdateMetrics(book, nowMs);
 
         coordinator.ProcessSnapshot(book, nowMs);
@@ -193,3 +194,6 @@ public class ShadowTradingCoordinatorTapeGateTests
     }
 
 }
+
+
+

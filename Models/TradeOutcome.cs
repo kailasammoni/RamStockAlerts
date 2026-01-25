@@ -9,7 +9,7 @@ namespace RamStockAlerts.Models;
 public sealed class TradeOutcome
 {
     /// <summary>
-    /// Unique identifier linking this outcome to the accepted ShadowTradeJournalEntry (DecisionId).
+    /// Unique identifier linking this outcome to the accepted TradeJournalEntry (DecisionId).
     /// </summary>
     public Guid DecisionId { get; set; }
 
@@ -87,3 +87,4 @@ public sealed class TradeOutcome
     /// </summary>
     public int SchemaVersion { get; set; } = 1;
 }
+

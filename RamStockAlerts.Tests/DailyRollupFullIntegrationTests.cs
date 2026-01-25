@@ -31,7 +31,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
     public async Task DailyRollup_WithJournalRotation_RotatesAndProcessesNewJournal()
     {
         // Arrange
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
 
         // Create initial journal entry
@@ -50,7 +50,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
         Assert.Equal(0, result);
         
         // Journal should have been rotated
-        var rotatedPath = Path.Combine(_tempDir, $"shadow-trade-journal-{DateTime.UtcNow:yyyyMMdd}.jsonl");
+        var rotatedPath = Path.Combine(_tempDir, $"trade-journal-{DateTime.UtcNow:yyyyMMdd}.jsonl");
         // After rotation and processing, new journal should be empty or not exist
         // (The reporter creates it as empty if rotation occurs)
         Assert.True(!File.Exists(journalPath) || new FileInfo(journalPath).Length == 0 || File.Exists(rotatedPath));
@@ -60,7 +60,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
     public async Task DailyRollup_WithPreviousOutcomes_IncludesThemInMetrics()
     {
         // Arrange
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
 
         // Create previous outcome (from past trades)
@@ -107,7 +107,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
     public async Task DailyRollup_WithOutcomesAndRotation_LoadsAndRotatesCorrectly()
     {
         // Arrange
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
 
         // Create 2 previous outcomes
@@ -174,7 +174,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
     public async Task DailyRollup_WithoutRotationService_StillProcessesJournal()
     {
         // Arrange
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
 
         var entry = CreateJournalEntry(DecisionOutcome: "Accepted");
@@ -192,7 +192,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
         
         // Journal should NOT be rotated (because no rotation service)
         var originalExists = File.Exists(journalPath);
-        var rotatedPath = Path.Combine(_tempDir, $"shadow-trade-journal-{DateTime.UtcNow:yyyyMMdd}.jsonl");
+        var rotatedPath = Path.Combine(_tempDir, $"trade-journal-{DateTime.UtcNow:yyyyMMdd}.jsonl");
         var rotatedExists = File.Exists(rotatedPath);
 
         // Either original exists (not rotated) or rotated exists (but one should be true)
@@ -203,7 +203,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
     public async Task DailyRollup_FullFlow_GeneratesReport()
     {
         // Arrange
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
         var reportPath = Path.Combine(_tempDir, "rollup-report.txt");
 
@@ -245,7 +245,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
         Assert.True(File.Exists(reportPath), "Report file should be written");
         
         var reportContent = await File.ReadAllTextAsync(reportPath);
-        Assert.Contains("Shadow Trade Daily Rollup", reportContent);
+        Assert.Contains("Trade Daily Rollup", reportContent);
         Assert.Contains("Performance Metrics", reportContent);
         Assert.Contains("Total candidates:", reportContent);
     }
@@ -254,7 +254,7 @@ public class DailyRollupFullIntegrationTests : IDisposable
     public async Task DailyRollup_RotatedJournalHandling_CreatesNewJournal()
     {
         // Arrange
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var outcomesPath = Path.Combine(_tempDir, "trade-outcomes.jsonl");
 
         // Create a journal entry
@@ -279,14 +279,14 @@ public class DailyRollupFullIntegrationTests : IDisposable
     }
 
     /// <summary>
-    /// Helper: Create a mock ShadowTradeJournalEntry for testing.
+    /// Helper: Create a mock TradeJournalEntry for testing.
     /// </summary>
-    private static ShadowTradeJournalEntry CreateJournalEntry(
+    private static TradeJournalEntry CreateJournalEntry(
         string Symbol = "TEST",
         string DecisionOutcome = "Accepted",
         string? RejectionReason = null)
     {
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
@@ -296,8 +296,8 @@ public class DailyRollupFullIntegrationTests : IDisposable
             DecisionOutcome = DecisionOutcome,
             RejectionReason = RejectionReason,
             DecisionTimestampUtc = DateTimeOffset.UtcNow,
-            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot { Score = 75m },
-            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot 
+            DecisionInputs = new TradeJournalEntry.DecisionInputsSnapshot { Score = 75m },
+            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot 
             { 
                 Spread = 0.05m,
                 QueueImbalance = 1.2m,
@@ -306,3 +306,6 @@ public class DailyRollupFullIntegrationTests : IDisposable
         };
     }
 }
+
+
+

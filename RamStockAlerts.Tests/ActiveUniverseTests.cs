@@ -7,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Services.Universe;
 using RamStockAlerts.Tests.TestDoubles;
 using Xunit;
@@ -21,7 +22,7 @@ namespace RamStockAlerts.Tests;
 /// 1) Tape subscription is enabled (MarketDataSubscriptionManager.IsTapeEnabled(symbol) == true)
 /// 2) Depth subscription is enabled/active for symbol
 /// 3) Tick-by-tick subscription is enabled/active for symbol
-/// 4) Tape activity gate is satisfied (ShadowTradingHelpers.GetTapeStatus(...).Kind == Ready)
+/// 4) Tape activity gate is satisfied (SignalHelpers.GetTapeStatus(...).Kind == Ready)
 ///    Note: Tape status check is done at evaluation time by strategy, not by MarketDataSubscriptionManager
 /// 
 /// Constraints:
@@ -290,3 +291,5 @@ public class ActiveUniverseTests
             metrics);
     }
 }
+
+

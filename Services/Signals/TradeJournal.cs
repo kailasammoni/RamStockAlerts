@@ -25,8 +25,14 @@ public sealed class TradeJournal : BackgroundService, ITradeJournal
         _logger = logger;
         _channel = Channel.CreateUnbounded<TradeJournalEntry>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
-        _filePath = configuration.GetValue<string>("SignalsJournal:FilePath")
-                    ?? Path.Combine("logs", "trade-journal.jsonl");
+        var resolved = ResolveJournalPath(configuration);
+        _filePath = resolved.FilePath;
+        if (resolved.LegacyKey != null)
+        {
+            _logger.LogWarning(
+                "[Journal] Deprecated config key {Key} used; migrate to SignalsJournal:FilePath.",
+                resolved.LegacyKey);
+        }
     }
 
     public Guid SessionId => _sessionId;
@@ -121,5 +127,28 @@ public sealed class TradeJournal : BackgroundService, ITradeJournal
         {
             entry.JournalWriteTimestampUtc = floor;
         }
+    }
+
+    private static (string FilePath, string? LegacyKey) ResolveJournalPath(IConfiguration configuration)
+    {
+        var path = configuration.GetValue<string>("SignalsJournal:FilePath");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            return (path, null);
+        }
+
+        path = configuration.GetValue<string>("TradeJournal:FilePath");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            return (path, "TradeJournal:FilePath");
+        }
+
+        path = configuration.GetValue<string>("ShadowTradeJournal:FilePath");
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            return (path, "ShadowTradeJournal:FilePath");
+        }
+
+        return (Path.Combine("logs", "trade-journal.jsonl"), null);
     }
 }

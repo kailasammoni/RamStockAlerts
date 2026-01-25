@@ -1,19 +1,20 @@
 using System;
 using System.Collections.Generic;
 using RamStockAlerts.Models;
-using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 
 namespace RamStockAlerts.Tests.TestDoubles;
 
-internal sealed class TestShadowTradeJournal : IShadowTradeJournal
+internal sealed class TestTradeJournal : ITradeJournal
 {
     public Guid SessionId { get; } = Guid.NewGuid();
 
-    public List<ShadowTradeJournalEntry> Entries { get; } = new();
+    public List<TradeJournalEntry> Entries { get; } = new();
 
-    public bool TryEnqueue(ShadowTradeJournalEntry entry)
+    public bool TryEnqueue(TradeJournalEntry entry)
     {
         Entries.Add(entry);
         return true;
     }
 }
+

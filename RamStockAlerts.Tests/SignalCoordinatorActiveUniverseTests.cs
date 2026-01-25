@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Services.Universe;
 using RamStockAlerts.Tests.TestDoubles;
 using Xunit;
@@ -12,10 +13,10 @@ using Xunit;
 namespace RamStockAlerts.Tests;
 
 /// <summary>
-/// Unit tests for ActiveUniverse gating in ShadowTradingCoordinator.
+/// Unit tests for ActiveUniverse gating in SignalCoordinator.
 /// Verifies that symbols not in ActiveUniverse are skipped early and do not produce gate rejections.
 /// </summary>
-public class ShadowTradingCoordinatorActiveUniverseTests
+public class SignalCoordinatorActiveUniverseTests
 {
     [Fact]
     public void ProcessSnapshot_WithInactiveSymbol_SkipsEvaluation()
@@ -130,7 +131,7 @@ public class ShadowTradingCoordinatorActiveUniverseTests
         Assert.NotEmpty(journal.Entries);
     }
 
-    private static (ShadowTradingCoordinator coordinator, MarketDataSubscriptionManager subscriptionManager, FakeJournal journal) 
+    private static (SignalCoordinator coordinator, MarketDataSubscriptionManager subscriptionManager, FakeJournal journal) 
         CreateCoordinator()
     {
         var config = new ConfigurationBuilder()
@@ -174,14 +175,14 @@ public class ShadowTradingCoordinatorActiveUniverseTests
             eligibilityCache,
             metrics);
 
-        var coordinator = new ShadowTradingCoordinator(
+        var coordinator = new SignalCoordinator(
             config,
             metrics,
             validator,
             journal,
             scarcityController,
             subscriptionManager,
-            NullLogger<ShadowTradingCoordinator>.Instance);
+            NullLogger<SignalCoordinator>.Instance);
 
         return (coordinator, subscriptionManager, journal);
     }
@@ -198,15 +199,16 @@ public class ShadowTradingCoordinatorActiveUniverseTests
     /// <summary>
     /// Fake journal implementation for testing that tracks entries in memory
     /// </summary>
-    private class FakeJournal : IShadowTradeJournal
+    private class FakeJournal : ITradeJournal
     {
         public Guid SessionId { get; } = Guid.NewGuid();
-        public List<ShadowTradeJournalEntry> Entries { get; } = new();
+        public List<TradeJournalEntry> Entries { get; } = new();
 
-        public bool TryEnqueue(ShadowTradeJournalEntry entry)
+        public bool TryEnqueue(TradeJournalEntry entry)
         {
             Entries.Add(entry);
             return true;
         }
     }
 }
+

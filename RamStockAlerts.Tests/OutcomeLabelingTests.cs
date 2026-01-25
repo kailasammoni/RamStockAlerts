@@ -195,7 +195,7 @@ public class OutcomeLabelingTests
     public async Task LabelOutcomes_BatchProcessing()
     {
         // Arrange
-        var entries = new List<ShadowTradeJournalEntry>
+        var entries = new List<TradeJournalEntry>
         {
             CreateJournalEntry("AAPL", "Long", 100m, 95m, 110m),
             CreateJournalEntry("TSLA", "Long", 200m, 190m, 220m),
@@ -223,7 +223,7 @@ public class OutcomeLabelingTests
     public async Task LabelOutcomes_PartialExitData()
     {
         // Arrange
-        var entries = new List<ShadowTradeJournalEntry>
+        var entries = new List<TradeJournalEntry>
         {
             CreateJournalEntry("AAPL", "Long", 100m, 95m, 110m),
             CreateJournalEntry("TSLA", "Long", 200m, 190m, 220m)
@@ -244,20 +244,20 @@ public class OutcomeLabelingTests
         Assert.Equal("NoExit", outcomes[1].OutcomeType);
     }
 
-    private static ShadowTradeJournalEntry CreateJournalEntry(
+    private static TradeJournalEntry CreateJournalEntry(
         string symbol,
         string direction,
         decimal entry,
         decimal stop,
         decimal target)
     {
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
             DecisionId = Guid.NewGuid(),
             Symbol = symbol,
             Direction = direction,
             DecisionTimestampUtc = DateTimeOffset.UtcNow,
-            Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+            Blueprint = new TradeJournalEntry.BlueprintPlan
             {
                 Entry = entry,
                 Stop = stop,
@@ -454,3 +454,4 @@ public class OutcomeSummaryStoreTests : IDisposable
         };
     }
 }
+

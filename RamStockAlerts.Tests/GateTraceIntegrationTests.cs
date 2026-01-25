@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Tests.Helpers;
 using Xunit;
 
@@ -20,7 +21,7 @@ public class GateTraceIntegrationTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ShadowTradeJournal:EmitGateTrace"] = "true",
+                ["SignalsJournal:EmitGateTrace"] = "true",
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",
                 ["MarketData:TapeWarmupWindowMs"] = "10000",
@@ -31,22 +32,22 @@ public class GateTraceIntegrationTests
         var journal = new InMemoryJournal();
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
-        var scarcityController = ShadowTradingCoordinatorTestHelper.CreateScarcityController();
+        var scarcityController = SignalCoordinatorTestHelper.CreateScarcityController();
         
         // Create subscription manager with AAPL subscribed (tape + depth + tick-by-tick)
-        var subscriptionManager = await ShadowTradingCoordinatorTestHelper.CreateSubscriptionManagerAsync(
+        var subscriptionManager = await SignalCoordinatorTestHelper.CreateSubscriptionManagerAsync(
             config,
             "AAPL",
             enableTickByTick: true);
 
-        var coordinator = new ShadowTradingCoordinator(
+        var coordinator = new SignalCoordinator(
             config,
             metrics,
             validator,
             journal,
             scarcityController,
             subscriptionManager,
-            NullLogger<ShadowTradingCoordinator>.Instance);
+            NullLogger<SignalCoordinator>.Instance);
 
         // Create book with insufficient warmup trades (3 out of 5 required)
         var book = new OrderBookState("AAPL") { MaxDepthRows = 10 };
@@ -94,7 +95,7 @@ public class GateTraceIntegrationTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ShadowTradeJournal:EmitGateTrace"] = "false", // Disabled
+                ["SignalsJournal:EmitGateTrace"] = "false", // Disabled
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",
                 ["MarketData:TapeWarmupWindowMs"] = "10000"
@@ -104,17 +105,17 @@ public class GateTraceIntegrationTests
         var journal = new InMemoryJournal();
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
-        var scarcityController = ShadowTradingCoordinatorTestHelper.CreateScarcityController();
-        var subscriptionManager = ShadowTradingCoordinatorTestHelper.CreateSubscriptionManager();
+        var scarcityController = SignalCoordinatorTestHelper.CreateScarcityController();
+        var subscriptionManager = SignalCoordinatorTestHelper.CreateSubscriptionManager();
 
-        var coordinator = new ShadowTradingCoordinator(
+        var coordinator = new SignalCoordinator(
             config,
             metrics,
             validator,
             journal,
             scarcityController,
             subscriptionManager,
-            NullLogger<ShadowTradingCoordinator>.Instance);
+            NullLogger<SignalCoordinator>.Instance);
 
         var book = new OrderBookState("AAPL") { MaxDepthRows = 10 };
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -145,7 +146,7 @@ public class GateTraceIntegrationTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ShadowTradeJournal:EmitGateTrace"] = "true",
+                ["SignalsJournal:EmitGateTrace"] = "true",
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",
                 ["MarketData:TapeWarmupWindowMs"] = "10000"
@@ -155,19 +156,19 @@ public class GateTraceIntegrationTests
         var journal = new InMemoryJournal();
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
-        var scarcityController = ShadowTradingCoordinatorTestHelper.CreateScarcityController();
+        var scarcityController = SignalCoordinatorTestHelper.CreateScarcityController();
         
         // Create subscription manager with depth disabled
-        var subscriptionManager = ShadowTradingCoordinatorTestHelper.CreateSubscriptionManager(depthEnabled: false);
+        var subscriptionManager = SignalCoordinatorTestHelper.CreateSubscriptionManager(depthEnabled: false);
 
-        var coordinator = new ShadowTradingCoordinator(
+        var coordinator = new SignalCoordinator(
             config,
             metrics,
             validator,
             journal,
             scarcityController,
             subscriptionManager,
-            NullLogger<ShadowTradingCoordinator>.Instance);
+            NullLogger<SignalCoordinator>.Instance);
 
         var book = new OrderBookState("AAPL") { MaxDepthRows = 10 };
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -197,18 +198,20 @@ public class GateTraceIntegrationTests
         }
     }
 
-    private class InMemoryJournal : IShadowTradeJournal
+    private class InMemoryJournal : ITradeJournal
     {
-        private readonly List<ShadowTradeJournalEntry> _entries = new();
+        private readonly List<TradeJournalEntry> _entries = new();
 
         public Guid SessionId { get; } = Guid.NewGuid();
 
-        public bool TryEnqueue(ShadowTradeJournalEntry entry)
+        public bool TryEnqueue(TradeJournalEntry entry)
         {
             _entries.Add(entry);
             return true;
         }
 
-        public List<ShadowTradeJournalEntry> GetEntries() => _entries;
+        public List<TradeJournalEntry> GetEntries() => _entries;
     }
 }
+
+

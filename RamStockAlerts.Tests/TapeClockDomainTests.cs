@@ -2,7 +2,7 @@ using System;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Models;
-using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using Xunit;
 
 namespace RamStockAlerts.Tests;
@@ -30,15 +30,15 @@ public sealed class TapeClockDomainTests
             book.RecordTrade(eventMs, recvMs, 100.0 + i * 0.01, 10m);
         }
 
-        var config = new ShadowTradingHelpers.TapeGateConfig(
+        var config = new SignalHelpers.TapeGateConfig(
             WarmupMinTrades: 1,
             WarmupWindowMs: 15_000,
             StaleWindowMs: 30_000);
 
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Key assertion: Should be Ready because receipt time is current
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
         Assert.True(status.AgeMs < 1500, $"Expected age < 1500ms, got {status.AgeMs}ms");
     }
 
@@ -54,14 +54,14 @@ public sealed class TapeClockDomainTests
 
         book.RecordTrade((long)eventMs, recvMs, 150.25, 5m);
 
-        var config = new ShadowTradingHelpers.TapeGateConfig(
+        var config = new SignalHelpers.TapeGateConfig(
             WarmupMinTrades: 1,
             WarmupWindowMs: 15_000,
             StaleWindowMs: 30_000);
 
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
         Assert.Equal(0, status.AgeMs);
     }
 
@@ -78,15 +78,15 @@ public sealed class TapeClockDomainTests
         var recvMs = nowMs - 45_000; // Receipt time is also old
         book.RecordTrade(eventMs, recvMs, 100.0, 10m);
 
-        var config = new ShadowTradingHelpers.TapeGateConfig(
+        var config = new SignalHelpers.TapeGateConfig(
             WarmupMinTrades: 1,
             WarmupWindowMs: 15_000,
             StaleWindowMs: 30_000);
 
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Key assertion: Should be Stale because receipt time is >30s old
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Stale, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Stale, status.Kind);
         Assert.True(status.AgeMs > 30_000, $"Expected age > 30s, got {status.AgeMs}ms");
     }
 
@@ -106,16 +106,16 @@ public sealed class TapeClockDomainTests
             book.RecordTrade(eventMs, recvMs, 200.0 + i * 0.1, 10m);
         }
 
-        var config = new ShadowTradingHelpers.TapeGateConfig(
+        var config = new SignalHelpers.TapeGateConfig(
             WarmupMinTrades: 5,
             WarmupWindowMs: 15_000,
             StaleWindowMs: 30_000);
 
-        var status = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
+        var status = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, config);
 
         // Key assertion: Warmup passes because we have 5 trades (counting by receipt time in window)
         Assert.True(status.TradesInWarmupWindow >= 5, $"Expected >= 5 trades, got {status.TradesInWarmupWindow}");
-        Assert.Equal(ShadowTradingHelpers.TapeStatusKind.Ready, status.Kind);
+        Assert.Equal(SignalHelpers.TapeStatusKind.Ready, status.Kind);
     }
 
     [Fact]
@@ -156,3 +156,5 @@ public sealed class TapeClockDomainTests
         Assert.Equal(nowMs + 1000, book.LastTapeRecvMs);
     }
 }
+
+

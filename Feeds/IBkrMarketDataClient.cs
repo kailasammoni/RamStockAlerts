@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Models;
 using RamStockAlerts.Services;
+using RamStockAlerts.Services.Signals;
 using RamStockAlerts.Universe;
 using System.Collections.Concurrent;
 using RamStockAlerts.Services.Universe;
@@ -29,7 +30,7 @@ public class IBkrMarketDataClient : BackgroundService
     private readonly UniverseService _universeService;
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly OrderFlowMetrics _metrics;
-    private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
+    private readonly SignalCoordinator _signalCoordinator;
     private readonly PreviewSignalEmitter _previewSignalEmitter;
     private readonly ContractClassificationService _classificationService;
     private readonly DepthEligibilityCache _depthEligibilityCache;
@@ -75,7 +76,7 @@ public class IBkrMarketDataClient : BackgroundService
         UniverseService universeService,
         MarketDataSubscriptionManager subscriptionManager,
         OrderFlowMetrics metrics,
-        ShadowTradingCoordinator shadowTradingCoordinator,
+        SignalCoordinator signalCoordinator,
         PreviewSignalEmitter previewSignalEmitter,
         ContractClassificationService classificationService,
         DepthEligibilityCache depthEligibilityCache,
@@ -86,7 +87,7 @@ public class IBkrMarketDataClient : BackgroundService
         _universeService = universeService;
         _subscriptionManager = subscriptionManager;
         _metrics = metrics;
-        _shadowTradingCoordinator = shadowTradingCoordinator;
+        _signalCoordinator = signalCoordinator;
         _previewSignalEmitter = previewSignalEmitter;
         _classificationService = classificationService;
         _depthEligibilityCache = depthEligibilityCache;
@@ -111,7 +112,7 @@ public class IBkrMarketDataClient : BackgroundService
                 _tickerIdMap,
                 _orderBooks,
                 _metrics,
-                _shadowTradingCoordinator,
+                _signalCoordinator,
                 _previewSignalEmitter,
                 IsTickByTickActive,
                 _subscriptionManager.RecordActivity,
@@ -907,7 +908,7 @@ public class IBkrMarketDataClient : BackgroundService
                         _tickerIdMap,
                         _orderBooks,
                         _metrics,
-                        _shadowTradingCoordinator,
+                        _signalCoordinator,
                         _previewSignalEmitter,
                         IsTickByTickActive,
                         _subscriptionManager.RecordActivity,
@@ -1612,7 +1613,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
     private readonly ConcurrentDictionary<int, string> _tickerIdMap;
     private readonly ConcurrentDictionary<string, OrderBookState> _orderBooks;
     private readonly OrderFlowMetrics _metrics;
-    private readonly ShadowTradingCoordinator _shadowTradingCoordinator;
+    private readonly SignalCoordinator _signalCoordinator;
     private readonly PreviewSignalEmitter _previewSignalEmitter;
     private readonly Func<string, bool> _isTickByTickActive;
     private readonly Action<string>? _recordActivity;
@@ -1628,7 +1629,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
         ConcurrentDictionary<int, string> tickerIdMap,
         ConcurrentDictionary<string, OrderBookState> orderBooks,
         OrderFlowMetrics metrics,
-        ShadowTradingCoordinator shadowTradingCoordinator,
+        SignalCoordinator signalCoordinator,
         PreviewSignalEmitter previewSignalEmitter,
         Func<string, bool> isTickByTickActive,
         Action<string>? recordActivity,
@@ -1641,7 +1642,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
         _tickerIdMap = tickerIdMap;
         _orderBooks = orderBooks;
         _metrics = metrics;
-        _shadowTradingCoordinator = shadowTradingCoordinator;
+        _signalCoordinator = signalCoordinator;
         _previewSignalEmitter = previewSignalEmitter;
         _isTickByTickActive = isTickByTickActive;
         _recordActivity = recordActivity;
@@ -1712,7 +1713,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
             if (book.IsBookValid(out var validityReason, nowMs))
             {
                 _metrics.UpdateMetrics(book, nowMs);
-                _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
+                _signalCoordinator.ProcessSnapshot(book, nowMs);
                 _ = _previewSignalEmitter.ProcessSnapshotAsync(book, nowMs);
             }
             else
@@ -1762,7 +1763,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
             if (book.IsBookValid(out var validityReason, nowMs))
             {
                 _metrics.UpdateMetrics(book, nowMs);
-                _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
+                _signalCoordinator.ProcessSnapshot(book, nowMs);
                 _ = _previewSignalEmitter.ProcessSnapshotAsync(book, nowMs);
             }
             else
@@ -1800,7 +1801,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
             if (book.IsBookValid(out var validityReason, recvMs))
             {
                 _metrics.UpdateMetrics(book, recvMs);
-                _shadowTradingCoordinator.ProcessSnapshot(book, recvMs);
+                _signalCoordinator.ProcessSnapshot(book, recvMs);
                 _ = _previewSignalEmitter.ProcessSnapshotAsync(book, recvMs);
             }
             else
@@ -1850,7 +1851,7 @@ internal class IBkrWrapperImpl : DefaultEWrapper
         if (book.IsBookValid(out var validityReason, nowMs))
         {
             _metrics.UpdateMetrics(book, nowMs);
-            _shadowTradingCoordinator.ProcessSnapshot(book, nowMs);
+            _signalCoordinator.ProcessSnapshot(book, nowMs);
             _ = _previewSignalEmitter.ProcessSnapshotAsync(book, nowMs);
         }
         else
@@ -1997,3 +1998,4 @@ internal class IBkrWrapperImpl : DefaultEWrapper
     }
 
 }
+

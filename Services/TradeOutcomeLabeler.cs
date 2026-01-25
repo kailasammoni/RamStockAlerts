@@ -15,7 +15,7 @@ public interface ITradeOutcomeLabeler
     /// <param name="exitTime">The time of exit (UTC).</param>
     /// <returns>Labeled TradeOutcome with risk multiple, P&L, win flag, etc.</returns>
     Task<TradeOutcome> LabelOutcomeAsync(
-        ShadowTradeJournalEntry journalEntry,
+        TradeJournalEntry journalEntry,
         decimal? exitPrice,
         DateTimeOffset? exitTime,
         CancellationToken cancellationToken = default);
@@ -24,7 +24,7 @@ public interface ITradeOutcomeLabeler
     /// Batch label outcomes for multiple accepted entries.
     /// </summary>
     Task<List<TradeOutcome>> LabelOutcomesAsync(
-        List<ShadowTradeJournalEntry> acceptedEntries,
+        List<TradeJournalEntry> acceptedEntries,
         Dictionary<Guid, (decimal exitPrice, DateTimeOffset exitTime)>? exitData = null,
         CancellationToken cancellationToken = default);
 }
@@ -38,7 +38,7 @@ public sealed class TradeOutcomeLabeler : ITradeOutcomeLabeler
     private readonly Serilog.ILogger _logger = Serilog.Log.ForContext<TradeOutcomeLabeler>();
 
     public async Task<TradeOutcome> LabelOutcomeAsync(
-        ShadowTradeJournalEntry journalEntry,
+        TradeJournalEntry journalEntry,
         decimal? exitPrice,
         DateTimeOffset? exitTime,
         CancellationToken cancellationToken = default)
@@ -125,7 +125,7 @@ public sealed class TradeOutcomeLabeler : ITradeOutcomeLabeler
     }
 
     public async Task<List<TradeOutcome>> LabelOutcomesAsync(
-        List<ShadowTradeJournalEntry> acceptedEntries,
+        List<TradeJournalEntry> acceptedEntries,
         Dictionary<Guid, (decimal exitPrice, DateTimeOffset exitTime)>? exitData = null,
         CancellationToken cancellationToken = default)
     {
@@ -182,3 +182,4 @@ public sealed class TradeOutcomeLabeler : ITradeOutcomeLabeler
             : pnl < 0;
     }
 }
+

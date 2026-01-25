@@ -66,14 +66,14 @@ public class MvpScopeDisciplineTests
     [Fact]
     public void DefaultConfiguration_EnablesJournaling()
     {
-        // Validates that shadow trade journal is configured
+        // Validates that Trade journal is configured
         // Journaling is the primary "UI" for MVP
         var config = BuildDefaultConfiguration();
         
-        var journalPath = config.GetValue("ShadowTradeJournal:FilePath", "");
+        var journalPath = config.GetValue("SignalsJournal:FilePath", "");
         
         Assert.NotEmpty(journalPath);
-        Assert.Contains("shadow-trade-journal", journalPath);
+        Assert.Contains("trade-journal", journalPath);
     }
 
     [Fact]
@@ -109,7 +109,7 @@ public class MvpScopeDisciplineTests
     {
         // Documents that MVP UI is:
         // 1. Serilog console + file logs
-        // 2. Shadow trade journal (JSONL)
+        // 2. Trade journal (JSONL)
         // 3. Daily rollup report (opt-in)
         // No web UI, no real-time dashboards
         
@@ -117,7 +117,7 @@ public class MvpScopeDisciplineTests
         {
             "Serilog console logs",
             "Serilog file logs (logs/ramstockalerts-*.txt)",
-            "Shadow trade journal (logs/shadow-trade-journal.jsonl)",
+            "Trade journal (logs/trade-journal.jsonl)",
             "Daily rollup report (MODE=report)",
             "UniverseUpdate journal entries"
         };
@@ -256,7 +256,7 @@ public class MvpScopeDisciplineTests
             ["Discord:WebhookUrl"] = "",
             ["Twilio:AccountSid"] = "",
             ["Email:Username"] = "",
-            ["ShadowTradeJournal:FilePath"] = "logs/shadow-trade-journal.jsonl",
+            ["SignalsJournal:FilePath"] = "logs/trade-journal.jsonl",
             ["Report:DailyRollup"] = "false"
         };
 
@@ -265,3 +265,6 @@ public class MvpScopeDisciplineTests
             .Build();
     }
 }
+
+
+

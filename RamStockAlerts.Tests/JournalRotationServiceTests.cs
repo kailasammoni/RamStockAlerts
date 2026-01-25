@@ -4,7 +4,7 @@ using Xunit;
 namespace RamStockAlerts.Tests;
 
 /// <summary>
-/// Phase 2.3: Test journal rotation service for archiving shadow trade journals.
+/// Phase 2.3: Test journal rotation service for archiving trade journals.
 /// </summary>
 public class JournalRotationServiceTests : IDisposable
 {
@@ -29,7 +29,7 @@ public class JournalRotationServiceTests : IDisposable
     {
         // Arrange
         var service = new FileBasedJournalRotationService();
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var testContent = "line1\nline2\nline3\n";
         await File.WriteAllTextAsync(journalPath, testContent);
 
@@ -42,7 +42,7 @@ public class JournalRotationServiceTests : IDisposable
         Assert.True(result, "Rotation should succeed");
         Assert.False(File.Exists(journalPath), "Original journal should be moved");
 
-        var rotatedPath = Path.Combine(_tempDir, "shadow-trade-journal-20260115.jsonl");
+        var rotatedPath = Path.Combine(_tempDir, "trade-journal-20260115.jsonl");
         Assert.True(File.Exists(rotatedPath), "Rotated journal should exist");
 
         var rotatedContent = await File.ReadAllTextAsync(rotatedPath);
@@ -87,8 +87,8 @@ public class JournalRotationServiceTests : IDisposable
     {
         // Arrange
         var service = new FileBasedJournalRotationService();
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
-        var rotatedPath = Path.Combine(_tempDir, "shadow-trade-journal-20260115.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
+        var rotatedPath = Path.Combine(_tempDir, "trade-journal-20260115.jsonl");
 
         var journalContent = "line1\nline2\n";
         var existingRotatedContent = "existing1\nexisting2\n";
@@ -115,7 +115,7 @@ public class JournalRotationServiceTests : IDisposable
     {
         // Arrange
         var service = new FileBasedJournalRotationService();
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         var testContent = "test content\n";
         await File.WriteAllTextAsync(journalPath, testContent);
 
@@ -140,7 +140,7 @@ public class JournalRotationServiceTests : IDisposable
         bool foundRotated = false;
         foreach (var date in possibleDates)
         {
-            var rotatedPath = Path.Combine(_tempDir, $"shadow-trade-journal-{date:yyyyMMdd}.jsonl");
+            var rotatedPath = Path.Combine(_tempDir, $"trade-journal-{date:yyyyMMdd}.jsonl");
             if (File.Exists(rotatedPath))
             {
                 foundRotated = true;
@@ -158,7 +158,7 @@ public class JournalRotationServiceTests : IDisposable
     {
         // Arrange
         var service = new FileBasedJournalRotationService();
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
 
         // Create a large journal (100 lines)
         var lines = Enumerable.Range(1, 100).Select(i => $"{{\"line\":{i}}}");
@@ -173,7 +173,7 @@ public class JournalRotationServiceTests : IDisposable
         // Assert
         Assert.True(result, "Rotation should succeed for large journal");
 
-        var rotatedPath = Path.Combine(_tempDir, "shadow-trade-journal-20260115.jsonl");
+        var rotatedPath = Path.Combine(_tempDir, "trade-journal-20260115.jsonl");
         var rotatedContent = await File.ReadAllTextAsync(rotatedPath);
         Assert.True(testContent == rotatedContent, "All content should be preserved");
     }
@@ -183,7 +183,7 @@ public class JournalRotationServiceTests : IDisposable
     {
         // Arrange
         var service = new FileBasedJournalRotationService();
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
 
         // First rotation (Day 1)
         await File.WriteAllTextAsync(journalPath, "day1-content\n");
@@ -199,8 +199,8 @@ public class JournalRotationServiceTests : IDisposable
         Assert.True(result1, "First rotation should succeed");
         Assert.True(result2, "Second rotation should succeed");
 
-        var rotated1 = Path.Combine(_tempDir, "shadow-trade-journal-20260115.jsonl");
-        var rotated2 = Path.Combine(_tempDir, "shadow-trade-journal-20260116.jsonl");
+        var rotated1 = Path.Combine(_tempDir, "trade-journal-20260115.jsonl");
+        var rotated2 = Path.Combine(_tempDir, "trade-journal-20260116.jsonl");
 
         Assert.True(File.Exists(rotated1), "First rotated file should exist");
         Assert.True(File.Exists(rotated2), "Second rotated file should exist");
@@ -217,7 +217,7 @@ public class JournalRotationServiceTests : IDisposable
     {
         // Arrange
         var service = new FileBasedJournalRotationService();
-        var journalPath = Path.Combine(_tempDir, "shadow-trade-journal.jsonl");
+        var journalPath = Path.Combine(_tempDir, "trade-journal.jsonl");
         await File.WriteAllTextAsync(journalPath, "test\n");
 
         var cts = new CancellationTokenSource();
@@ -254,3 +254,4 @@ public class JournalRotationServiceTests : IDisposable
         Assert.False(result, "Rotation should return false for empty path");
     }
 }
+
