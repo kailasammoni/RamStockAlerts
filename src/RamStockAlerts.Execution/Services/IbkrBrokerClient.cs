@@ -488,12 +488,12 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             _logger.LogDebug(
                 "[IBKR] commission execId={ExecId} commission={Commission} realizedPnl={Pnl}",
                 commissionAndFeesReport.ExecId,
-                commissionAndFeesReport.Commission,
+                commissionAndFeesReport.CommissionAndFees,
                 commissionAndFeesReport.RealizedPNL);
 
             _orderTracker?.ProcessCommissionReport(
                 commissionAndFeesReport.ExecId,
-                (decimal?)commissionAndFeesReport.Commission,
+                (decimal?)commissionAndFeesReport.CommissionAndFees,
                 (decimal?)commissionAndFeesReport.RealizedPNL);
         }
 
