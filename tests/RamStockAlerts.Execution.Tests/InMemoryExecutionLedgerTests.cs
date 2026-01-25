@@ -24,6 +24,23 @@ public class InMemoryExecutionLedgerTests
     }
 
     [Fact]
+    public void GetSubmittedIntentCountToday_IncludesAccepted()
+    {
+        var ledger = new InMemoryExecutionLedger();
+        var intent = CreateIntent();
+
+        ledger.RecordIntent(intent);
+        ledger.RecordResult(intent.IntentId, new ExecutionResult
+        {
+            IntentId = intent.IntentId,
+            Status = ExecutionStatus.Accepted,
+            TimestampUtc = DateTimeOffset.UtcNow
+        });
+
+        Assert.Equal(1, ledger.GetSubmittedIntentCountToday(DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
     public void GetOpenBracketCount_TracksLifecycle()
     {
         var ledger = new InMemoryExecutionLedger();
