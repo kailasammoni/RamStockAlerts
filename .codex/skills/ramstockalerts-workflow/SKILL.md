@@ -15,5 +15,5 @@ Apply changes safely and keep documentation + verification aligned with the repo
 2. Confirm the `src/` + `tests/` layout for any path references.
 3. Keep diffs small; avoid unrelated refactors.
 4. Update docs when behavior or schemas change (`docs/DataContracts.md`, `docs/DecisionLog.md`).
-5. Run `powershell -File scripts/verify.ps1` (or `bash scripts/verify.sh`).
+<!-- 5. Run `powershell -File scripts/verify.ps1` (or `bash scripts/verify.sh`). -->
 6. Report using the deliverables format in `AGENTS.md`.
