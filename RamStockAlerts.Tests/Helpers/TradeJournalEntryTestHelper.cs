@@ -24,7 +24,7 @@ internal static class ShadowTradeJournalEntryTestHelper
             EntryType = "Signal",
             MarketTimestampUtc = DateTimeOffset.UtcNow.AddSeconds(-1),
             DecisionTimestampUtc = DateTimeOffset.UtcNow,
-            TradingMode = "Shadow",
+            TradingMode = "Signals",
             Symbol = "TEST",
             Direction = "BUY",
             DecisionOutcome = "Accepted",
@@ -152,7 +152,7 @@ internal static class ShadowTradeJournalEntryTestHelper
             EntryType = "Rejection",
             MarketTimestampUtc = DateTimeOffset.UtcNow,
             DecisionTimestampUtc = DateTimeOffset.UtcNow,
-            TradingMode = "Shadow",
+            TradingMode = "Signals",
             Symbol = "TEST",
             DecisionOutcome = "Rejected",
             RejectionReason = "MissingBookContext",
@@ -171,7 +171,6 @@ internal static class ShadowTradeJournalEntryTestHelper
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new[]
             {
-                new KeyValuePair<string, string?>("TradingMode", "Shadow"),
                 new KeyValuePair<string, string?>("ShadowTradeJournal:FilePath", journalPath)
             })
             .Build();

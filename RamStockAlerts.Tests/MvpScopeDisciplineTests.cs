@@ -9,7 +9,7 @@ namespace RamStockAlerts.Tests;
 /// Phase 5: MVP Scope Discipline Tests
 /// Validates that the system enforces MVP scope boundaries by default:
 /// - IBKR only (no Alpaca/Polygon)
-/// - No alerting system (shadow mode)
+/// - No auto-execution by default
 /// - Execution disabled by default
 /// - No new UI beyond logs and daily rollup
 /// </summary>
@@ -40,15 +40,14 @@ public class MvpScopeDisciplineTests
     }
 
     [Fact]
-    public void DefaultConfiguration_UsesShadowMode()
+    public void DefaultConfiguration_DoesNotRequireTradingMode()
     {
-        // Validates that trading mode defaults to Shadow (no live orders)
-        // This ensures all decisions are journaled without execution
+        // TradingMode is no longer required for signaling
         var config = BuildDefaultConfiguration();
         
-        var tradingMode = config.GetValue("TradingMode", "Live");
+        var tradingMode = config.GetValue<string?>("TradingMode", null);
         
-        Assert.Equal("Shadow", tradingMode);
+        Assert.True(string.IsNullOrWhiteSpace(tradingMode));
     }
 
     [Fact]
@@ -160,15 +159,14 @@ public class MvpScopeDisciplineTests
     }
 
     [Fact]
-    public void MvpScope_ShadowModeIsDefault()
+    public void MvpScope_LiveExecutionDisabledByDefault()
     {
-        // Validates that TradingMode defaults to Shadow
-        // Shadow mode = journal all decisions but don't execute
+        // Live execution must be explicitly enabled
         var config = BuildDefaultConfiguration();
         
-        var tradingMode = config.GetValue("TradingMode", "");
+        var liveExecution = config.GetValue("Execution:Live", false);
         
-        Assert.Equal("Shadow", tradingMode);
+        Assert.False(liveExecution);
     }
 
     [Fact]
@@ -224,7 +222,7 @@ public class MvpScopeDisciplineTests
         var config = BuildDefaultConfiguration();
         var executionEnabled = config.GetValue("Execution:Enabled", true);
         
-        Assert.False(executionEnabled, "Execution disabled until strategy proves profitability in shadow mode");
+        Assert.False(executionEnabled, "Execution disabled until strategy proves profitability");
     }
 
     [Fact]
@@ -235,11 +233,11 @@ public class MvpScopeDisciplineTests
         var config = BuildDefaultConfiguration();
         
         var executionEnabled = config.GetValue<bool?>("Execution:Enabled", null);
-        var tradingMode = config.GetValue<string?>("TradingMode", null);
+        var liveExecution = config.GetValue<bool?>("Execution:Live", null);
         var broker = config.GetValue<string?>("Execution:Broker", null);
         
         Assert.NotNull(executionEnabled);
-        Assert.NotNull(tradingMode);
+        Assert.NotNull(liveExecution);
         Assert.NotNull(broker);
     }
 
@@ -249,10 +247,10 @@ public class MvpScopeDisciplineTests
         var configData = new Dictionary<string, string>
         {
             ["Execution:Enabled"] = "false",
+            ["Execution:Live"] = "false",
             ["Execution:Broker"] = "Fake",
             ["Execution:MaxNotionalUsd"] = "2000",
             ["Execution:MaxShares"] = "500",
-            ["TradingMode"] = "Shadow",
             ["Universe:Source"] = "IbkrScanner",
             ["IBKR:Enabled"] = "true",
             ["Discord:WebhookUrl"] = "",

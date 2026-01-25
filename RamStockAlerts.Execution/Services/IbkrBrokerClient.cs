@@ -8,7 +8,7 @@ using RamStockAlerts.Execution.Contracts;
 using RamStockAlerts.Execution.Interfaces;
 
 /// <summary>
-/// IBKR broker client for Paper/Live execution via TWS/Gateway API.
+/// IBKR broker client for execution via TWS/Gateway API.
 /// </summary>
 public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
 {

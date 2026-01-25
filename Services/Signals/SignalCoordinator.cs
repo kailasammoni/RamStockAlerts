@@ -12,27 +12,25 @@ using RamStockAlerts.Models.Decisions;
 using RamStockAlerts.Models.Microstructure;
 using RamStockAlerts.Models.Notifications;
 
-namespace RamStockAlerts.Services;
+namespace RamStockAlerts.Services.Signals;
 
-public sealed class ShadowTradingCoordinator
+public sealed class SignalCoordinator
 {
     private const int TapePresenceWindowMs = 3000;
     private const int SignalEvaluationThrottleMs = 250; // Don't evaluate more than once per 250ms per symbol
     private const int TapeStaleWarningThrottleSec = 30; // Log tape stale warning at most once per 30s per symbol
+    private const string TradingModeLabel = "Signals";
     
     private readonly OrderFlowMetrics _metrics;
     private readonly OrderFlowSignalValidator _validator;
-    private readonly IShadowTradeJournal _journal;
+    private readonly ITradeJournal _journal;
     private readonly MarketDataSubscriptionManager _subscriptionManager;
-    private readonly ILogger<ShadowTradingCoordinator> _logger;
+    private readonly ILogger<SignalCoordinator> _logger;
     private readonly DiscordNotificationService? _discordNotificationService;
     private readonly IExecutionService? _executionService;
-    private readonly bool _enabled;
     private readonly bool _recordBlueprints;
-    private readonly string _tradingMode;
     private readonly bool _autoExecuteFromSignals;
     private readonly decimal _autoExecuteNotionalUsd;
-    private readonly TradingMode _executionMode;
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly ScarcityController _scarcityController;
     private readonly RejectionLogger _rejectionLogger;
@@ -41,7 +39,7 @@ public sealed class ShadowTradingCoordinator
     private readonly ConcurrentDictionary<string, long> _lastEvaluationMs = new(StringComparer.OrdinalIgnoreCase); // Evaluation throttle
     private readonly ConcurrentDictionary<string, long> _lastTapeStaleWarnMs = new(StringComparer.OrdinalIgnoreCase); // Rate-limited warnings
     private readonly Dictionary<Guid, PendingRankEntry> _pendingRankedEntries = new();
-    private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
+    private readonly SignalHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _emitGateTrace;
     private readonly ConcurrentDictionary<string, long> _lastInactiveSymbolLogMs = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan InactiveSymbolLogThrottle = TimeSpan.FromMinutes(5);
@@ -62,14 +60,14 @@ public sealed class ShadowTradingCoordinator
     private DateTimeOffset _lastSnapshotProcessedUtc = DateTimeOffset.MinValue;
     public DateTimeOffset? LastSnapshotProcessedUtc => _lastSnapshotProcessedUtc == DateTimeOffset.MinValue ? null : _lastSnapshotProcessedUtc;
 
-    public ShadowTradingCoordinator(
+    public SignalCoordinator(
         IConfiguration configuration,
         OrderFlowMetrics metrics,
         OrderFlowSignalValidator validator,
-        IShadowTradeJournal journal,
+        ITradeJournal journal,
         ScarcityController scarcityController,
         MarketDataSubscriptionManager subscriptionManager,
-        ILogger<ShadowTradingCoordinator> logger,
+        ILogger<SignalCoordinator> logger,
         IExecutionService? executionService = null,
         DiscordNotificationService? discordNotificationService = null)
     {
@@ -82,33 +80,29 @@ public sealed class ShadowTradingCoordinator
         _executionService = executionService;
         _discordNotificationService = discordNotificationService;
 
-        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
-        _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
-        _tradingMode = string.IsNullOrWhiteSpace(tradingMode) ? "Shadow" : tradingMode;
 
         _autoExecuteFromSignals =
             configuration.GetValue("Execution:Enabled", false) &&
             configuration.GetValue("Execution:AutoExecuteFromSignals", false);
         _autoExecuteNotionalUsd = configuration.GetValue("Execution:AutoExecuteNotionalUsd", 500m);
-        _executionMode = configuration.GetValue("Execution:Mode", TradingMode.Paper);
-        _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
-        var gatingRejectSuppressionSeconds = configuration.GetValue<double?>("ShadowTrading:GatingRejectSuppressionSeconds")
-            ?? configuration.GetValue("ShadowTrading:GatingRejectDedupeSeconds", 10d);
+        _tapeGateConfig = SignalHelpers.ReadTapeGateConfig(configuration);
+        var gatingRejectSuppressionSeconds = configuration.GetValue<double?>("Signals:GatingRejectSuppressionSeconds")
+            ?? configuration.GetValue("Signals:GatingRejectDedupeSeconds", 10d);
         _gatingRejectionThrottle = new GatingRejectionThrottle(
             TimeSpan.FromSeconds(Math.Max(0d, gatingRejectSuppressionSeconds)));
         var gateRejectMinIntervalMs = configuration.GetValue("MarketData:GateRejectLogMinIntervalMs", 2000);
         _rejectionLogger = new RejectionLogger(TimeSpan.FromMilliseconds(Math.Max(0, gateRejectMinIntervalMs)));
-        _emitGateTrace = configuration.GetValue("ShadowTradeJournal:EmitGateTrace", true);
+        _emitGateTrace = configuration.GetValue("SignalsJournal:EmitGateTrace", true);
         
         // Phase 3.1: Post-Signal Quality Monitoring configuration
-        _postSignalMonitoringEnabled = configuration.GetValue("ShadowTrading:PostSignalMonitoringEnabled", true);
-        _tapeSlowdownThreshold = configuration.GetValue("ShadowTrading:TapeSlowdownThreshold", 0.5); // 50%
-        _spreadBlowoutThreshold = configuration.GetValue("ShadowTrading:SpreadBlowoutThreshold", 0.5); // 50%
+        _postSignalMonitoringEnabled = configuration.GetValue("Signals:PostSignalMonitoringEnabled", true);
+        _tapeSlowdownThreshold = configuration.GetValue("Signals:TapeSlowdownThreshold", 0.5); // 50%
+        _spreadBlowoutThreshold = configuration.GetValue("Signals:SpreadBlowoutThreshold", 0.5); // 50%
         
         // Phase 3.2: Tape Warm-up Watchlist configuration
-        _tapeWatchlistEnabled = configuration.GetValue("ShadowTrading:TapeWatchlistEnabled", true);
-        _tapeWatchlistRecheckIntervalMs = configuration.GetValue("ShadowTrading:TapeWatchlistRecheckIntervalMs", 5000L); // 5 sec
+        _tapeWatchlistEnabled = configuration.GetValue("Signals:TapeWatchlistEnabled", true);
+        _tapeWatchlistRecheckIntervalMs = configuration.GetValue("Signals:TapeWatchlistRecheckIntervalMs", 5000L); // 5 sec
         
         // Start periodic rejection summary timer (every 60s)
         _summaryTimer = new System.Threading.Timer(
@@ -124,20 +118,12 @@ public sealed class ShadowTradingCoordinator
             TimeSpan.FromMilliseconds(_tapeWatchlistRecheckIntervalMs),
             TimeSpan.FromMilliseconds(_tapeWatchlistRecheckIntervalMs));
 
-        if (_enabled)
-        {
-            _logger.LogInformation("[Shadow] Shadow trading coordinator enabled. RecordBlueprints={Record}",
-                _recordBlueprints);
-        }
+        _logger.LogInformation("[Signals] Signal coordinator enabled. RecordBlueprints={Record}",
+            _recordBlueprints);
     }
 
     public void ProcessSnapshot(OrderBookState book, long nowMs)
     {
-        if (!_enabled)
-        {
-            return;
-        }
-
         // ActiveUniverse gate: Skip symbols not in Active Universe
         // This prevents gate rejections and unnecessary processing for inactive symbols
         if (!_subscriptionManager.IsActiveSymbol(book.Symbol))
@@ -165,7 +151,7 @@ public sealed class ShadowTradingCoordinator
 
         if (!book.IsBookValid(out _, nowMs))
         {
-            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(
+            var tapeStatus = SignalHelpers.GetTapeStatus(
                 book,
                 nowMs,
                 _subscriptionManager.IsTapeEnabled(book.Symbol),
@@ -179,7 +165,7 @@ public sealed class ShadowTradingCoordinator
         var tapeEnabled = _subscriptionManager.IsTapeEnabled(book.Symbol);
         if (!depthEnabled || !tapeEnabled)
         {
-            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, tapeEnabled, _tapeGateConfig);
+            var tapeStatus = SignalHelpers.GetTapeStatus(book, nowMs, tapeEnabled, _tapeGateConfig);
             var reason = tapeEnabled ? "NotReady_NoDepth" : "NotReady_TapeMissingSubscription";
             var hardReason = tapeEnabled ? HardRejectReason.NotReadyNoDepth : HardRejectReason.NotReadyTapeMissingSubscription;
             var decisionResult = BuildNotReadyDecisionResult(book, nowMs, hardReason, tapeStatus);
@@ -187,12 +173,12 @@ public sealed class ShadowTradingCoordinator
             return;
         }
 
-        var tapeStatusReadyCheck = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, _tapeGateConfig);
+        var tapeStatusReadyCheck = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, _tapeGateConfig);
         var tapeRejectionReason = GetTapeRejectionReason(tapeStatusReadyCheck);
         if (tapeRejectionReason != null)
         {
             // Log detailed staleness info when tape gate blocks - but rate-limited to prevent spam
-            if (tapeStatusReadyCheck.Kind == ShadowTradingHelpers.TapeStatusKind.Stale)
+            if (tapeStatusReadyCheck.Kind == SignalHelpers.TapeStatusKind.Stale)
             {
                 if (_lastTapeStaleWarnMs.TryGetValue(book.Symbol, out var lastWarnMs))
                 {
@@ -294,7 +280,7 @@ public sealed class ShadowTradingCoordinator
             rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("ValidatorReject", rejectionReason);
 
             EnqueueEntry(rejectedEntry);
-            _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
+            _logger.LogInformation("[Signals] Signal rejected for {Symbol} ({Direction}): {Reason}",
                 snapshot.Symbol, decision.Direction, rejectionReason ?? "Unknown");
             return;
         }
@@ -321,7 +307,7 @@ public sealed class ShadowTradingCoordinator
             rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("SpoofCheckFail", "SpoofSuspected");
 
             EnqueueEntry(rejectedEntry);
-            _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
+            _logger.LogInformation("[Signals] Signal rejected for {Symbol} ({Direction}): {Reason}",
                 snapshot.Symbol, decision.Direction, "SpoofSuspected");
             return;
         }
@@ -425,7 +411,7 @@ public sealed class ShadowTradingCoordinator
             rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("BlueprintFail", rejectionReason);
 
             EnqueueEntry(rejectedEntry);
-            _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
+            _logger.LogInformation("[Signals] Signal rejected for {Symbol} ({Direction}): {Reason}",
                 snapshot.Symbol, decision.Direction, rejectionReason);
             return;
         }
@@ -473,7 +459,7 @@ public sealed class ShadowTradingCoordinator
         return new BlueprintPlan(false, null, null, null, rejectionReason ?? "BlueprintUnavailable");
     }
 
-    private ShadowTradeJournalEntry BuildJournalEntry(
+    private TradeJournalEntry BuildJournalEntry(
         OrderBookState book,
         OrderFlowMetrics.MetricSnapshot snapshot,
         OrderFlowSignalValidator.OrderFlowSignalDecision decision,
@@ -481,7 +467,7 @@ public sealed class ShadowTradingCoordinator
         Guid decisionId,
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats,
-        ShadowTradingHelpers.TapeStatus tapeStatus)
+        SignalHelpers.TapeStatus tapeStatus)
     {
         var marketTs = snapshot.TimestampMs > 0
             ? DateTimeOffset.FromUnixTimeMilliseconds(snapshot.TimestampMs)
@@ -489,7 +475,7 @@ public sealed class ShadowTradingCoordinator
         var decisionTs = nowMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(nowMs) : (DateTimeOffset?)null;
         var depthDeltaSnapshot = book.DepthDeltaTracker.GetSnapshot(nowMs);
 
-        return new ShadowTradeJournalEntry
+        return new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = decisionId,
@@ -498,7 +484,7 @@ public sealed class ShadowTradingCoordinator
             EntryType = "Signal",
             MarketTimestampUtc = marketTs,
             DecisionTimestampUtc = decisionTs,
-            TradingMode = _tradingMode,
+            TradingMode = TradingModeLabel,
             Symbol = snapshot.Symbol,
             Direction = decision.Direction,
             ObservedMetrics = BuildObservedMetrics(snapshot, depthSnapshot, tapeStats, depthDeltaSnapshot, book),
@@ -520,7 +506,7 @@ public sealed class ShadowTradingCoordinator
         decimal bestBidPrice,
         decimal bestAskPrice,
         OrderBookState book,
-        ShadowTradingHelpers.TapeStatus tapeStatus)
+        SignalHelpers.TapeStatus tapeStatus)
     {
         var context = new StrategyDecisionBuildContext
         {
@@ -725,7 +711,7 @@ public sealed class ShadowTradingCoordinator
         OrderBookState book,
         long nowMs,
         HardRejectReason reason,
-        ShadowTradingHelpers.TapeStatus tapeStatus)
+        SignalHelpers.TapeStatus tapeStatus)
     {
         var lastTrade = book.RecentTrades.LastOrDefault();
         var lastTapeAge = lastTrade.TimestampMs > 0 ? nowMs - lastTrade.TimestampMs : (long?)null;
@@ -750,14 +736,14 @@ public sealed class ShadowTradingCoordinator
         return StrategyDecisionResultBuilder.Build(context);
     }
 
-    private static ShadowTradeJournalEntry.ObservedMetricsSnapshot BuildObservedMetrics(
+    private static TradeJournalEntry.ObservedMetricsSnapshot BuildObservedMetrics(
         OrderFlowMetrics.MetricSnapshot snapshot,
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats,
         DepthDeltaSnapshot depthDeltaSnapshot,
         OrderBookState book)
     {
-        return new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+        return new TradeJournalEntry.ObservedMetricsSnapshot
         {
             QueueImbalance = snapshot.QueueImbalance,
             BidDepth4Level = snapshot.BidDepth4Level,
@@ -797,7 +783,7 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
-    private ShadowTradeJournalEntry.DecisionInputsSnapshot BuildDecisionInputs(
+    private TradeJournalEntry.DecisionInputsSnapshot BuildDecisionInputs(
         OrderFlowMetrics.MetricSnapshot snapshot,
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats,
@@ -806,7 +792,7 @@ public sealed class ShadowTradingCoordinator
         long nowMs,
         OrderBookState book)
     {
-        return new ShadowTradeJournalEntry.DecisionInputsSnapshot
+        return new TradeJournalEntry.DecisionInputsSnapshot
         {
             Score = decision.Signal is null ? null : (decimal?)decision.Signal.Confidence,
             VwapBonus = decision.Signal is null ? null : (tapeStats.VwapReclaimDetected ? 0.5m : 0m),
@@ -834,9 +820,9 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
-    private static ShadowTradeJournalEntry.DepthDeltaMetrics BuildDepthDeltaMetrics(DepthDeltaSnapshot depthDeltaSnapshot)
+    private static TradeJournalEntry.DepthDeltaMetrics BuildDepthDeltaMetrics(DepthDeltaSnapshot depthDeltaSnapshot)
     {
-        return new ShadowTradeJournalEntry.DepthDeltaMetrics
+        return new TradeJournalEntry.DepthDeltaMetrics
         {
             BidCancelToAddRatio1s = depthDeltaSnapshot.Bid1s.CancelToAddRatio,
             AskCancelToAddRatio1s = depthDeltaSnapshot.Ask1s.CancelToAddRatio,
@@ -920,10 +906,10 @@ public sealed class ShadowTradingCoordinator
         return trace;
     }
 
-    private ShadowTradeJournalEntry.GateTraceSnapshot? BuildGateTrace(
+    private TradeJournalEntry.GateTraceSnapshot? BuildGateTrace(
         OrderBookState? book,
         long nowMs,
-        ShadowTradingHelpers.TapeStatus tapeStatus,
+        SignalHelpers.TapeStatus tapeStatus,
         DepthSnapshot? depthSnapshot)
     {
         if (book is null)
@@ -939,7 +925,7 @@ public sealed class ShadowTradingCoordinator
             ? Math.Max(depthSnapshot.BidsTopN.Count, depthSnapshot.AsksTopN.Count)
             : (int?)null;
 
-        return new ShadowTradeJournalEntry.GateTraceSnapshot
+        return new TradeJournalEntry.GateTraceSnapshot
         {
             SchemaVersion = 1,
             NowMs = nowMs,
@@ -947,7 +933,7 @@ public sealed class ShadowTradingCoordinator
             // Tape context
             LastTradeMs = lastTradeMs,
             TradesInWarmupWindow = tapeStatus.TradesInWarmupWindow,
-            WarmedUp = tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready,
+            WarmedUp = tapeStatus.Kind == SignalHelpers.TapeStatusKind.Ready,
             StaleAgeMs = tapeStatus.AgeMs,
             
             // Depth context
@@ -964,13 +950,13 @@ public sealed class ShadowTradingCoordinator
         };
     }
 
-    private static string? GetTapeRejectionReason(ShadowTradingHelpers.TapeStatus tapeStatus)
+    private static string? GetTapeRejectionReason(SignalHelpers.TapeStatus tapeStatus)
     {
         return tapeStatus.Kind switch
         {
-            ShadowTradingHelpers.TapeStatusKind.MissingSubscription => "NotReady_TapeMissingSubscription",
-            ShadowTradingHelpers.TapeStatusKind.NotWarmedUp => "NotReady_TapeNotWarmedUp",
-            ShadowTradingHelpers.TapeStatusKind.Stale => "NotReady_TapeStale",
+            SignalHelpers.TapeStatusKind.MissingSubscription => "NotReady_TapeMissingSubscription",
+            SignalHelpers.TapeStatusKind.NotWarmedUp => "NotReady_TapeNotWarmedUp",
+            SignalHelpers.TapeStatusKind.Stale => "NotReady_TapeStale",
             _ => null
         };
     }
@@ -980,7 +966,7 @@ public sealed class ShadowTradingCoordinator
         OrderBookState book,
         DepthSnapshot depthSnapshot,
         TapeStats tapeStats,
-        ShadowTradingHelpers.TapeStatus tapeStatus,
+        SignalHelpers.TapeStatus tapeStatus,
         long nowMs)
     {
         var flags = new List<string>();
@@ -991,10 +977,10 @@ public sealed class ShadowTradingCoordinator
 
         switch (tapeStatus.Kind)
         {
-            case ShadowTradingHelpers.TapeStatusKind.MissingSubscription:
+            case SignalHelpers.TapeStatusKind.MissingSubscription:
                 flags.Add("TapeMissingSubscription");
                 break;
-            case ShadowTradingHelpers.TapeStatusKind.NotWarmedUp:
+            case SignalHelpers.TapeStatusKind.NotWarmedUp:
                 flags.Add("TapeNotWarmedUp");
                 flags.Add($"TapeNotWarmedUp:tradesInWindow={tapeStatus.TradesInWarmupWindow}");
                 flags.Add($"TapeNotWarmedUp:warmupMinTrades={tapeStatus.WarmupMinTrades}");
@@ -1004,7 +990,7 @@ public sealed class ShadowTradingCoordinator
                     flags.Add($"TapeLastAgeMs={tapeStatus.AgeMs.Value}");
                 }
                 break;
-            case ShadowTradingHelpers.TapeStatusKind.Stale:
+            case SignalHelpers.TapeStatusKind.Stale:
                 flags.Add("TapeStale");
                 if (tapeStatus.AgeMs.HasValue)
                 {
@@ -1072,7 +1058,7 @@ public sealed class ShadowTradingCoordinator
         {
             if (!_pendingRankedEntries.TryGetValue(ranked.CandidateId, out var pending))
             {
-                _logger.LogWarning("[Shadow] Missing pending entry for decision {DecisionId}", ranked.CandidateId);
+                _logger.LogWarning("[Signals] Missing pending entry for decision {DecisionId}", ranked.CandidateId);
                 continue;
             }
 
@@ -1086,7 +1072,7 @@ public sealed class ShadowTradingCoordinator
 
                 if (_recordBlueprints && pending.Blueprint.Success)
                 {
-                    entry.Blueprint = new ShadowTradeJournalEntry.BlueprintPlan
+                    entry.Blueprint = new TradeJournalEntry.BlueprintPlan
                     {
                         Entry = pending.Blueprint.Entry,
                         Stop = pending.Blueprint.Stop,
@@ -1117,7 +1103,7 @@ public sealed class ShadowTradingCoordinator
 
                     TrackAcceptedSignal(entry.Symbol, entry.Direction ?? "Unknown", entry.DecisionId, baselineSpread, baselineSideVelocity, baselineOppositeVelocity, pending.TimestampMsUtc);
                 }
-                _logger.LogInformation("[Shadow] Signal accepted for {Symbol} ({Direction}) Score={Score}",
+                _logger.LogInformation("[Signals] Signal accepted for {Symbol} ({Direction}) Score={Score}",
                     entry.Symbol, entry.Direction, entry.DecisionInputs?.Score);
 
                 TryNotifyDiscordAlert(entry, pending);
@@ -1133,7 +1119,7 @@ public sealed class ShadowTradingCoordinator
                     DecisionOutcome.Rejected,
                     BuildHardRejectReasonsFromScarcity(ranked.Decision));
 
-                _logger.LogInformation("[Shadow] Signal rejected for {Symbol} ({Direction}): {Reason}",
+                _logger.LogInformation("[Signals] Signal rejected for {Symbol} ({Direction}): {Reason}",
                     entry.Symbol, entry.Direction, entry.RejectionReason ?? "Unknown");
             }
 
@@ -1142,20 +1128,15 @@ public sealed class ShadowTradingCoordinator
         }
     }
 
-    private void TryNotifyDiscordAlert(ShadowTradeJournalEntry entry, PendingRankEntry pending)
+    private void TryNotifyDiscordAlert(TradeJournalEntry entry, PendingRankEntry pending)
     {
         if (_discordNotificationService == null || string.IsNullOrWhiteSpace(entry.Symbol))
         {
             return;
         }
 
-        var mode = string.Equals(_tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase)
-            ? DiscordNotificationMode.Shadow
-            : DiscordNotificationMode.Live;
-
-        var intendedAction = string.Equals(_tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase)
-            ? null
-            : BuildIntendedAction(entry.Direction, pending.Blueprint);
+        var mode = DiscordNotificationMode.Live;
+        var intendedAction = BuildIntendedAction(entry.Direction, pending.Blueprint);
 
         var details = BuildAlertDetails(entry, pending.Blueprint);
         var timestamp = entry.DecisionTimestampUtc ?? DateTimeOffset.UtcNow;
@@ -1169,7 +1150,7 @@ public sealed class ShadowTradingCoordinator
             details);
     }
 
-    private void TryAutoExecuteFromSignal(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)
+    private void TryAutoExecuteFromSignal(TradeJournalEntry entry, BlueprintPlan blueprint)
     {
         if (!_autoExecuteFromSignals || _executionService is null)
         {
@@ -1223,7 +1204,6 @@ public sealed class ShadowTradingCoordinator
             {
                 IntentId = entryIntentId,
                 DecisionId = entry.DecisionId,
-                Mode = _executionMode,
                 Symbol = entry.Symbol,
                 Side = side,
                 Type = OrderType.Limit,
@@ -1239,7 +1219,6 @@ public sealed class ShadowTradingCoordinator
                 {
                     IntentId = Guid.NewGuid(),
                     DecisionId = entry.DecisionId,
-                    Mode = _executionMode,
                     Symbol = entry.Symbol,
                     Side = side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
                     Type = OrderType.Stop,
@@ -1255,7 +1234,6 @@ public sealed class ShadowTradingCoordinator
                 {
                     IntentId = Guid.NewGuid(),
                     DecisionId = entry.DecisionId,
-                    Mode = _executionMode,
                     Symbol = entry.Symbol,
                     Side = side == OrderSide.Buy ? OrderSide.Sell : OrderSide.Buy,
                     Type = OrderType.Limit,
@@ -1290,7 +1268,7 @@ public sealed class ShadowTradingCoordinator
         }
     }
 
-    private static Dictionary<string, string> BuildAlertDetails(ShadowTradeJournalEntry entry, BlueprintPlan blueprint)
+    private static Dictionary<string, string> BuildAlertDetails(TradeJournalEntry entry, BlueprintPlan blueprint)
     {
         var details = new Dictionary<string, string>();
 
@@ -1348,11 +1326,11 @@ public sealed class ShadowTradingCoordinator
         return side;
     }
 
-    private void EnqueueEntry(ShadowTradeJournalEntry entry)
+    private void EnqueueEntry(TradeJournalEntry entry)
     {
         if (!_journal.TryEnqueue(entry))
         {
-            _logger.LogWarning("[Shadow] Journal enqueue failed for {Symbol}", entry.Symbol);
+            _logger.LogWarning("[Signals] Journal enqueue failed for {Symbol}", entry.Symbol);
         }
     }
 
@@ -1360,7 +1338,7 @@ public sealed class ShadowTradingCoordinator
         string symbol,
         string reason,
         StrategyDecisionResult? decisionResult = null,
-        ShadowTradingHelpers.TapeStatus? tapeStatus = null)
+        SignalHelpers.TapeStatus? tapeStatus = null)
     {
         if (!_rejectionLogger.ShouldLog(
                 symbol,
@@ -1386,12 +1364,12 @@ public sealed class ShadowTradingCoordinator
         TapeStats? tapeStats = book is null ? null : BuildTapeStats(book, nowMs, null);
         var resolvedTapeStatus = tapeStatus ?? (book is null
             ? default
-            : ShadowTradingHelpers.GetTapeStatus(book, nowMs, _subscriptionManager.IsTapeEnabled(symbol), _tapeGateConfig));
+            : SignalHelpers.GetTapeStatus(book, nowMs, _subscriptionManager.IsTapeEnabled(symbol), _tapeGateConfig));
 
         // Log structured tape gate rejection details for tape-related rejections
         LogGateRejectionDetails(symbol, reason, resolvedTapeStatus, now);
 
-        var entry = new ShadowTradeJournalEntry
+        var entry = new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = Guid.NewGuid(),
@@ -1400,7 +1378,7 @@ public sealed class ShadowTradingCoordinator
             EntryType = "Rejection",
             MarketTimestampUtc = now,
             DecisionTimestampUtc = now,
-            TradingMode = _tradingMode,
+            TradingMode = TradingModeLabel,
             Symbol = symbol,
             DecisionOutcome = "Rejected",
             RejectionReason = reason,
@@ -1410,7 +1388,7 @@ public sealed class ShadowTradingCoordinator
                 : BuildDataQualityFlags(book, depthSnapshot, tapeStats.Value, resolvedTapeStatus, nowMs),
             ObservedMetrics = book is null || depthSnapshot is null || tapeStats is null
                 ? null
-                : new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+                : new TradeJournalEntry.ObservedMetricsSnapshot
                 {
                     Spread = book.Spread,
                     BestBidPrice = book.BestBid,
@@ -1465,7 +1443,7 @@ public sealed class ShadowTradingCoordinator
                     continue;
                 }
                 
-                var tapeStatus = ShadowTradingHelpers.GetTapeStatus(
+                var tapeStatus = SignalHelpers.GetTapeStatus(
                     book, 
                     nowMs, 
                     _subscriptionManager.IsTapeEnabled(symbol), 
@@ -1486,7 +1464,7 @@ public sealed class ShadowTradingCoordinator
                     otherCount,
                     tapeStatus.AgeMs ?? -1,
                     tapeStatus.TradesInWarmupWindow,
-                    tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready,
+                    tapeStatus.Kind == SignalHelpers.TapeStatusKind.Ready,
                     book.LastDepthRecvMs.HasValue ? nowMs - book.LastDepthRecvMs.Value : -1);
             }
         }
@@ -1504,7 +1482,7 @@ public sealed class ShadowTradingCoordinator
     private void LogGateRejectionDetails(
         string symbol,
         string reason,
-        ShadowTradingHelpers.TapeStatus tapeStatus,
+        SignalHelpers.TapeStatus tapeStatus,
         DateTimeOffset now)
     {
         // Only log tape-related rejections with structured details
@@ -1541,10 +1519,10 @@ public sealed class ShadowTradingCoordinator
         }
 
         _lastInactiveSymbolLogMs[normalized] = nowMs;
-        _logger.LogDebug("[Shadow] Skipping snapshot for inactive symbol={Symbol}", symbol);
+        _logger.LogDebug("[Signals] Skipping snapshot for inactive symbol={Symbol}", symbol);
     }
 
-    private void LogTapeStaleWarning(OrderBookState book, long nowMs, ShadowTradingHelpers.TapeStatus status)
+    private void LogTapeStaleWarning(OrderBookState book, long nowMs, SignalHelpers.TapeStatus status)
     {
         // Use receipt time for staleness reporting, show both event and receipt times for diagnostics
         var lastTapeRecvMs = book.LastTapeRecvMs;
@@ -1554,7 +1532,7 @@ public sealed class ShadowTradingCoordinator
         var skewMs = lastTapeRecvFromTradeMs - lastTapeEventMs;
         
         _logger.LogWarning(
-            "[ShadowTrading GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeRecvMs={LastRecvMs}, lastTapeRecvMs(lastTrade)={LastRecvTradeMs}, lastTapeEventMs={LastEventMs}, skewMs={SkewMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=ReceiptTime",
+            "[Signals GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeRecvMs={LastRecvMs}, lastTapeRecvMs(lastTrade)={LastRecvTradeMs}, lastTapeEventMs={LastEventMs}, skewMs={SkewMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=ReceiptTime",
             book.Symbol, 
             nowMs, 
             lastTapeRecvMs,
@@ -1585,7 +1563,7 @@ public sealed class ShadowTradingCoordinator
         bool VwapReclaimDetected = false);
 
     private sealed record PendingRankEntry(
-        ShadowTradeJournalEntry Entry,
+        TradeJournalEntry Entry,
         BlueprintPlan Blueprint,
         long TimestampMsUtc,
         decimal VwapBonus);
@@ -1654,7 +1632,7 @@ public sealed class ShadowTradingCoordinator
             string symbol,
             bool isFocus,
             string reason,
-            ShadowTradingHelpers.TapeStatusKind? tapeStatusKind)
+            SignalHelpers.TapeStatusKind? tapeStatusKind)
         {
             var now = DateTimeOffset.UtcNow;
             if (_lastGateReject.TryGetValue(symbol, out var state))
@@ -1687,9 +1665,9 @@ public sealed class ShadowTradingCoordinator
         private readonly record struct GateRejectState(
             DateTimeOffset LastLoggedAt,
             string Reason,
-            ShadowTradingHelpers.TapeStatusKind? TapeStatusKind)
+            SignalHelpers.TapeStatusKind? TapeStatusKind)
         {
-            public bool IsSame(string reason, ShadowTradingHelpers.TapeStatusKind? tapeStatusKind)
+            public bool IsSame(string reason, SignalHelpers.TapeStatusKind? tapeStatusKind)
             {
                 return string.Equals(Reason, reason, StringComparison.OrdinalIgnoreCase)
                        && TapeStatusKind == tapeStatusKind;
@@ -1771,22 +1749,22 @@ public sealed class ShadowTradingCoordinator
         public decimal TotalBidSizeTopN { get; init; }
         public decimal TotalAskSizeTopN { get; init; }
         public decimal BidAskRatioTopN { get; init; }
-        public List<ShadowTradeJournalEntry.DepthLevelSnapshot> BidsTopN { get; init; } = new();
-        public List<ShadowTradeJournalEntry.DepthLevelSnapshot> AsksTopN { get; init; } = new();
+        public List<TradeJournalEntry.DepthLevelSnapshot> BidsTopN { get; init; } = new();
+        public List<TradeJournalEntry.DepthLevelSnapshot> AsksTopN { get; init; } = new();
         public long? LastDepthUpdateAgeMs { get; init; }
         public int ExpectedDepthLevels { get; init; }
     }
 
     private static DepthSnapshot BuildDepthSnapshot(OrderBookState book, int depthLevels = 5)
     {
-        var bids = book.BidLevels.Take(depthLevels).Select((x, idx) => new ShadowTradeJournalEntry.DepthLevelSnapshot
+        var bids = book.BidLevels.Take(depthLevels).Select((x, idx) => new TradeJournalEntry.DepthLevelSnapshot
         {
             Level = idx,
             Price = x.Price,
             Size = x.Size
         }).ToList();
 
-        var asks = book.AskLevels.Take(depthLevels).Select((x, idx) => new ShadowTradeJournalEntry.DepthLevelSnapshot
+        var asks = book.AskLevels.Take(depthLevels).Select((x, idx) => new TradeJournalEntry.DepthLevelSnapshot
         {
             Level = idx,
             Price = x.Price,
@@ -1951,11 +1929,11 @@ public sealed class ShadowTradingCoordinator
         tracker.CancellationTimestampMs = nowMs;
 
         _logger.LogWarning(
-            "[Shadow] Post-signal quality degradation: {Symbol} canceled due to {Reason}. Current={Current:F4}, Baseline={Baseline:F4}",
+            "[Signals] Post-signal quality degradation: {Symbol} canceled due to {Reason}. Current={Current:F4}, Baseline={Baseline:F4}",
             tracker.Symbol, reason, currentValue, baselineValue);
 
         // Journal the cancellation
-        var cancellationEntry = new ShadowTradeJournalEntry
+        var cancellationEntry = new TradeJournalEntry
         {
             SchemaVersion = 2,
             DecisionId = tracker.DecisionId,
@@ -1965,11 +1943,11 @@ public sealed class ShadowTradingCoordinator
             DecisionOutcome = "Canceled",
             RejectionReason = reason,
             DecisionTimestampUtc = DateTimeOffset.FromUnixTimeMilliseconds(nowMs),
-            DecisionInputs = new ShadowTradeJournalEntry.DecisionInputsSnapshot
+            DecisionInputs = new TradeJournalEntry.DecisionInputsSnapshot
             {
                 Score = 0m // Post-signal cancellation has no score
             },
-            ObservedMetrics = new ShadowTradeJournalEntry.ObservedMetricsSnapshot
+            ObservedMetrics = new TradeJournalEntry.ObservedMetricsSnapshot
             {
                 Spread = currentValue, // Current degraded value
                 QueueImbalance = 0m,
@@ -2012,7 +1990,7 @@ public sealed class ShadowTradingCoordinator
         _acceptedSignals[symbol] = tracker;
         
         _logger.LogDebug(
-            "[Shadow] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, SideVel={SideVel}, OppVel={OppVel}",
+            "[Signals] Tracking accepted signal: {Symbol} {Direction}. BaselineSpread={Spread:F4}, SideVel={SideVel}, OppVel={OppVel}",
             symbol, direction, baselineSpread, baselineSideVelocity, baselineOppositeVelocity);
     }
 
@@ -2047,7 +2025,7 @@ public sealed class ShadowTradingCoordinator
         _tapeWarmupWatchlist[symbol] = entry;
 
         _logger.LogDebug(
-            "[Shadow] Added {Symbol} to tape warmup watchlist. FirstRejection={FirstRejection}, LastRecheck={LastRecheck}",
+            "[Signals] Added {Symbol} to tape warmup watchlist. FirstRejection={FirstRejection}, LastRecheck={LastRecheck}",
             symbol, entry.FirstRejectionMs, entry.LastRecheckMs);
     }
 
@@ -2076,12 +2054,12 @@ public sealed class ShadowTradingCoordinator
             }
 
             // Check if tape is now warmed up
-            var tapeStatus = ShadowTradingHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, _tapeGateConfig);
-            if (tapeStatus.Kind == ShadowTradingHelpers.TapeStatusKind.Ready)
+            var tapeStatus = SignalHelpers.GetTapeStatus(book, nowMs, isTapeEnabled: true, _tapeGateConfig);
+            if (tapeStatus.Kind == SignalHelpers.TapeStatusKind.Ready)
             {
                 // Tape is warmed up, trigger re-evaluation
                 _logger.LogInformation(
-                    "[Shadow] Tape warmup watchlist: {Symbol} tape is now warmed up. Triggering re-evaluation.",
+                    "[Signals] Tape warmup watchlist: {Symbol} tape is now warmed up. Triggering re-evaluation.",
                     symbol);
 
                 // Remove from watchlist

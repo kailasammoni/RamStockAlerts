@@ -19,7 +19,7 @@ public class ShadowTradeJournalEntrySerializationTests
             EntryType = "Signal",
             MarketTimestampUtc = DateTimeOffset.UtcNow.AddSeconds(-1),
             DecisionTimestampUtc = DateTimeOffset.UtcNow,
-            TradingMode = "Shadow",
+            TradingMode = "Signals",
             Symbol = "TEST",
             Direction = "BUY",
             DecisionOutcome = "Accepted",

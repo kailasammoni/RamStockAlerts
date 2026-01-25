@@ -28,7 +28,7 @@ sequenceDiagram
     MDM->>Journal: Write UniverseUpdate Entry
 ```
 
-## 2. Shadow Trading Loop (Real-Time Analysis)
+## 2. Signal Loop (Real-Time Analysis)
 
 This flow describes how market data is processed to detect signals and journal them.
 
@@ -151,7 +151,7 @@ sequenceDiagram
 
 ## 6. Preview Signal Flow
 
-This flow describes how "Preview" mode provides immediate Discord alerts for high-confidence setups without the full shadow-trading constraints.
+This flow describes how "Preview" mode provides immediate Discord alerts for high-confidence setups without the full gating constraints.
 
 ```mermaid
 sequenceDiagram
@@ -193,7 +193,7 @@ Always run from a published output folder to avoid:
 ## Folder Layout
 
 C:\workspace\RamStockAlerts\        # Git working directory (dev only)
-C:\run\RamStockAlerts\shadow\       # Stable running instance
+C:\run\RamStockAlerts\signals\      # Stable running instance
 C:\run\RamStockAlerts\dev\          # Test / next build (optional)
 
 ---
@@ -204,6 +204,6 @@ C:\run\RamStockAlerts\dev\          # Test / next build (optional)
 Creates a self-contained output folder that will not change while running.
 
 ```powershell
-dotnet publish -c Release -o C:\run\RamStockAlerts\shadow
+dotnet publish -c Release -o C:\run\RamStockAlerts\signals
 
 $env:Report__ExecutionDailyRollup="true"

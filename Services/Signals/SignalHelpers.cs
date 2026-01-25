@@ -3,9 +3,9 @@ using System.Linq;
 using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Models;
 
-namespace RamStockAlerts.Services;
+namespace RamStockAlerts.Services.Signals;
 
-internal static class ShadowTradingHelpers
+internal static class SignalHelpers
 {
     internal readonly record struct TapeGateConfig(int WarmupMinTrades, int WarmupWindowMs, int StaleWindowMs)
     {

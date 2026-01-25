@@ -1,16 +1,6 @@
 namespace RamStockAlerts.Execution.Contracts;
 
 /// <summary>
-/// Trading mode for execution context.
-/// </summary>
-public enum TradingMode
-{
-    Shadow,
-    Paper,
-    Live
-}
-
-/// <summary>
 /// Order side (direction).
 /// </summary>
 public enum OrderSide

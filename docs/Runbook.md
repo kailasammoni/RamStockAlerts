@@ -1,8 +1,7 @@
 # Runbook
 
 ## Modes
-- **API Host (default)**: ASP.NET Core API (shadow trading and admin endpoints).
-- **Shadow mode**: generates trade blueprints without execution (default behavior).
+- **API Host (default)**: ASP.NET Core API (signals + admin endpoints).
 - **Record mode**: records IBKR depth + tape to JSONL files in `logs/`.
 - **Replay mode**: replays recorded JSONL deterministically for validation.
 - **Diagnostics mode**: subscription health checks.
@@ -23,5 +22,5 @@ Core principle: do not run the app from the working git directory; publish and r
 
 Example layout:
 - `C:\\workspace\\RamStockAlerts\\` (git working directory)
-- `C:\\run\\RamStockAlerts\\shadow\\` (stable running instance)
+- `C:\\run\\RamStockAlerts\\signals\\` (stable running instance)
 

@@ -18,7 +18,6 @@ internal static class ShadowTradingCoordinatorTestHelper
     {
         var settings = new Dictionary<string, string?>
         {
-            ["TradingMode"] = "Shadow",
             ["MarketData:EnableDepth"] = "true",
             ["MarketData:EnableTape"] = "true",
             ["MarketData:MaxLines"] = "10",

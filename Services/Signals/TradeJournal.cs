@@ -5,43 +5,34 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Models;
 
-namespace RamStockAlerts.Services;
+namespace RamStockAlerts.Services.Signals;
 
-// NOTE: Offline ReplayShadow mode intentionally omitted.
-// Schema validated via live shadow trading only.
+// NOTE: Offline replay mode intentionally omitted.
+// Schema validated via live signaling only.
 
-public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
+public sealed class TradeJournal : BackgroundService, ITradeJournal
 {
     internal const int CurrentSchemaVersion = 2;
-    private readonly ILogger<ShadowTradeJournal> _logger;
-    private readonly Channel<ShadowTradeJournalEntry> _channel;
+    private readonly ILogger<TradeJournal> _logger;
+    private readonly Channel<TradeJournalEntry> _channel;
     private readonly string _filePath;
-    private readonly bool _enabled;
     private readonly Guid _sessionId = Guid.NewGuid();
     private StreamWriter? _writer;
     private DateTimeOffset _lastWriteFailureLog = DateTimeOffset.MinValue;
 
-    public ShadowTradeJournal(IConfiguration configuration, ILogger<ShadowTradeJournal> logger)
+    public TradeJournal(IConfiguration configuration, ILogger<TradeJournal> logger)
     {
         _logger = logger;
-        _channel = Channel.CreateUnbounded<ShadowTradeJournalEntry>(
+        _channel = Channel.CreateUnbounded<TradeJournalEntry>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
-        _filePath = configuration.GetValue<string>("ShadowTradeJournal:FilePath")
-                    ?? Path.Combine("logs", "shadow-trade-journal.jsonl");
-
-        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
-        _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
+        _filePath = configuration.GetValue<string>("SignalsJournal:FilePath")
+                    ?? Path.Combine("logs", "trade-journal.jsonl");
     }
 
     public Guid SessionId => _sessionId;
 
-    public bool TryEnqueue(ShadowTradeJournalEntry entry)
+    public bool TryEnqueue(TradeJournalEntry entry)
     {
-        if (!_enabled)
-        {
-            return false;
-        }
-
         if (entry.SessionId == Guid.Empty)
         {
             entry.SessionId = _sessionId;
@@ -51,12 +42,6 @@ public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_enabled)
-        {
-            _logger.LogInformation("[Shadow] ShadowTradeJournal disabled (TradingMode != Shadow).");
-            return;
-        }
-
         Directory.CreateDirectory(Path.GetDirectoryName(_filePath) ?? ".");
         _writer = new StreamWriter(
             new FileStream(_filePath, FileMode.Append, FileAccess.Write, FileShare.Read),
@@ -65,7 +50,7 @@ public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
             AutoFlush = true
         };
 
-        _logger.LogInformation("[Shadow] ShadowTradeJournal active: {Path}", _filePath);
+        _logger.LogInformation("[Journal] Trade journal active: {Path}", _filePath);
 
         await foreach (var entry in _channel.Reader.ReadAllAsync(stoppingToken))
         {
@@ -104,7 +89,7 @@ public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
                 if (now - _lastWriteFailureLog >= TimeSpan.FromMinutes(1))
                 {
                     _lastWriteFailureLog = now;
-                    _logger.LogError(ex, "[ShadowJournal] Write failed: {Message}", ex.Message);
+                    _logger.LogError(ex, "[Journal] Write failed: {Message}", ex.Message);
                 }
             }
         }
@@ -122,7 +107,7 @@ public sealed class ShadowTradeJournal : BackgroundService, IShadowTradeJournal
         }
     }
 
-    private static void EnsureMonotonicTimestamps(ShadowTradeJournalEntry entry)
+    private static void EnsureMonotonicTimestamps(TradeJournalEntry entry)
     {
         if (entry.MarketTimestampUtc.HasValue && entry.DecisionTimestampUtc.HasValue &&
             entry.DecisionTimestampUtc < entry.MarketTimestampUtc)

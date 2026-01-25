@@ -136,7 +136,6 @@ public class ShadowTradingCoordinatorActiveUniverseTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["TradingMode"] = "Shadow",
                 ["RecordBlueprints"] = "false",
                 ["MarketData:MaxLines"] = "95",
                 ["MarketData:TickByTickMaxSymbols"] = "10",

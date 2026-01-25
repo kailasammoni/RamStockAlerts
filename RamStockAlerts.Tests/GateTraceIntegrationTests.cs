@@ -20,7 +20,6 @@ public class GateTraceIntegrationTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["TradingMode"] = "Shadow",
                 ["ShadowTradeJournal:EmitGateTrace"] = "true",
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",
@@ -95,7 +94,6 @@ public class GateTraceIntegrationTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["TradingMode"] = "Shadow",
                 ["ShadowTradeJournal:EmitGateTrace"] = "false", // Disabled
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",
@@ -147,7 +145,6 @@ public class GateTraceIntegrationTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["TradingMode"] = "Shadow",
                 ["ShadowTradeJournal:EmitGateTrace"] = "true",
                 ["MarketData:TapeStaleWindowMs"] = "5000",
                 ["MarketData:TapeWarmupMinTrades"] = "5",

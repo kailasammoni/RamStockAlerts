@@ -16,11 +16,6 @@ public class OrderIntent
     public Guid? DecisionId { get; set; }
 
     /// <summary>
-    /// Trading mode (Shadow, Paper, Live).
-    /// </summary>
-    public TradingMode Mode { get; set; }
-
-    /// <summary>
     /// Symbol to trade (e.g., "AAPL").
     /// </summary>
     public string? Symbol { get; set; }

@@ -47,7 +47,6 @@ public class ExecutionControllerTests
         // Arrange
         var dto = new OrderIntentDto
         {
-            Mode = "Paper",
             Symbol = "AAPL",
             Side = "Buy",
             Type = "Market",
@@ -77,7 +76,6 @@ public class ExecutionControllerTests
         // Arrange
         var dto = new OrderIntentDto
         {
-            Mode = "Paper",
             Symbol = "", // Invalid: empty symbol
             Side = "Buy",
             Type = "Market",
@@ -100,7 +98,6 @@ public class ExecutionControllerTests
         // Arrange
         var dto = new OrderIntentDto
         {
-            Mode = "Paper",
             Symbol = "AAPL",
             Side = "Buy",
             Type = "Market",
@@ -126,7 +123,6 @@ public class ExecutionControllerTests
         {
             Entry = new OrderIntentDto
             {
-                Mode = "Paper",
                 Symbol = "TSLA",
                 Side = "Buy",
                 Type = "Limit",
@@ -135,7 +131,6 @@ public class ExecutionControllerTests
             },
             StopLoss = new OrderIntentDto
             {
-                Mode = "Paper",
                 Symbol = "TSLA",
                 Side = "Sell",
                 Type = "Stop",
@@ -144,7 +139,6 @@ public class ExecutionControllerTests
             },
             TakeProfit = new OrderIntentDto
             {
-                Mode = "Paper",
                 Symbol = "TSLA",
                 Side = "Sell",
                 Type = "Limit",
@@ -173,11 +167,21 @@ public class ExecutionControllerTests
     public async Task ExecuteBracket_LiveModeWithoutStopLoss_Returns200WithRejectedStatus()
     {
         // Arrange
+        var options = new ExecutionOptions { Enabled = true, Live = true };
+        var riskManager = new RiskManagerV0(options);
+        var brokerClient = new FakeBrokerClient();
+        var ledger = new InMemoryExecutionLedger();
+        var executionService = new ExecutionService(riskManager, brokerClient, ledger);
+        var logger = new LoggerFactory().CreateLogger<ExecutionController>();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Execution:Enabled"] = "true" })
+            .Build();
+        var controller = new ExecutionController(executionService, ledger, logger, configuration);
+
         var dto = new BracketIntentDto
         {
             Entry = new OrderIntentDto
             {
-                Mode = "Live", // Live mode requires stop-loss
                 Symbol = "GOOG",
                 Side = "Buy",
                 Type = "Limit",
@@ -187,7 +191,6 @@ public class ExecutionControllerTests
             StopLoss = null, // Missing stop-loss
             TakeProfit = new OrderIntentDto
             {
-                Mode = "Live",
                 Symbol = "GOOG",
                 Side = "Sell",
                 Type = "Limit",
@@ -197,7 +200,7 @@ public class ExecutionControllerTests
         };
 
         // Act
-        var result = await _controller.ExecuteBracket(dto);
+        var result = await controller.ExecuteBracket(dto);
 
         // Assert
         var okResult = Assert.IsType<OkObjectResult>(result);
@@ -213,7 +216,6 @@ public class ExecutionControllerTests
         // Arrange - execute an order first
         var dto = new OrderIntentDto
         {
-            Mode = "Paper",
             Symbol = "MSFT",
             Side = "Sell",
             Type = "Market",
@@ -290,7 +292,6 @@ public class ExecutionControllerTests
         
         var dto = new OrderIntentDto
         {
-            Mode = "Paper",
             Symbol = "AAPL",
             Side = "Buy",
             Type = "Market",
@@ -330,7 +331,6 @@ public class ExecutionControllerTests
         {
             Entry = new OrderIntentDto
             {
-                Mode = "Paper",
                 Symbol = "TSLA",
                 Side = "Buy",
                 Type = "Market",
@@ -338,7 +338,6 @@ public class ExecutionControllerTests
             },
             TakeProfit = new OrderIntentDto
             {
-                Mode = "Paper",
                 Symbol = "TSLA",
                 Side = "Sell",
                 Type = "Limit",

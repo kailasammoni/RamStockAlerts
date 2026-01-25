@@ -71,7 +71,6 @@ public class IBkrHeartbeatTests
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string>
             {
-                ["TradingMode"] = "Shadow",
                 ["IBKR:DisconnectCheckIntervalSeconds"] = "5",
                 ["IBKR:DisconnectThresholdSeconds"] = "30"
             })
@@ -181,8 +180,7 @@ public class IBkrHeartbeatTests
                 ["IBKR:Port"] = "7497",
                 ["IBKR:ClientId"] = "1",
                 ["IBKR:DisconnectThresholdSeconds"] = "30",
-                ["IBKR:DisconnectCheckIntervalSeconds"] = "10",
-                ["TradingMode"] = "Shadow"
+                ["IBKR:DisconnectCheckIntervalSeconds"] = "10"
             })
             .Build();
     }

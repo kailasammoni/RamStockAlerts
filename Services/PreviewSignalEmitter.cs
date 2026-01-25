@@ -41,10 +41,9 @@ public sealed class PreviewSignalEmitter
         _discordNotificationService = discordNotificationService;
         _logger = logger;
 
-        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
         var previewEnabled = configuration.GetValue("Preview:Enabled", true);
 
-        _enabled = string.Equals(tradingMode, "Preview", StringComparison.OrdinalIgnoreCase) && previewEnabled;
+        _enabled = previewEnabled;
         _minScore = configuration.GetValue("Preview:MinScore", 5.0m);
         _maxSignalsPerMinute = configuration.GetValue("Preview:MaxSignalsPerMinute", 30);
         _perSymbolCooldownSeconds = configuration.GetValue("Preview:PerSymbolCooldownSeconds", 0);

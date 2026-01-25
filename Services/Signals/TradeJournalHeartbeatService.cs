@@ -11,19 +11,18 @@ using RamStockAlerts.Models;
 using RamStockAlerts.Universe;
 using RamStockAlerts.Feeds;
 
-namespace RamStockAlerts.Services;
+namespace RamStockAlerts.Services.Signals;
 
-public sealed class ShadowJournalHeartbeatService : BackgroundService
+public sealed class TradeJournalHeartbeatService : BackgroundService
 {
-    private readonly ShadowTradeJournal _journal;
+    private readonly TradeJournal _journal;
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly UniverseService _universeService;
     private readonly OrderFlowMetrics _metrics;
-    private readonly ILogger<ShadowJournalHeartbeatService> _logger;
+    private readonly ILogger<TradeJournalHeartbeatService> _logger;
     private readonly IBkrMarketDataClient _ibkrClient;
-    private readonly ShadowTradingCoordinator _coordinator;
-    private readonly bool _enabled;
-    private readonly ShadowTradingHelpers.TapeGateConfig _tapeGateConfig;
+    private readonly SignalCoordinator _coordinator;
+    private readonly SignalHelpers.TapeGateConfig _tapeGateConfig;
     private readonly double _disconnectThresholdSeconds;
     private readonly TimeSpan _disconnectCheckInterval;
     private DateTimeOffset _lastHeartbeatUtc = DateTimeOffset.MinValue;
@@ -31,40 +30,32 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
     private static readonly TimeSpan UniverseRefreshWarningThreshold = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan CoordinatorInactivityThreshold = TimeSpan.FromMinutes(5);
 
-    public ShadowJournalHeartbeatService(
+    public TradeJournalHeartbeatService(
         IConfiguration configuration,
-        ShadowTradeJournal journal,
+        TradeJournal journal,
         MarketDataSubscriptionManager subscriptionManager,
         UniverseService universeService,
         OrderFlowMetrics metrics,
         IBkrMarketDataClient ibkrClient,
-        ShadowTradingCoordinator shadowTradingCoordinator,
-        ILogger<ShadowJournalHeartbeatService> logger)
+        SignalCoordinator signalCoordinator,
+        ILogger<TradeJournalHeartbeatService> logger)
     {
         _journal = journal;
         _subscriptionManager = subscriptionManager;
         _universeService = universeService;
         _metrics = metrics;
         _ibkrClient = ibkrClient;
-        _coordinator = shadowTradingCoordinator;
+        _coordinator = signalCoordinator;
         _logger = logger;
-        _tapeGateConfig = ShadowTradingHelpers.ReadTapeGateConfig(configuration);
+        _tapeGateConfig = SignalHelpers.ReadTapeGateConfig(configuration);
         _disconnectThresholdSeconds = configuration.GetValue("IBKR:DisconnectThresholdSeconds", 30.0);
         _disconnectCheckInterval = TimeSpan.FromSeconds(configuration.GetValue("IBKR:DisconnectCheckIntervalSeconds", 10.0));
-
-        var tradingMode = configuration.GetValue<string>("TradingMode") ?? string.Empty;
-        _enabled = string.Equals(tradingMode, "Shadow", StringComparison.OrdinalIgnoreCase);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_enabled)
-        {
-            return;
-        }
-
         _logger.LogInformation(
-            "[ShadowHeartbeat] Heartbeat service running. Heartbeat: 60s, Disconnect check: {CheckInterval}s (threshold: {Threshold}s)",
+            "[Heartbeat] Heartbeat service running. Heartbeat: 60s, Disconnect check: {CheckInterval}s (threshold: {Threshold}s)",
             _disconnectCheckInterval.TotalSeconds,
             _disconnectThresholdSeconds);
 
@@ -82,7 +73,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
                 if (gap > expectedThreshold)
                 {
                     _logger.LogWarning(
-                        "[ShadowHeartbeat] Heartbeat delay detected: last heartbeat was {Gap} ago (expected about {Expected}). Possible application stall.",
+                        "[Heartbeat] Heartbeat delay detected: last heartbeat was {Gap} ago (expected about {Expected}). Possible application stall.",
                         gap,
                         expectedThreshold);
                 }
@@ -108,7 +99,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var (depthAge, tapeAge, bookValidAny, tapeRecentAny) = GatherBookStats(nowMs);
 
-            var entry = new ShadowTradeJournalEntry
+            var entry = new TradeJournalEntry
             {
                 SchemaVersion = 2,
                 DecisionId = Guid.NewGuid(),
@@ -117,11 +108,11 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
                 EntryType = "Heartbeat",
                 MarketTimestampUtc = now,
                 DecisionTimestampUtc = now,
-                TradingMode = "Shadow",
+                TradingMode = "Signals",
                 DecisionOutcome = "Cancelled",
                 DecisionTrace = new List<string> { "Heartbeat" },
                 DataQualityFlags = new List<string> { "HeartbeatNoDecision" },
-                SystemMetrics = new ShadowTradeJournalEntry.SystemMetricsSnapshot
+                SystemMetrics = new TradeJournalEntry.SystemMetricsSnapshot
                 {
                     UniverseCount = universe.Count,
                     ActiveSubscriptionsCount = stats.TotalSubscriptions,
@@ -144,12 +135,12 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
 
             if (!_journal.TryEnqueue(entry))
             {
-                _logger.LogWarning("[ShadowHeartbeat] Heartbeat entry dropped (journal disabled).");
+                _logger.LogWarning("[Heartbeat] Heartbeat entry dropped (journal unavailable).");
             }
         }
         catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "[ShadowHeartbeat] Failed to record heartbeat.");
+            _logger.LogWarning(ex, "[Heartbeat] Failed to record heartbeat.");
         }
     }
 
@@ -186,7 +177,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
                 minTapeAge = minTapeAge.HasValue ? Math.Min(minTapeAge.Value, tapeAge) : tapeAge;
             }
 
-            if (ShadowTradingHelpers.HasRecentTape(book, nowMs, _tapeGateConfig))
+            if (SignalHelpers.HasRecentTape(book, nowMs, _tapeGateConfig))
             {
                 tapeRecentAny = true;
             }
@@ -207,7 +198,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         if (age > UniverseRefreshWarningThreshold)
         {
             _logger.LogWarning(
-                "[ShadowHeartbeat] Universe refresh overdue: last refresh was {Age} ago (at {LastRefresh:O}).",
+                "[Heartbeat] Universe refresh overdue: last refresh was {Age} ago (at {LastRefresh:O}).",
                 age,
                 lastRefresh.Value);
         }
@@ -225,7 +216,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         if (age > CoordinatorInactivityThreshold)
         {
             _logger.LogWarning(
-                "[ShadowHeartbeat] Coordinator inactivity: no snapshots processed for {Age} (last at {LastProcessed:O}).",
+                "[Heartbeat] Coordinator inactivity: no snapshots processed for {Age} (last at {LastProcessed:O}).",
                 age,
                 lastProcessed.Value);
         }
@@ -242,7 +233,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                _logger.LogWarning(ex, "[ShadowHeartbeat] IBKR health check failed.");
+                _logger.LogWarning(ex, "[Heartbeat] IBKR health check failed.");
             }
         }
     }
@@ -253,7 +244,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         var isConnected = _ibkrClient.IsConnected();
         if (!isConnected)
         {
-            _logger.LogWarning("[ShadowHeartbeat] IBKR not connected. Triggering reconnect.");
+            _logger.LogWarning("[Heartbeat] IBKR not connected. Triggering reconnect.");
             await TriggerReconnectAsync(stoppingToken);
             return;
         }
@@ -275,7 +266,7 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         if (lastTickAge.Value > _disconnectThresholdSeconds)
         {
             _logger.LogWarning(
-                "[ShadowHeartbeat] IBKR data stale: last tick age={AgeSeconds:F1}s, threshold={Threshold}s. Triggering reconnect.",
+                "[Heartbeat] IBKR data stale: last tick age={AgeSeconds:F1}s, threshold={Threshold}s. Triggering reconnect.",
                 lastTickAge.Value,
                 _disconnectThresholdSeconds);
             await TriggerReconnectAsync(stoppingToken);
@@ -305,17 +296,17 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
     {
         if (_ibkrClient.IsReconnecting())
         {
-            _logger.LogInformation("[ShadowHeartbeat] Reconnect already in progress.");
+            _logger.LogInformation("[Heartbeat] Reconnect already in progress.");
             return;
         }
 
-        _logger.LogWarning("[ShadowHeartbeat] Triggering IBKR reconnect sequence...");
+        _logger.LogWarning("[Heartbeat] Triggering IBKR reconnect sequence...");
 
         // Disconnect
         var disconnected = await _ibkrClient.DisconnectAsync(stoppingToken);
         if (!disconnected)
         {
-            _logger.LogError("[ShadowHeartbeat] Disconnect failed.");
+            _logger.LogError("[Heartbeat] Disconnect failed.");
             return;
         }
 
@@ -323,14 +314,14 @@ public sealed class ShadowJournalHeartbeatService : BackgroundService
         var connected = await _ibkrClient.ConnectAsync(stoppingToken);
         if (!connected)
         {
-            _logger.LogError("[ShadowHeartbeat] Reconnect failed after max attempts.");
+            _logger.LogError("[Heartbeat] Reconnect failed after max attempts.");
             return;
         }
 
-        _logger.LogInformation("[ShadowHeartbeat] Reconnect succeeded. Re-subscribing active symbols...");
+        _logger.LogInformation("[Heartbeat] Reconnect succeeded. Re-subscribing active symbols...");
 
         // Re-subscribe to active symbols
         var resubscribed = await _ibkrClient.ReSubscribeActiveSymbolsAsync(stoppingToken);
-        _logger.LogInformation("[ShadowHeartbeat] Re-subscription complete: {Count} symbols", resubscribed);
+        _logger.LogInformation("[Heartbeat] Re-subscription complete: {Count} symbols", resubscribed);
     }
 }
