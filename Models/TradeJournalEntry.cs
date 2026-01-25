@@ -2,7 +2,7 @@ using RamStockAlerts.Models.Decisions;
 
 namespace RamStockAlerts.Models;
 
-public sealed class TradeJournalEntry
+public class TradeJournalEntry
 {
     public int SchemaVersion { get; set; }
     public Guid DecisionId { get; set; }
@@ -219,4 +219,8 @@ public sealed class TradeJournalEntry
         public int TickByTickCount { get; set; }
         public int TapeCount { get; set; }
     }
+}
+
+public sealed class ShadowTradeJournalEntry : TradeJournalEntry
+{
 }
