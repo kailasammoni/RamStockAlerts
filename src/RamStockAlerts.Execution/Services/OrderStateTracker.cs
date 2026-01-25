@@ -14,6 +14,8 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
     private readonly IPostSignalMonitor? _postSignalMonitor;
     private readonly ConcurrentDictionary<int, TrackedOrder> _orders = new();
     private readonly ConcurrentDictionary<int, List<FillReport>> _fills = new();
+    private readonly ConcurrentDictionary<string, FillReport> _fillsByExecId = new();
+    private readonly ConcurrentDictionary<string, decimal> _realizedPnlByExecId = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<Guid, List<int>> _intentOrders = new();
 
     private readonly TimeSpan _orderStatusTimeout = TimeSpan.FromSeconds(30);
@@ -102,11 +104,11 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
 
         if (update.Status == BrokerOrderStatus.Cancelled || update.Status == BrokerOrderStatus.Inactive)
         {
-            UpdateBracketStateForIntent(tracked.IntentId, BracketState.Cancelled);
+            UpdateBracketStateForIntent(tracked.IntentId, BracketState.Cancelled, update.Status);
         }
         else if (update.Status == BrokerOrderStatus.Filled)
         {
-            UpdateBracketStateForIntent(tracked.IntentId, null);
+            UpdateBracketStateForIntent(tracked.IntentId, null, update.Status);
         }
     }
 
@@ -114,12 +116,20 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
     {
         ResetIfNewDay();
 
+        if (!string.IsNullOrWhiteSpace(fill.ExecId))
+        {
+            _fillsByExecId[fill.ExecId] = fill;
+        }
+
         _fills.AddOrUpdate(
             fill.OrderId,
             _ => new List<FillReport> { fill },
             (_, list) =>
             {
-                list.Add(fill);
+                lock (list)
+                {
+                    list.Add(fill);
+                }
                 return list;
             });
 
@@ -127,17 +137,19 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
 
         if (fill.RealizedPnl.HasValue)
         {
-            lock (_pnlLock)
+            if (string.IsNullOrWhiteSpace(fill.ExecId))
             {
-                _realizedPnlToday += fill.RealizedPnl.Value;
-            }
+                lock (_pnlLock)
+                {
+                    _realizedPnlToday += fill.RealizedPnl.Value;
+                }
 
-            _logger.LogInformation(
-                "[OrderTracker] Fill {ExecId} order={OrderId} realized P&L=${Pnl} (daily total=${DailyPnl})",
-                fill.ExecId,
-                fill.OrderId,
-                fill.RealizedPnl,
-                _realizedPnlToday);
+                LogDailyPnl(fill.ExecId, fill.OrderId, fill.RealizedPnl.Value);
+            }
+            else if (TryRecordRealizedPnl(fill.ExecId, fill.RealizedPnl.Value))
+            {
+                LogDailyPnl(fill.ExecId, fill.OrderId, fill.RealizedPnl.Value);
+            }
         }
         else
         {
@@ -153,8 +165,69 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
         if (_orders.TryGetValue(fill.OrderId, out var tracked))
         {
             tracked.LastUpdateUtc = fill.ExecutionTimeUtc;
-            UpdateBracketStateForIntent(tracked.IntentId, null);
+            UpdateBracketStateForIntent(tracked.IntentId, null, BrokerOrderStatus.Filled);
         }
+    }
+
+    public void ProcessCommissionReport(string execId, decimal? commission, decimal? realizedPnl)
+    {
+        ResetIfNewDay();
+
+        if (string.IsNullOrWhiteSpace(execId))
+        {
+            _logger.LogWarning("[OrderTracker] Commission report missing execId. Commission={Commission} Pnl={Pnl}", commission, realizedPnl);
+            return;
+        }
+
+        if (realizedPnl.HasValue && TryRecordRealizedPnl(execId, realizedPnl.Value))
+        {
+            var orderId = _fillsByExecId.TryGetValue(execId, out var fill) ? fill.OrderId : 0;
+            LogDailyPnl(execId, orderId, realizedPnl.Value);
+        }
+
+        if (_fillsByExecId.TryGetValue(execId, out var existingFill))
+        {
+            var updatedFill = new FillReport
+            {
+                OrderId = existingFill.OrderId,
+                Symbol = existingFill.Symbol,
+                Side = existingFill.Side,
+                Quantity = existingFill.Quantity,
+                Price = existingFill.Price,
+                ExecId = existingFill.ExecId,
+                ExecutionTimeUtc = existingFill.ExecutionTimeUtc,
+                Commission = commission ?? existingFill.Commission,
+                RealizedPnl = realizedPnl ?? existingFill.RealizedPnl
+            };
+
+            _fillsByExecId[execId] = updatedFill;
+
+            _fills.AddOrUpdate(
+                existingFill.OrderId,
+                _ => new List<FillReport> { updatedFill },
+                (_, list) =>
+                {
+                    lock (list)
+                    {
+                        var index = list.FindIndex(f => f.ExecId == execId);
+                        if (index >= 0)
+                        {
+                            list[index] = updatedFill;
+                        }
+                        else
+                        {
+                            list.Add(updatedFill);
+                        }
+                    }
+                    return list;
+                });
+        }
+
+        _logger.LogInformation(
+            "[OrderTracker] Commission report execId={ExecId} commission={Commission} realizedPnl={Pnl}",
+            execId,
+            commission,
+            realizedPnl);
     }
 
     public BrokerOrderStatus GetOrderStatus(int orderId)
@@ -209,7 +282,7 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
         }
     }
 
-    private void UpdateBracketStateForIntent(Guid intentId, BracketState? fallbackState)
+    private void UpdateBracketStateForIntent(Guid intentId, BracketState? fallbackState, BrokerOrderStatus status)
     {
         if (_ledger is null)
         {
@@ -221,24 +294,37 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
         {
             if (bracket.Entry.IntentId == intentId)
             {
-                _ledger.UpdateBracketState(intentId, BracketState.Open);
-                var symbol = bracket.Entry.Symbol;
-                if (!string.IsNullOrWhiteSpace(symbol))
+                if (status == BrokerOrderStatus.Filled)
                 {
-                    _postSignalMonitor?.OnEntryFilled(symbol);
+                    _ledger.UpdateBracketState(intentId, BracketState.Open);
+                    var symbol = bracket.Entry.Symbol;
+                    if (!string.IsNullOrWhiteSpace(symbol))
+                    {
+                        _postSignalMonitor?.OnEntryFilled(symbol);
+                    }
+                }
+                else if (fallbackState.HasValue)
+                {
+                    _ledger.UpdateBracketState(intentId, fallbackState.Value);
                 }
                 return;
             }
 
             if (bracket.StopLoss?.IntentId == intentId)
             {
-                _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedLoss);
+                if (status == BrokerOrderStatus.Filled)
+                {
+                    _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedLoss);
+                }
                 return;
             }
 
             if (bracket.TakeProfit?.IntentId == intentId)
             {
-                _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedWin);
+                if (status == BrokerOrderStatus.Filled)
+                {
+                    _ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedWin);
+                }
                 return;
             }
         }
@@ -247,6 +333,36 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
         {
             _ledger.UpdateBracketState(intentId, fallbackState.Value);
         }
+    }
+
+    private bool TryRecordRealizedPnl(string execId, decimal realizedPnl)
+    {
+        if (string.IsNullOrWhiteSpace(execId))
+        {
+            return false;
+        }
+
+        if (!_realizedPnlByExecId.TryAdd(execId, realizedPnl))
+        {
+            return false;
+        }
+
+        lock (_pnlLock)
+        {
+            _realizedPnlToday += realizedPnl;
+        }
+
+        return true;
+    }
+
+    private void LogDailyPnl(string execId, int orderId, decimal realizedPnl)
+    {
+        _logger.LogInformation(
+            "[OrderTracker] Fill {ExecId} order={OrderId} realized P&L=${Pnl} (daily total=${DailyPnl})",
+            execId,
+            orderId,
+            realizedPnl,
+            _realizedPnlToday);
     }
 
     public IReadOnlyList<int> GetStaleOrders()

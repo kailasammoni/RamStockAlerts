@@ -732,6 +732,10 @@ public class FakeOrderStateTracker : IOrderStateTracker
     {
     }
 
+    public void ProcessCommissionReport(string execId, decimal? commission, decimal? realizedPnl)
+    {
+    }
+
     public BrokerOrderStatus GetOrderStatus(int orderId) => BrokerOrderStatus.Unknown;
 
     public IReadOnlyList<FillReport> GetFillsForOrder(int orderId) => Array.Empty<FillReport>();

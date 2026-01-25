@@ -490,6 +490,11 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
                 commissionAndFeesReport.ExecId,
                 commissionAndFeesReport.Commission,
                 commissionAndFeesReport.RealizedPNL);
+
+            _orderTracker?.ProcessCommissionReport(
+                commissionAndFeesReport.ExecId,
+                (decimal?)commissionAndFeesReport.Commission,
+                (decimal?)commissionAndFeesReport.RealizedPNL);
         }
 
         private static BrokerOrderStatus MapStatus(string status) =>
