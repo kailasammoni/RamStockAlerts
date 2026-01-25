@@ -5,6 +5,7 @@ using RamStockAlerts.Services;
 using RamStockAlerts.Models;
 using RamStockAlerts.Models.Notifications;
 using RamStockAlerts.Engine;
+using RamStockAlerts.Execution.Contracts;
 
 namespace RamStockAlerts.Controllers;
 
@@ -17,18 +18,21 @@ public class AdminController : ControllerBase
     private readonly DiscordDeliveryStatusStore _discordStatusStore;
     private readonly DiscordNotificationService _discordNotificationService;
     private readonly ILogger<AdminController> _logger;
+    private readonly ExecutionOptions _executionOptions;
 
     public AdminController(
         OrderFlowMetrics orderFlowMetrics,
         DiscordNotificationSettingsStore discordSettingsStore,
         DiscordDeliveryStatusStore discordStatusStore,
         DiscordNotificationService discordNotificationService,
+        ExecutionOptions executionOptions,
         ILogger<AdminController> logger)
     {
         _orderFlowMetrics = orderFlowMetrics;
         _discordSettingsStore = discordSettingsStore;
         _discordStatusStore = discordStatusStore;
         _discordNotificationService = discordNotificationService;
+        _executionOptions = executionOptions;
         _logger = logger;
     }
 
@@ -111,6 +115,16 @@ public class AdminController : ControllerBase
             SymbolsWithData = symbolStats.Count(s => s.HasData),
             Symbols = symbolStats
         });
+    }
+
+    [HttpPost("execution/monitor-only")]
+    public IActionResult SetMonitorOnly([FromQuery] bool enabled)
+    {
+        _executionOptions.MonitorOnly = enabled;
+        _logger.LogWarning(
+            "[Admin] Monitor-only mode {State} by operator",
+            enabled ? "ENABLED" : "DISABLED");
+        return Ok(new { monitorOnly = enabled });
     }
 
     [HttpGet("notifications/discord")]

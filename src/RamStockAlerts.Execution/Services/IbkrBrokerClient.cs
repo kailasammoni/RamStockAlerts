@@ -14,6 +14,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
 {
     private readonly ILogger<IbkrBrokerClient> _logger;
     private readonly IConfiguration _configuration;
+    private readonly IOrderStateTracker? _orderTracker;
 
     private readonly SemaphoreSlim _connectLock = new(1, 1);
     private EClientSocket? _socket;
@@ -29,10 +30,11 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
 
     public string Name => "IBKR";
 
-    public IbkrBrokerClient(ILogger<IbkrBrokerClient> logger, IConfiguration configuration)
+    public IbkrBrokerClient(ILogger<IbkrBrokerClient> logger, IConfiguration configuration, IOrderStateTracker? orderTracker = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _orderTracker = orderTracker;
     }
 
     public async Task<ExecutionResult> PlaceAsync(OrderIntent intent, CancellationToken ct = default)
@@ -49,6 +51,12 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             var order = BuildOrder(intent);
 
             _socket!.placeOrder(orderId, contract, order);
+            _orderTracker?.TrackSubmittedOrder(
+                orderId,
+                intent.IntentId,
+                intent.Symbol ?? string.Empty,
+                (decimal)order.TotalQuantity,
+                intent.Side);
 
             return new ExecutionResult
             {
@@ -96,6 +104,12 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             var parent = BuildOrder(entry);
             parent.Transmit = intent.StopLoss is null && intent.TakeProfit is null;
             _socket!.placeOrder(parentId, contract, parent);
+            _orderTracker?.TrackSubmittedOrder(
+                parentId,
+                entry.IntentId,
+                entry.Symbol ?? string.Empty,
+                (decimal)parent.TotalQuantity,
+                entry.Side);
 
             if (intent.TakeProfit is not null)
             {
@@ -104,6 +118,12 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
                 tp.Transmit = intent.StopLoss is null;
                 _socket.placeOrder(tpId, contract, tp);
                 brokerOrderIds.Add(tpId.ToString());
+                _orderTracker?.TrackSubmittedOrder(
+                    tpId,
+                    intent.TakeProfit.IntentId,
+                    intent.TakeProfit.Symbol ?? string.Empty,
+                    (decimal)tp.TotalQuantity,
+                    intent.TakeProfit.Side);
             }
 
             if (intent.StopLoss is not null)
@@ -113,6 +133,12 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
                 stop.Transmit = true;
                 _socket.placeOrder(stopId, contract, stop);
                 brokerOrderIds.Add(stopId.ToString());
+                _orderTracker?.TrackSubmittedOrder(
+                    stopId,
+                    intent.StopLoss.IntentId,
+                    intent.StopLoss.Symbol ?? string.Empty,
+                    (decimal)stop.TotalQuantity,
+                    intent.StopLoss.Side);
             }
 
             return new ExecutionResult
@@ -202,7 +228,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             _logger.LogInformation("[IBKR] Connecting execution client to {Host}:{Port} clientId={ClientId}", host, port, execClientId);
 
             _signal = new EReaderMonitorSignal();
-            _wrapper = new Wrapper(_logger, _nextValidIdTcs);
+            _wrapper = new Wrapper(_logger, _nextValidIdTcs, _orderTracker);
             _socket = new EClientSocket(_wrapper, _signal);
             _socket.eConnect(host, port, execClientId);
 
@@ -381,11 +407,13 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
     {
         private readonly ILogger _logger;
         private readonly TaskCompletionSource<int> _nextValidIdTcs;
+        private readonly IOrderStateTracker? _orderTracker;
 
-        public Wrapper(ILogger logger, TaskCompletionSource<int> nextValidIdTcs)
+        public Wrapper(ILogger logger, TaskCompletionSource<int> nextValidIdTcs, IOrderStateTracker? orderTracker = null)
         {
             _logger = logger;
             _nextValidIdTcs = nextValidIdTcs;
+            _orderTracker = orderTracker;
         }
 
         public override void nextValidId(int orderId) => _nextValidIdTcs.TrySetResult(orderId);
@@ -406,8 +434,80 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
         public override void connectionClosed() => _logger.LogWarning("[IBKR] Connection closed");
 
         // Optional fill tracking (best-effort).
-        public override void orderStatus(int orderId, string status, decimal filled, decimal remaining, double avgFillPrice, long permId, int parentId, double lastFillPrice, int clientId, string whyHeld, double mktCapPrice) { }
-        public override void execDetails(int reqId, Contract contract, IBApi.Execution execution) { }
-        public override void commissionAndFeesReport(CommissionAndFeesReport commissionAndFeesReport) { }
+        public override void orderStatus(int orderId, string status, decimal filled, decimal remaining, double avgFillPrice, long permId, int parentId, double lastFillPrice, int clientId, string whyHeld, double mktCapPrice)
+        {
+            var brokerStatus = MapStatus(status);
+
+            _logger.LogDebug(
+                "[IBKR] orderStatus id={OrderId} status={Status} filled={Filled} remaining={Remaining} avgPrice={AvgPrice}",
+                orderId,
+                status,
+                filled,
+                remaining,
+                avgFillPrice);
+
+            _orderTracker?.ProcessOrderStatus(new OrderStatusUpdate
+            {
+                OrderId = orderId,
+                Status = brokerStatus,
+                FilledQuantity = filled,
+                RemainingQuantity = remaining,
+                AvgFillPrice = (decimal)avgFillPrice,
+                LastFillPrice = (decimal)lastFillPrice,
+                PermId = permId,
+                ParentId = parentId,
+                TimestampUtc = DateTimeOffset.UtcNow
+            });
+        }
+
+        public override void execDetails(int reqId, Contract contract, IBApi.Execution execution)
+        {
+            _logger.LogDebug(
+                "[IBKR] execDetails reqId={ReqId} symbol={Symbol} side={Side} qty={Qty} price={Price} execId={ExecId}",
+                reqId,
+                contract.Symbol,
+                execution.Side,
+                execution.Shares,
+                execution.Price,
+                execution.ExecId);
+
+            _orderTracker?.ProcessFill(new FillReport
+            {
+                OrderId = execution.OrderId,
+                Symbol = contract.Symbol,
+                Side = execution.Side,
+                Quantity = execution.Shares,
+                Price = (decimal)execution.Price,
+                ExecId = execution.ExecId,
+                ExecutionTimeUtc = DateTimeOffset.UtcNow
+            });
+        }
+
+        public override void commissionAndFeesReport(CommissionAndFeesReport commissionAndFeesReport)
+        {
+            _logger.LogDebug(
+                "[IBKR] commission execId={ExecId} commission={Commission} realizedPnl={Pnl}",
+                commissionAndFeesReport.ExecId,
+                commissionAndFeesReport.CommissionAndFees,
+                commissionAndFeesReport.RealizedPNL);
+
+            _orderTracker?.ProcessCommissionReport(
+                commissionAndFeesReport.ExecId,
+                (decimal?)commissionAndFeesReport.CommissionAndFees,
+                (decimal?)commissionAndFeesReport.RealizedPNL);
+        }
+
+        private static BrokerOrderStatus MapStatus(string status) =>
+            status.ToUpperInvariant() switch
+            {
+                "PENDINGSUBMIT" => BrokerOrderStatus.PendingSubmit,
+                "PRESUBMITTED" => BrokerOrderStatus.PreSubmitted,
+                "SUBMITTED" => BrokerOrderStatus.Submitted,
+                "FILLED" => BrokerOrderStatus.Filled,
+                "CANCELLED" => BrokerOrderStatus.Cancelled,
+                "INACTIVE" => BrokerOrderStatus.Inactive,
+                _ when status.Contains("PARTIAL", StringComparison.OrdinalIgnoreCase) => BrokerOrderStatus.PartiallyFilled,
+                _ => BrokerOrderStatus.Unknown
+            };
     }
 }

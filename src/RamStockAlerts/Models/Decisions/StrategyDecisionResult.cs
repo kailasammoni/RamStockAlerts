@@ -33,6 +33,8 @@ public enum HardRejectReason
     ScarcitySymbolCooldown,
     ScarcityRankedOut,
     SpoofSuspected,
+    TapeAccelerationInsufficient,
+    WallPersistenceInsufficient,
     ReplenishmentSuspected,
     AbsorptionInsufficient
 }

@@ -151,7 +151,8 @@ public class SignalCoordinatorActiveUniverseTests
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
         var validator = new OrderFlowSignalValidator(
             NullLogger<OrderFlowSignalValidator>.Instance,
-            metrics);
+            metrics,
+            config);
         
         var journal = new FakeJournal();
         var scarcityController = new ScarcityController(config);
@@ -211,4 +212,3 @@ public class SignalCoordinatorActiveUniverseTests
         }
     }
 }
-

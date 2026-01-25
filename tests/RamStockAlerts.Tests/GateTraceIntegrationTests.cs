@@ -31,7 +31,7 @@ public class GateTraceIntegrationTests
 
         var journal = new InMemoryJournal();
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
-        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
+        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics, config);
         var scarcityController = SignalCoordinatorTestHelper.CreateScarcityController();
         
         // Create subscription manager with AAPL subscribed (tape + depth + tick-by-tick)
@@ -104,7 +104,7 @@ public class GateTraceIntegrationTests
 
         var journal = new InMemoryJournal();
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
-        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
+        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics, config);
         var scarcityController = SignalCoordinatorTestHelper.CreateScarcityController();
         var subscriptionManager = SignalCoordinatorTestHelper.CreateSubscriptionManager();
 
@@ -155,7 +155,7 @@ public class GateTraceIntegrationTests
 
         var journal = new InMemoryJournal();
         var metrics = new OrderFlowMetrics(NullLogger<OrderFlowMetrics>.Instance);
-        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics);
+        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics, config);
         var scarcityController = SignalCoordinatorTestHelper.CreateScarcityController();
         
         // Create subscription manager with depth disabled
@@ -213,5 +213,4 @@ public class GateTraceIntegrationTests
         public List<TradeJournalEntry> GetEntries() => _entries;
     }
 }
-
 

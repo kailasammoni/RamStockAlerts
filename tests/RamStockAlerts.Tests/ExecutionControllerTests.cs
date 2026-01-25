@@ -10,6 +10,7 @@ using RamStockAlerts.Execution.Interfaces;
 using RamStockAlerts.Execution.Risk;
 using RamStockAlerts.Execution.Services;
 using RamStockAlerts.Execution.Storage;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 /// <summary>
@@ -26,7 +27,7 @@ public class ExecutionControllerTests
         var riskManager = new RiskManagerV0(options);
         var brokerClient = new FakeBrokerClient();
         _ledger = new InMemoryExecutionLedger();
-        var executionService = new ExecutionService(riskManager, brokerClient, _ledger);
+        var executionService = new ExecutionService(options, riskManager, brokerClient, _ledger, NullLogger<ExecutionService>.Instance);
         var logger = new LoggerFactory().CreateLogger<ExecutionController>();
 
         // Create mock configuration with Execution:Enabled = true
@@ -171,7 +172,7 @@ public class ExecutionControllerTests
         var riskManager = new RiskManagerV0(options);
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var executionService = new ExecutionService(riskManager, brokerClient, ledger);
+        var executionService = new ExecutionService(options, riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
         var logger = new LoggerFactory().CreateLogger<ExecutionController>();
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["Execution:Enabled"] = "true" })
@@ -244,7 +245,7 @@ public class ExecutionControllerTests
         var options = new ExecutionOptions { Enabled = true };
         var riskManager = new RiskManagerV0(options);
         var brokerClient = new FakeBrokerClient();
-        var executionService = new ExecutionService(riskManager, brokerClient, freshLedger);
+        var executionService = new ExecutionService(options, riskManager, brokerClient, freshLedger, NullLogger<ExecutionService>.Instance);
         var logger = new LoggerFactory().CreateLogger<ExecutionController>();
         
         // Create mock configuration with Execution:Enabled = true
@@ -277,7 +278,7 @@ public class ExecutionControllerTests
         var riskManager = new RiskManagerV0(options);
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var executionService = new ExecutionService(riskManager, brokerClient, ledger);
+        var executionService = new ExecutionService(options, riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
         var logger = new LoggerFactory().CreateLogger<ExecutionController>();
         
         var configDict = new Dictionary<string, string?>
@@ -314,7 +315,7 @@ public class ExecutionControllerTests
         var riskManager = new RiskManagerV0(options);
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var executionService = new ExecutionService(riskManager, brokerClient, ledger);
+        var executionService = new ExecutionService(options, riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
         var logger = new LoggerFactory().CreateLogger<ExecutionController>();
         
         var configDict = new Dictionary<string, string?>
@@ -362,7 +363,7 @@ public class ExecutionControllerTests
         var riskManager = new RiskManagerV0(options);
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var executionService = new ExecutionService(riskManager, brokerClient, ledger);
+        var executionService = new ExecutionService(options, riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
         var logger = new LoggerFactory().CreateLogger<ExecutionController>();
         
         var configDict = new Dictionary<string, string?>

@@ -12,6 +12,7 @@ public class InMemoryExecutionLedger : IExecutionLedger
     private readonly ConcurrentBag<OrderIntent> _intents = new();
     private readonly ConcurrentBag<BracketIntent> _brackets = new();
     private readonly ConcurrentBag<ExecutionResult> _results = new();
+    private readonly ConcurrentDictionary<Guid, BracketState> _bracketStates = new();
     private readonly object _lock = new();
 
     /// <summary>
@@ -57,6 +58,18 @@ public class InMemoryExecutionLedger : IExecutionLedger
                 result.IntentId = intentId;
             }
             _results.Add(result);
+
+            if (IsBracketEntryIntent(result.IntentId))
+            {
+                if (result.Status == ExecutionStatus.Submitted)
+                {
+                    _bracketStates.TryAdd(result.IntentId, BracketState.Pending);
+                }
+                else if (result.Status == ExecutionStatus.Rejected || result.Status == ExecutionStatus.Error)
+                {
+                    _bracketStates.TryAdd(result.IntentId, BracketState.Error);
+                }
+            }
         }
     }
 
@@ -91,5 +104,60 @@ public class InMemoryExecutionLedger : IExecutionLedger
         {
             return _results.ToList().AsReadOnly();
         }
+    }
+
+    public int GetSubmittedIntentCountToday(DateTimeOffset now)
+    {
+        var todayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var todayEnd = todayStart.AddDays(1);
+
+        lock (_lock)
+        {
+            return _results
+                .Where(r => r.Status == ExecutionStatus.Submitted
+                            && r.TimestampUtc >= todayStart
+                            && r.TimestampUtc < todayEnd)
+                .Select(r => r.IntentId)
+                .ToHashSet()
+                .Count;
+        }
+    }
+
+    public int GetSubmittedBracketCountToday(DateTimeOffset now)
+    {
+        var todayStart = new DateTimeOffset(now.UtcDateTime.Date, TimeSpan.Zero);
+        var todayEnd = todayStart.AddDays(1);
+
+        lock (_lock)
+        {
+            var submitted = _results
+                .Where(r => r.Status == ExecutionStatus.Submitted
+                            && r.TimestampUtc >= todayStart
+                            && r.TimestampUtc < todayEnd)
+                .Select(r => r.IntentId)
+                .ToHashSet();
+
+            return _brackets.Count(b => submitted.Contains(b.Entry.IntentId)
+                                        && b.Entry.CreatedUtc >= todayStart
+                                        && b.Entry.CreatedUtc < todayEnd);
+        }
+    }
+
+    public int GetOpenBracketCount()
+    {
+        lock (_lock)
+        {
+            return _bracketStates.Values.Count(state => state == BracketState.Open);
+        }
+    }
+
+    public void UpdateBracketState(Guid entryIntentId, BracketState newState)
+    {
+        _bracketStates[entryIntentId] = newState;
+    }
+
+    private bool IsBracketEntryIntent(Guid intentId)
+    {
+        return _brackets.Any(b => b.Entry.IntentId == intentId);
     }
 }

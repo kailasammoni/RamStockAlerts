@@ -56,6 +56,10 @@ public sealed class JsonlExecutionLedger : IExecutionLedger
     public IReadOnlyList<OrderIntent> GetIntents() => _inner.GetIntents();
     public IReadOnlyList<BracketIntent> GetBrackets() => _inner.GetBrackets();
     public IReadOnlyList<ExecutionResult> GetResults() => _inner.GetResults();
+    public int GetSubmittedIntentCountToday(DateTimeOffset now) => _inner.GetSubmittedIntentCountToday(now);
+    public int GetSubmittedBracketCountToday(DateTimeOffset now) => _inner.GetSubmittedBracketCountToday(now);
+    public int GetOpenBracketCount() => _inner.GetOpenBracketCount();
+    public void UpdateBracketState(Guid entryIntentId, BracketState newState) => _inner.UpdateBracketState(entryIntentId, newState);
 
     private void LoadExisting()
     {

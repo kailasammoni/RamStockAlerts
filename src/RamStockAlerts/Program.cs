@@ -277,6 +277,8 @@ builder.Services.AddSingleton<MarketDataSubscriptionManager>(sp =>
 // Register order flow metrics and signal validation
 builder.Services.AddSingleton<OrderFlowMetrics>();
 builder.Services.AddSingleton<OrderFlowSignalValidator>();
+builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IPostSignalMonitor>(sp =>
+    sp.GetRequiredService<SignalCoordinator>());
 
 if (OperatingSystem.IsWindows())
 {
@@ -301,6 +303,7 @@ var executionBroker = builder.Configuration.GetValue("Execution:Broker", "Fake")
 
 var executionOptions = new RamStockAlerts.Execution.Contracts.ExecutionOptions();
 builder.Configuration.GetSection("Execution").Bind(executionOptions);
+builder.Services.AddSingleton(executionOptions);
 
 var executionLedgerType = builder.Configuration.GetValue<string>("Execution:Ledger:Type") ?? "InMemory";
 if (string.Equals(executionLedgerType, "Jsonl", StringComparison.OrdinalIgnoreCase))
@@ -317,11 +320,20 @@ else
         RamStockAlerts.Execution.Storage.InMemoryExecutionLedger>();
     Log.Information("Execution ledger: InMemory");
 }
+builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IOrderStateTracker>(sp =>
+    new RamStockAlerts.Execution.Services.OrderStateTracker(
+        sp.GetRequiredService<ILogger<RamStockAlerts.Execution.Services.OrderStateTracker>>(),
+        sp.GetService<RamStockAlerts.Execution.Interfaces.IExecutionLedger>(),
+        sp.GetService<RamStockAlerts.Execution.Interfaces.IPostSignalMonitor>()));
 builder.Services.AddSingleton<RamStockAlerts.Execution.Interfaces.IRiskManager>(sp =>
 {
     var maxNotional = builder.Configuration.GetValue("Execution:MaxNotionalUsd", 2000m);
     var maxShares = builder.Configuration.GetValue("Execution:MaxShares", 500m);
-    return new RamStockAlerts.Execution.Risk.RiskManagerV0(executionOptions, maxNotional, maxShares);
+    return new RamStockAlerts.Execution.Risk.RiskManagerV0(
+        executionOptions,
+        sp.GetService<RamStockAlerts.Execution.Interfaces.IOrderStateTracker>(),
+        maxNotional,
+        maxShares);
 });
 
 // Broker selection

@@ -1,5 +1,6 @@
 namespace RamStockAlerts.Execution.Services;
 
+using Microsoft.Extensions.Logging;
 using RamStockAlerts.Execution.Contracts;
 using RamStockAlerts.Execution.Interfaces;
 
@@ -9,18 +10,24 @@ using RamStockAlerts.Execution.Interfaces;
 /// </summary>
 public class ExecutionService : IExecutionService
 {
+    private readonly ExecutionOptions _options;
     private readonly IRiskManager _riskManager;
     private readonly IBrokerClient _brokerClient;
     private readonly IExecutionLedger _ledger;
+    private readonly ILogger<ExecutionService> _logger;
 
     public ExecutionService(
+        ExecutionOptions? options,
         IRiskManager riskManager,
         IBrokerClient brokerClient,
-        IExecutionLedger ledger)
+        IExecutionLedger ledger,
+        ILogger<ExecutionService> logger)
     {
+        _options = options ?? new ExecutionOptions();
         _riskManager = riskManager ?? throw new ArgumentNullException(nameof(riskManager));
         _brokerClient = brokerClient ?? throw new ArgumentNullException(nameof(brokerClient));
         _ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     /// <summary>
@@ -30,6 +37,24 @@ public class ExecutionService : IExecutionService
     {
         if (intent is null)
             throw new ArgumentNullException(nameof(intent));
+
+        if (_options.MonitorOnly)
+        {
+            _logger.LogInformation(
+                "[Execution] Monitor-only mode active. Skipping execution for {Symbol}",
+                intent.Symbol);
+            _ledger.RecordIntent(intent);
+            var result = new ExecutionResult
+            {
+                IntentId = intent.IntentId,
+                Status = ExecutionStatus.Rejected,
+                RejectionReason = "MonitorOnlyMode",
+                BrokerName = _brokerClient.Name,
+                TimestampUtc = DateTimeOffset.UtcNow
+            };
+            _ledger.RecordResult(intent.IntentId, result);
+            return result;
+        }
 
         // Validate via risk manager
         var riskDecision = _riskManager.Validate(intent, _ledger);
@@ -73,6 +98,24 @@ public class ExecutionService : IExecutionService
     {
         if (intent is null)
             throw new ArgumentNullException(nameof(intent));
+
+        if (_options.MonitorOnly)
+        {
+            _logger.LogInformation(
+                "[Execution] Monitor-only mode active. Skipping execution for {Symbol}",
+                intent.Entry?.Symbol);
+            _ledger.RecordBracket(intent);
+            var result = new ExecutionResult
+            {
+                IntentId = intent.Entry.IntentId,
+                Status = ExecutionStatus.Rejected,
+                RejectionReason = "MonitorOnlyMode",
+                BrokerName = _brokerClient.Name,
+                TimestampUtc = DateTimeOffset.UtcNow
+            };
+            _ledger.RecordResult(intent.Entry.IntentId, result);
+            return result;
+        }
 
         // Validate via risk manager
         var riskDecision = _riskManager.Validate(intent, _ledger);
