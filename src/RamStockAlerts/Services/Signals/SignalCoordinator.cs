@@ -14,7 +14,7 @@ using RamStockAlerts.Models.Notifications;
 
 namespace RamStockAlerts.Services.Signals;
 
-public sealed class SignalCoordinator
+public sealed class SignalCoordinator : IPostSignalMonitor
 {
     private const int TapePresenceWindowMs = 3000;
     private const int SignalEvaluationThrottleMs = 250; // Don't evaluate more than once per 250ms per symbol
@@ -53,6 +53,8 @@ public sealed class SignalCoordinator
     private readonly double _spreadBlowoutThreshold; // 50% = 0.5
     private readonly int _postSignalConsecutiveThreshold;
     private readonly long _postSignalMaxAgeMs;
+    private readonly ConcurrentDictionary<string, long> _lastMonitorCheckMs = new(StringComparer.OrdinalIgnoreCase);
+    private const long MonitorThrottleMs = 500;
     
     // Phase 3.2: Tape Warm-up Watchlist
     private readonly ConcurrentDictionary<string, TapeWarmupWatchlistEntry> _tapeWarmupWatchlist = new(StringComparer.OrdinalIgnoreCase);
@@ -1131,6 +1133,7 @@ public sealed class SignalCoordinator
                 entry.RejectionReason = null;
                 entry.DecisionTrace = BuildDecisionTraceForScarcityAccepted(entry.DecisionTrace);
                 entry.DecisionResult = UpdateDecisionResult(entry.DecisionResult, DecisionOutcome.Accepted, null);
+                entry.QualityBand = GetQualityBand(entry.DecisionInputs?.Score);
 
                 if (_recordBlueprints && pending.Blueprint.Success)
                 {
@@ -1377,6 +1380,23 @@ public sealed class SignalCoordinator
         }
 
         return details;
+    }
+
+    private static string? GetQualityBand(decimal? score)
+    {
+        if (!score.HasValue)
+        {
+            return null;
+        }
+
+        return score.Value switch
+        {
+            >= 9.0m => "Elite",
+            >= 8.0m => "Strong",
+            >= 7.0m => "Standard",
+            >= 6.0m => "Marginal",
+            _ => "Low"
+        };
     }
 
     private static string? BuildIntendedAction(string? direction, BlueprintPlan blueprint)
@@ -1932,6 +1952,13 @@ public sealed class SignalCoordinator
             return;
         }
 
+        if (_lastMonitorCheckMs.TryGetValue(book.Symbol, out var lastCheck) &&
+            nowMs - lastCheck < MonitorThrottleMs)
+        {
+            return;
+        }
+        _lastMonitorCheckMs[book.Symbol] = nowMs;
+
         if (tracker.CancelRequested)
         {
             return;
@@ -1992,6 +2019,29 @@ public sealed class SignalCoordinator
             tracker.ConsecutiveTapeSlowdowns >= _postSignalConsecutiveThreshold)
         {
             RequestCancelSignal(tracker, nowMs);
+            return;
+        }
+
+        if (tracker.Phase == MonitorPhase.AwaitingFill)
+        {
+            const int PreFillCancelThreshold = 2;
+            if (tracker.ConsecutiveSpreadBlowouts >= PreFillCancelThreshold)
+            {
+                RequestCancelSignal(tracker, nowMs, "PreFillSpreadBlowout");
+                return;
+            }
+        }
+    }
+
+    public void OnEntryFilled(string symbol)
+    {
+        if (_acceptedSignals.TryGetValue(symbol, out var tracker))
+        {
+            tracker.Phase = MonitorPhase.PositionOpen;
+            tracker.EntryFilledUtc = DateTimeOffset.UtcNow;
+            _logger.LogInformation(
+                "[PostSignal] {Symbol} entry filled, transitioning to PositionOpen phase",
+                symbol);
         }
     }
 
@@ -2002,7 +2052,7 @@ public sealed class SignalCoordinator
             : snapshot.BidTradesIn3Sec;
     }
 
-    private void RequestCancelSignal(AcceptedSignalTracker tracker, long nowMs)
+    private void RequestCancelSignal(AcceptedSignalTracker tracker, long nowMs, string? overrideReason = null)
     {
         if (tracker.CancelRequested)
         {
@@ -2012,9 +2062,9 @@ public sealed class SignalCoordinator
         tracker.CancelRequested = true;
         tracker.CancelRequestedUtc = DateTimeOffset.UtcNow;
 
-        var reason = tracker.ConsecutiveSpreadBlowouts >= _postSignalConsecutiveThreshold
+        var reason = overrideReason ?? (tracker.ConsecutiveSpreadBlowouts >= _postSignalConsecutiveThreshold
             ? "SpreadBlowout"
-            : "TapeSlowdown";
+            : "TapeSlowdown");
 
         _logger.LogWarning(
             "[PostSignal] Requesting cancellation for {Symbol} {Direction}: {Reason}",
@@ -2217,10 +2267,18 @@ public sealed class SignalCoordinator
         public required decimal BaselineSpread { get; init; }
         public required int BaselineTapeVelocity { get; init; }
         public required List<string> BrokerOrderIds { get; init; }
+        public MonitorPhase Phase { get; set; } = MonitorPhase.AwaitingFill;
+        public DateTimeOffset? EntryFilledUtc { get; set; }
         public int ConsecutiveSpreadBlowouts { get; set; }
         public int ConsecutiveTapeSlowdowns { get; set; }
         public bool CancelRequested { get; set; }
         public DateTimeOffset? CancelRequestedUtc { get; set; }
+    }
+
+    private enum MonitorPhase
+    {
+        AwaitingFill,
+        PositionOpen
     }
 
     /// <summary>

@@ -109,6 +109,52 @@ public class PostSignalMonitorTests
     }
 
     [Fact]
+    public async Task MonitorPostSignalQuality_PreFillBlowout_RequestsCancelEarly()
+    {
+        var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>
+        {
+            ["Signals:PostSignalMonitoringEnabled"] = "true",
+            ["Signals:SpreadBlowoutThreshold"] = "0.5",
+            ["Signals:TapeSlowdownThreshold"] = "0.5",
+            ["Signals:PostSignalConsecutiveThreshold"] = "3",
+            ["Signals:PostSignalMaxAgeMs"] = "300000"
+        });
+
+        var (manager, metrics) = await SignalCoordinatorTestHelper.CreateSubscriptionManagerWithMetricsAsync(
+            config,
+            "NVDA",
+            enableTickByTick: true);
+
+        var validator = new OrderFlowSignalValidator(NullLogger<OrderFlowSignalValidator>.Instance, metrics, config);
+        var journal = new TestTradeJournal();
+        var scarcity = new ScarcityController(config);
+        var executionService = new FakeExecutionService();
+        var coordinator = new SignalCoordinator(
+            config,
+            metrics,
+            validator,
+            journal,
+            scarcity,
+            manager,
+            NullLogger<SignalCoordinator>.Instance,
+            executionService);
+
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        coordinator.TrackAcceptedSignal("NVDA", "BUY", Guid.NewGuid(), 0.02m, 10, nowMs, new List<string> { "111" });
+
+        for (int i = 0; i < 2; i++)
+        {
+            var book = CreateBook("NVDA", spread: 0.04m, askTrades3s: 10);
+            var currentMs = nowMs + (i * 1000);
+            metrics.UpdateMetrics(book, currentMs);
+            coordinator.ProcessSnapshot(book, currentMs);
+        }
+
+        var cancelled = SpinWait.SpinUntil(() => executionService.CancelCalled, 2000);
+        Assert.True(cancelled);
+    }
+
+    [Fact]
     public async Task MonitorPostSignalQuality_ConditionsImprove_ResetsCounter()
     {
         var config = SignalCoordinatorTestHelper.BuildConfig(new Dictionary<string, string?>

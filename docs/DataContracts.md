@@ -14,6 +14,7 @@ This system uses append-only JSONL files as an audit trail. Changes here must be
   - `DataQualityFlags` (string[])
 - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `src/RamStockAlerts/Models/TradeJournalEntry.cs`)
   - `Blueprint.ShareCount` (int?, optional): number of shares used for P&L calculations.
+  - `QualityBand` (string?, optional): cohort label for accepted signal quality.
 
 ## `logs/trade-outcomes.jsonl` (TradeOutcome)
 - Serialization: System.Text.Json default (PascalCase property names).

@@ -25,6 +25,7 @@ public class TradeJournalEntry
     public List<string>? DecisionTrace { get; set; }
     public string? RejectionReason { get; set; }
     public List<string>? DataQualityFlags { get; set; }
+    public string? QualityBand { get; set; }
 
     public BlueprintPlan? Blueprint { get; set; }
     public SystemMetricsSnapshot? SystemMetrics { get; set; }
@@ -221,4 +222,3 @@ public class TradeJournalEntry
         public int TapeCount { get; set; }
     }
 }
-

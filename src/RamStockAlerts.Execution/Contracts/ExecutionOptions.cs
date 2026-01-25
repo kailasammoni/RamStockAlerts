@@ -22,6 +22,11 @@ public class ExecutionOptions
     public bool KillSwitch { get; set; } = false;
 
     /// <summary>
+    /// Soft kill switch: signals still fire and journal, but no orders are placed.
+    /// </summary>
+    public bool MonitorOnly { get; set; } = false;
+
+    /// <summary>
     /// Maximum orders allowed per calendar day (default: 20).
     /// </summary>
     public int MaxOrdersPerDay { get; set; } = 20;

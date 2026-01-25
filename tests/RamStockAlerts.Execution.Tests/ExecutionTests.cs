@@ -5,6 +5,7 @@ using RamStockAlerts.Execution.Interfaces;
 using RamStockAlerts.Execution.Risk;
 using RamStockAlerts.Execution.Services;
 using RamStockAlerts.Execution.Storage;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 // Use test version of FakeBrokerClient (has extra methods for failure injection)
 using FakeBrokerClient = RamStockAlerts.Execution.Tests.Fakes.FakeBrokerClient;
@@ -279,7 +280,7 @@ public class ExecutionTests
         var riskManager = new RiskManagerV0(CreateDefaultOptions());
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var service = new ExecutionService(riskManager, brokerClient, ledger);
+        var service = new ExecutionService(CreateDefaultOptions(), riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
 
         var intent = new OrderIntent
         {
@@ -309,13 +310,40 @@ public class ExecutionTests
     }
 
     [Fact]
+    public async Task ExecutionService_ExecuteAsync_MonitorOnly_RejectsAndSkipsBroker()
+    {
+        var options = CreateDefaultOptions();
+        options.MonitorOnly = true;
+        var riskManager = new RiskManagerV0(options);
+        var brokerClient = new FakeBrokerClient();
+        var ledger = new InMemoryExecutionLedger();
+        var service = new ExecutionService(options, riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
+
+        var intent = new OrderIntent
+        {
+            IntentId = Guid.NewGuid(),
+            Symbol = "AAPL",
+            Side = OrderSide.Buy,
+            Type = OrderType.Market,
+            Quantity = 100m
+        };
+
+        var result = await service.ExecuteAsync(intent);
+
+        Assert.Equal(ExecutionStatus.Rejected, result.Status);
+        Assert.Equal("MonitorOnlyMode", result.RejectionReason);
+        Assert.Empty(brokerClient.GetPlacedOrders());
+        Assert.Single(ledger.GetResults());
+    }
+
+    [Fact]
     public async Task ExecutionService_ExecuteAsync_Order_Rejected_DoesNotCallBroker()
     {
         // Arrange
         var riskManager = new RiskManagerV0(CreateDefaultOptions());
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var service = new ExecutionService(riskManager, brokerClient, ledger);
+        var service = new ExecutionService(CreateDefaultOptions(), riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
 
         var intent = new OrderIntent
         {
@@ -350,7 +378,7 @@ public class ExecutionTests
         var riskManager = new RiskManagerV0(CreateDefaultOptions());
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var service = new ExecutionService(riskManager, brokerClient, ledger);
+        var service = new ExecutionService(CreateDefaultOptions(), riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
 
         var bracket = new BracketIntent
         {
@@ -405,7 +433,7 @@ public class ExecutionTests
         var riskManager = new RiskManagerV0(new ExecutionOptions { Live = true });
         var brokerClient = new FakeBrokerClient();
         var ledger = new InMemoryExecutionLedger();
-        var service = new ExecutionService(riskManager, brokerClient, ledger);
+        var service = new ExecutionService(CreateDefaultOptions(), riskManager, brokerClient, ledger, NullLogger<ExecutionService>.Instance);
 
         var bracket = new BracketIntent
         {

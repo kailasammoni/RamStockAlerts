@@ -2,27 +2,41 @@ namespace RamStockAlerts.Execution.Services;
 
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Threading;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Execution.Contracts;
 using RamStockAlerts.Execution.Interfaces;
 
-public sealed class OrderStateTracker : IOrderStateTracker
+public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
 {
     private readonly ILogger<OrderStateTracker> _logger;
     private readonly IExecutionLedger? _ledger;
+    private readonly IPostSignalMonitor? _postSignalMonitor;
     private readonly ConcurrentDictionary<int, TrackedOrder> _orders = new();
     private readonly ConcurrentDictionary<int, List<FillReport>> _fills = new();
     private readonly ConcurrentDictionary<Guid, List<int>> _intentOrders = new();
+
+    private readonly TimeSpan _orderStatusTimeout = TimeSpan.FromSeconds(30);
+    private readonly Timer _staleOrderTimer;
 
     private decimal _realizedPnlToday = 0m;
     private DateOnly _currentTradeDate = DateOnly.FromDateTime(DateTime.UtcNow);
     private readonly object _pnlLock = new();
     private long _fillCount;
 
-    public OrderStateTracker(ILogger<OrderStateTracker> logger, IExecutionLedger? ledger = null)
+    public OrderStateTracker(
+        ILogger<OrderStateTracker> logger,
+        IExecutionLedger? ledger = null,
+        IPostSignalMonitor? postSignalMonitor = null)
     {
         _logger = logger;
         _ledger = ledger;
+        _postSignalMonitor = postSignalMonitor;
+        _staleOrderTimer = new Timer(
+            _ => CheckForStaleOrders(),
+            null,
+            TimeSpan.FromSeconds(15),
+            TimeSpan.FromSeconds(15));
     }
 
     public void TrackSubmittedOrder(int orderId, Guid intentId, string symbol, decimal quantity, OrderSide side)
@@ -35,7 +49,8 @@ public sealed class OrderStateTracker : IOrderStateTracker
             Quantity = quantity,
             Side = side,
             Status = BrokerOrderStatus.Submitted,
-            SubmittedUtc = DateTimeOffset.UtcNow
+            SubmittedUtc = DateTimeOffset.UtcNow,
+            LastUpdateUtc = DateTimeOffset.UtcNow
         };
 
         _orders[orderId] = tracked;
@@ -137,6 +152,7 @@ public sealed class OrderStateTracker : IOrderStateTracker
 
         if (_orders.TryGetValue(fill.OrderId, out var tracked))
         {
+            tracked.LastUpdateUtc = fill.ExecutionTimeUtc;
             UpdateBracketStateForIntent(tracked.IntentId, null);
         }
     }
@@ -206,6 +222,11 @@ public sealed class OrderStateTracker : IOrderStateTracker
             if (bracket.Entry.IntentId == intentId)
             {
                 _ledger.UpdateBracketState(intentId, BracketState.Open);
+                var symbol = bracket.Entry.Symbol;
+                if (!string.IsNullOrWhiteSpace(symbol))
+                {
+                    _postSignalMonitor?.OnEntryFilled(symbol);
+                }
                 return;
             }
 
@@ -226,6 +247,38 @@ public sealed class OrderStateTracker : IOrderStateTracker
         {
             _ledger.UpdateBracketState(intentId, fallbackState.Value);
         }
+    }
+
+    public IReadOnlyList<int> GetStaleOrders()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return _orders.Values
+            .Where(o => o.Status == BrokerOrderStatus.Submitted
+                        && o.LastUpdateUtc != default
+                        && (now - o.LastUpdateUtc) > _orderStatusTimeout)
+            .Select(o => o.OrderId)
+            .ToList();
+    }
+
+    public void CheckForStaleOrders()
+    {
+        var stale = GetStaleOrders();
+        foreach (var orderId in stale)
+        {
+            if (_orders.TryGetValue(orderId, out var order))
+            {
+                _logger.LogWarning(
+                    "[OrderTracker] STALE ORDER ALERT: Order {OrderId} ({Symbol}) no status update for {Elapsed}s",
+                    orderId,
+                    order.Symbol,
+                    (DateTimeOffset.UtcNow - order.LastUpdateUtc).TotalSeconds);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _staleOrderTimer.Dispose();
     }
 
     private sealed class TrackedOrder
