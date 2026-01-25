@@ -8,9 +8,8 @@ Order-flow intelligence platform for detecting transient liquidity dislocations 
 - Replay smoke test: `powershell -File scripts/replay.ps1 -Symbol AAPL`
 
 ## Docs
-- `docs/System_charter.md`
-- `docs/Runbook.md`
-- `docs/DataContracts.md`
 - `docs/Architecture.md`
-- `docs/AgenticWorkflow.md`
+- `docs/DataContracts.md`
+- `docs/DecisionLog.md`
+- `docs/IBKR_UPGRADE.md`
 - `SKILLS.md`

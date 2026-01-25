@@ -1,6 +1,6 @@
 # RamStockAlerts – Complete Codebase Documentation
 
-**Generated:** January 16, 2026  
+**Generated:** January 25, 2026  
 **Purpose:** Comprehensive technical documentation for sharing with reasoning models and AI assistants
 
 ---
@@ -128,39 +128,83 @@ Detect **transient order-book imbalances** that statistically precede short-term
 src/
 ├── RamStockAlerts/                     # Main API project
 │   ├── Controllers/                    # REST API endpoints
-│   │   ├── ExecutionController.cs     # Order placement API
-│   │   ├── SignalsController.cs       # Signal history queries
-│   │   └── AdminController.cs          # Admin/diagnostics
+│   │   ├── Api/                       # API DTOs
+│   │   │   ├── Admin/                 # Admin DTOs
+│   │   │   │   └── DiscordNotificationDtos.cs
+│   │   │   └── Execution/             # Execution DTOs
+│   │   │       ├── BracketIntentDto.cs
+│   │   │       ├── LedgerDto.cs
+│   │   │       └── OrderIntentDto.cs
+│   │   ├── AdminController.cs         # Admin/diagnostics
+│   │   └── ExecutionController.cs     # Order placement API
 │   ├── Services/                       # Core business logic
-│   │   ├── SignalCoordinator.cs # signals loop
+│   │   ├── Signals/                   # Signal processing
+│   │   │   ├── ITradeJournal.cs       # Journal interface
+│   │   │   ├── SignalCoordinator.cs   # Signals loop
+│   │   │   ├── SignalHelpers.cs       # Signal utilities
+│   │   │   ├── TradeJournal.cs        # Event journaling
+│   │   │   └── TradeJournalHeartbeatService.cs
+│   │   ├── Universe/                  # Universe filtering
+│   │   │   ├── ContractClassificationServices.cs
+│   │   │   ├── DepthEligibilityCache.cs
+│   │   │   └── DepthUniverseFilter.cs # Depth eligibility filtering
+│   │   ├── DailyRollupReporter.cs     # Daily summary reports
+│   │   ├── DiscordDeliveryStatusStore.cs
+│   │   ├── DiscordNotificationService.cs # Discord alerts
+│   │   ├── DiscordNotificationSettingsStore.cs
+│   │   ├── FileBasedJournalRotationService.cs
+│   │   ├── IbkrRecorderHostedService.cs # IBKR data recording
+│   │   ├── IbkrReplayHostedService.cs   # IBKR data replay
+│   │   ├── IbkrRequestIdSource.cs
+│   │   ├── IJournalRotationService.cs
 │   │   ├── MarketDataSubscriptionManager.cs  # IBKR subscription lifecycle
-│   │   ├── TradeJournal.cs      # Event journaling
-│   │   └── ScarcityController.cs      # Signal throttling
+│   │   ├── OutcomeSummaryStore.cs     # Outcome tracking
+│   │   ├── PreviewSignalEmitter.cs
+│   │   ├── ScarcityController.cs      # Signal throttling
+│   │   ├── SubscriptionDiagnosticsHostedService.cs
+│   │   ├── SystemSleepPreventer.cs
+│   │   └── TradeOutcomeLabeler.cs     # Win/loss labeling
 │   ├── Engine/                         # Strategy & metrics
 │   │   ├── OrderFlowMetrics.cs        # Microstructure calculations
-│   │   ├── OrderFlowSignalValidator.cs # Signal scoring/validation
-│   │   └── TradeBlueprint.cs          # Trade plan generation
+│   │   └── OrderFlowSignalValidator.cs # Signal scoring/validation
 │   ├── Universe/                       # Symbol universe management
-│   │   ├── UniverseService.cs         # Universe orchestration
+│   │   ├── IUniverseSource.cs         # Universe source interface
 │   │   ├── IbkrScannerUniverseSource.cs # IBKR scanner integration
-│   │   └── DepthUniverseFilter.cs     # Depth eligibility filtering
+│   │   ├── StaticUniverseSource.cs    # Static symbol list
+│   │   └── UniverseService.cs         # Universe orchestration
 │   ├── Feeds/                          # Market data clients
 │   │   └── IBkrMarketDataClient.cs    # IBKR TWS API wrapper
 │   ├── Models/                         # Domain models
+│   │   ├── Decisions/                 # Decision models
+│   │   ├── Microstructure/            # Market microstructure models
+│   │   ├── Notifications/             # Notification models
 │   │   ├── OrderBookState.cs          # Level II depth state
-│   │   ├── TapeData.cs                # Tick-by-tick tape
-│   │   └── TradeJournalEntry.cs # Journal schema
+│   │   ├── OutcomeSummary.cs          # Trade outcome summary
+│   │   ├── PerformanceMetrics.cs      # Performance tracking
+│   │   ├── TradeJournalEntry.cs       # Journal schema
+│   │   └── TradeOutcome.cs            # Trade outcome model
 │   └── Data/                           # Persistence layer
-│       ├── AppDbContext.cs            # EF Core DbContext
-│       ├── FileEventStore.cs          # JSONL event store
-│       └── PostgresEventStore.cs      # Postgres event store
+│       └── Engine/                    # (empty, reserved)
 └── RamStockAlerts.Execution/          # Execution module
+    ├── Contracts/                     # Execution contracts
+    │   ├── BracketIntent.cs
+    │   ├── Enums.cs
+    │   ├── ExecutionOptions.cs
+    │   ├── ExecutionRequest.cs
+    │   ├── ExecutionResult.cs
+    │   ├── OrderIntent.cs
+    │   └── RiskDecision.cs
+    ├── Interfaces/                    # Broker interfaces
+    ├── Reporting/
+    │   └── ExecutionDailyReporter.cs  # Execution daily reports
     ├── Services/
+    │   ├── BracketTemplateBuilder.cs  # Bracket order builder
     │   ├── ExecutionService.cs        # Order submission orchestration
     │   ├── FakeBrokerClient.cs        # Mock broker (default)
     │   └── IbkrBrokerClient.cs        # IBKR real broker (WIP)
-    └── Risk/
-        └── RiskManagerV0.cs           # Risk caps & validation
+    ├── Risk/
+    │   └── RiskManagerV0.cs           # Risk caps & validation
+    └── Storage/                       # Execution storage
 
 tests/
 ├── RamStockAlerts.Tests/              # Unit tests
@@ -287,6 +331,35 @@ The universe pipeline maintains four hierarchical sets:
 - Instrument: STK (stocks)
 - Location: STK.US.MAJOR
 
+### 4.7 DiscordNotificationService
+
+**Responsibilities:**
+- Send trade blueprints to Discord webhook
+- Format rich embeds with score breakdown and blueprint details
+- Retry with exponential backoff on failures
+- Track delivery status via DiscordDeliveryStatusStore
+- Support enable/disable via DiscordNotificationSettingsStore
+
+**Related Files:**
+- `Services/DiscordNotificationService.cs` – Core notification logic
+- `Services/DiscordDeliveryStatusStore.cs` – Delivery tracking
+- `Services/DiscordNotificationSettingsStore.cs` – Settings persistence
+- `Controllers/Api/Admin/DiscordNotificationDtos.cs` – Admin API DTOs
+
+### 4.8 TradeOutcomeLabeler
+
+**Responsibilities:**
+- Monitor accepted signals for TP/SL hit
+- Label outcomes as Win, Loss, or Open
+- Store results to OutcomeSummaryStore
+- Enable performance tracking and win rate calculation
+
+**Related Files:**
+- `Services/TradeOutcomeLabeler.cs` – Outcome labeling logic
+- `Services/OutcomeSummaryStore.cs` – Outcome persistence
+- `Models/TradeOutcome.cs` – Outcome model
+- `Models/OutcomeSummary.cs` – Summary aggregation
+
 ---
 
 ## 5. Data Flow & Pipelines
@@ -327,6 +400,17 @@ The universe pipeline maintains four hierarchical sets:
    ├─▶ Stop: Entry - (Spread × 4)
    ├─▶ Target: Entry + (Spread × 8)
    └─▶ Position Size: 0.25% account risk
+
+6. DiscordNotificationService (if enabled)
+   ├─▶ Format signal as Discord embed
+   ├─▶ Include score breakdown + blueprint
+   ├─▶ Retry with exponential backoff
+   └─▶ Track delivery status (DiscordDeliveryStatusStore)
+
+7. TradeOutcomeLabeler (post-signal)
+   ├─▶ Monitor price vs TP/SL levels
+   ├─▶ Label outcome (Win/Loss/Open)
+   └─▶ Store to OutcomeSummaryStore
 ```
 
 ### 5.2 Record Mode (IBKR → JSONL)
@@ -1140,21 +1224,27 @@ dotnet run --project src/RamStockAlerts/RamStockAlerts.csproj
 - [README/EXECUTION_API.md](README/EXECUTION_API.md) – Execution API documentation
 - [README/UniverseUpdateJournalEntry.md](README/UniverseUpdateJournalEntry.md) – Journal schema docs
 - [README/GateTrace_Schema.md](README/GateTrace_Schema.md) – GateTrace schema docs
-- [README/Runbooks.md](README/Runbooks.md) – Operational runbooks
 - [docs/Architecture.md](docs/Architecture.md) – High-level architecture overview
-- [docs/AgenticWorkflow.md](docs/AgenticWorkflow.md) – Agent workflow and instruction layering
+- [docs/DataContracts.md](docs/DataContracts.md) – Schema definitions
+- [docs/DecisionLog.md](docs/DecisionLog.md) – Change history
+- [docs/IBKR_UPGRADE.md](docs/IBKR_UPGRADE.md) – TWS API upgrade guide
 - [SKILLS.md](SKILLS.md) – Repo skills index
 
 **Core Source Files:**
 - [src/RamStockAlerts/Program.cs](src/RamStockAlerts/Program.cs) – Application entry point
-- [src/RamStockAlerts/Services/SignalCoordinator.cs](src/RamStockAlerts/Services/SignalCoordinator.cs) – signals loop
+- [src/RamStockAlerts/Services/Signals/SignalCoordinator.cs](src/RamStockAlerts/Services/Signals/SignalCoordinator.cs) – Signals loop
+- [src/RamStockAlerts/Services/Signals/TradeJournal.cs](src/RamStockAlerts/Services/Signals/TradeJournal.cs) – Event journaling
 - [src/RamStockAlerts/Services/MarketDataSubscriptionManager.cs](src/RamStockAlerts/Services/MarketDataSubscriptionManager.cs) – Subscription lifecycle
+- [src/RamStockAlerts/Services/DiscordNotificationService.cs](src/RamStockAlerts/Services/DiscordNotificationService.cs) – Discord alerts
+- [src/RamStockAlerts/Services/TradeOutcomeLabeler.cs](src/RamStockAlerts/Services/TradeOutcomeLabeler.cs) – Win/loss labeling
+- [src/RamStockAlerts/Services/Universe/DepthUniverseFilter.cs](src/RamStockAlerts/Services/Universe/DepthUniverseFilter.cs) – Depth eligibility filtering
 - [src/RamStockAlerts/Universe/UniverseService.cs](src/RamStockAlerts/Universe/UniverseService.cs) – Universe orchestration
 - [src/RamStockAlerts/Engine/OrderFlowMetrics.cs](src/RamStockAlerts/Engine/OrderFlowMetrics.cs) – Microstructure metrics
 - [src/RamStockAlerts/Engine/OrderFlowSignalValidator.cs](src/RamStockAlerts/Engine/OrderFlowSignalValidator.cs) – Signal scoring
 - [src/RamStockAlerts/Feeds/IBkrMarketDataClient.cs](src/RamStockAlerts/Feeds/IBkrMarketDataClient.cs) – IBKR TWS client
 - [src/RamStockAlerts/Models/TradeJournalEntry.cs](src/RamStockAlerts/Models/TradeJournalEntry.cs) – Journal schema
 - [src/RamStockAlerts.Execution/Services/ExecutionService.cs](src/RamStockAlerts.Execution/Services/ExecutionService.cs) – Execution orchestration
+- [src/RamStockAlerts.Execution/Services/BracketTemplateBuilder.cs](src/RamStockAlerts.Execution/Services/BracketTemplateBuilder.cs) – Bracket order builder
 
 **Logs & Journals:**
 - `logs/ramstockalerts-YYYYMMDD.txt` – Application logs
