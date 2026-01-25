@@ -61,7 +61,7 @@ public class InMemoryExecutionLedger : IExecutionLedger
 
             if (IsBracketEntryIntent(result.IntentId))
             {
-                if (result.Status == ExecutionStatus.Submitted)
+                if (IsSubmittedStatus(result.Status))
                 {
                     _bracketStates.TryAdd(result.IntentId, BracketState.Pending);
                 }
@@ -114,7 +114,7 @@ public class InMemoryExecutionLedger : IExecutionLedger
         lock (_lock)
         {
             return _results
-                .Where(r => r.Status == ExecutionStatus.Submitted
+                .Where(r => IsSubmittedStatus(r.Status)
                             && r.TimestampUtc >= todayStart
                             && r.TimestampUtc < todayEnd)
                 .Select(r => r.IntentId)
@@ -131,7 +131,7 @@ public class InMemoryExecutionLedger : IExecutionLedger
         lock (_lock)
         {
             var submitted = _results
-                .Where(r => r.Status == ExecutionStatus.Submitted
+                .Where(r => IsSubmittedStatus(r.Status)
                             && r.TimestampUtc >= todayStart
                             && r.TimestampUtc < todayEnd)
                 .Select(r => r.IntentId)
@@ -159,5 +159,10 @@ public class InMemoryExecutionLedger : IExecutionLedger
     private bool IsBracketEntryIntent(Guid intentId)
     {
         return _brackets.Any(b => b.Entry.IntentId == intentId);
+    }
+
+    private static bool IsSubmittedStatus(ExecutionStatus status)
+    {
+        return status == ExecutionStatus.Submitted || status == ExecutionStatus.Accepted;
     }
 }

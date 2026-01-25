@@ -680,7 +680,7 @@ public class FakeExecutionLedger : IExecutionLedger
         var todayEnd = todayStart.AddDays(1);
 
         return _results
-            .Where(r => r.Status == ExecutionStatus.Submitted
+            .Where(r => IsSubmittedStatus(r.Status)
                         && r.TimestampUtc >= todayStart
                         && r.TimestampUtc < todayEnd)
             .Select(r => r.IntentId)
@@ -694,7 +694,7 @@ public class FakeExecutionLedger : IExecutionLedger
         var todayEnd = todayStart.AddDays(1);
 
         var submitted = _results
-            .Where(r => r.Status == ExecutionStatus.Submitted
+            .Where(r => IsSubmittedStatus(r.Status)
                         && r.TimestampUtc >= todayStart
                         && r.TimestampUtc < todayEnd)
             .Select(r => r.IntentId)
@@ -713,6 +713,11 @@ public class FakeExecutionLedger : IExecutionLedger
     public void UpdateBracketState(Guid entryIntentId, BracketState newState)
     {
         _bracketStates[entryIntentId] = newState;
+    }
+
+    private static bool IsSubmittedStatus(ExecutionStatus status)
+    {
+        return status == ExecutionStatus.Submitted || status == ExecutionStatus.Accepted;
     }
 }
 
