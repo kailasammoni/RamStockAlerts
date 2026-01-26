@@ -75,10 +75,10 @@ public sealed class JsonlExecutionLedger : IExecutionLedger
                 continue;
             }
 
-            LedgerEvent? evt;
+            ExecutionLedgerEvent? evt;
             try
             {
-                evt = JsonSerializer.Deserialize<LedgerEvent>(line, JsonOptions);
+                evt = JsonSerializer.Deserialize<ExecutionLedgerEvent>(line, JsonOptions);
             }
             catch
             {
@@ -133,7 +133,7 @@ public sealed class JsonlExecutionLedger : IExecutionLedger
     private void AppendEvent(string type, DateTimeOffset timestampUtc, object payload)
     {
         var payloadElement = JsonSerializer.SerializeToElement(payload, JsonOptions);
-        var evt = new LedgerEvent(type, timestampUtc, payloadElement);
+        var evt = new ExecutionLedgerEvent(type, timestampUtc, payloadElement);
         var json = JsonSerializer.Serialize(evt, JsonOptions);
 
         lock (_ioLock)
@@ -142,5 +142,4 @@ public sealed class JsonlExecutionLedger : IExecutionLedger
         }
     }
 
-    private sealed record LedgerEvent(string Type, DateTimeOffset TimestampUtc, JsonElement Payload);
 }
