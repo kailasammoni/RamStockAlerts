@@ -3,6 +3,7 @@ using RamStockAlerts.Engine;
 using RamStockAlerts.Feeds;
 using RamStockAlerts.Services;
 using RamStockAlerts.Services.Signals;
+using RamStockAlerts.Services.Reporting;
 using Serilog;
 using Serilog.Events;
 using HealthChecks.UI.Client;
@@ -149,6 +150,24 @@ if (executionRollupRequested)
     return;
 }
 
+if (mode == "monitor")
+{
+    Log.Information("Starting in MONITOR mode - tailing market-hours log streams");
+    LogSessionStart("Monitor mode");
+
+    var hostBuilder = Host.CreateDefaultBuilder(args)
+        .UseSerilog()
+        .ConfigureServices((context, services) =>
+        {
+            services.AddHostedService<MarketHoursLogIngestor>();
+        });
+
+    var host = hostBuilder.Build();
+    await host.RunAsync();
+    LogSessionEnd("Monitor mode");
+    return;
+}
+
 if (mode == "record")
 {
     Log.Information("Starting in RECORD mode - IBKR data will be written to logs/");
@@ -254,6 +273,11 @@ builder.Services.AddSingleton<TradeJournal>();
 builder.Services.AddSingleton<ITradeJournal>(sp => sp.GetRequiredService<TradeJournal>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TradeJournal>());
 builder.Services.AddHostedService<TradeJournalHeartbeatService>();
+
+if (builder.Configuration.GetValue("Monitoring:Enabled", false))
+{
+    builder.Services.AddHostedService<MarketHoursLogIngestor>();
+}
 builder.Services.AddSingleton<ScarcityController>();
 builder.Services.AddSingleton<SignalCoordinator>();
 builder.Services.AddSingleton<PreviewSignalEmitter>();
