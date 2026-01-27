@@ -99,6 +99,13 @@ public class IBkrMarketDataClient : BackgroundService
         _reconnectMaxAttempts = configuration.GetValue("IBKR:ReconnectMaxAttempts", 5);
         _reconnectMaxDelayMs = configuration.GetValue("IBKR:ReconnectMaxDelayMs", 60_000);
     }
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("[IBKR] StartAsync entered - hosted service starting");
+        await base.StartAsync(cancellationToken);
+        _logger.LogInformation("[IBKR] StartAsync completed - ExecuteAsync launched");
+    }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

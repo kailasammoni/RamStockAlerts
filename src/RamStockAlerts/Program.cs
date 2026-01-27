@@ -231,6 +231,13 @@ var builder = WebApplication.CreateBuilder(args);
 // Use Serilog
 builder.Host.UseSerilog();
 
+// Enable concurrent hosted service startup to prevent one service from blocking others
+builder.Services.Configure<HostOptions>(options =>
+{
+    options.ServicesStartConcurrently = true;
+    options.ServicesStopConcurrently = true;
+});
+
 var recordBlueprints = builder.Configuration.GetValue("RecordBlueprints", true);
 const string sessionLabel = "Trading";
 Log.Information("Signal pipeline enabled (RecordBlueprints={RecordBlueprints})", recordBlueprints);
