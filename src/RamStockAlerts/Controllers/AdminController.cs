@@ -162,7 +162,8 @@ public class AdminController : ControllerBase
             Enabled = request.Enabled,
             WebhookUrl = normalizedWebhook,
             ChannelTag = string.IsNullOrWhiteSpace(request.ChannelTag) ? null : request.ChannelTag.Trim(),
-            IncludeModeTag = existing.IncludeModeTag
+            IncludeModeTag = existing.IncludeModeTag,
+            CompactAlertFields = existing.CompactAlertFields
         };
 
         _discordSettingsStore.UpdateSettings(updated);
