@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RamStockAlerts.Engine;
 using RamStockAlerts.Execution.Contracts;
@@ -27,7 +28,8 @@ public sealed class SignalCoordinator : IPostSignalMonitor
     private readonly MarketDataSubscriptionManager _subscriptionManager;
     private readonly ILogger<SignalCoordinator> _logger;
     private readonly DiscordNotificationService? _discordNotificationService;
-    private readonly IExecutionService? _executionService;
+    private readonly IServiceProvider _serviceProvider;
+    private IExecutionService? _executionService;
     private readonly bool _recordBlueprints;
     private readonly bool _autoExecuteFromSignals;
     private readonly decimal _autoExecuteNotionalUsd;
@@ -71,8 +73,8 @@ public sealed class SignalCoordinator : IPostSignalMonitor
         ITradeJournal journal,
         ScarcityController scarcityController,
         MarketDataSubscriptionManager subscriptionManager,
+        IServiceProvider serviceProvider,
         ILogger<SignalCoordinator> logger,
-        IExecutionService? executionService = null,
         DiscordNotificationService? discordNotificationService = null)
     {
         _metrics = metrics;
@@ -81,7 +83,7 @@ public sealed class SignalCoordinator : IPostSignalMonitor
         _subscriptionManager = subscriptionManager;
         _scarcityController = scarcityController;
         _logger = logger;
-        _executionService = executionService;
+        _serviceProvider = serviceProvider;
         _discordNotificationService = discordNotificationService;
 
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
@@ -180,6 +182,25 @@ public sealed class SignalCoordinator : IPostSignalMonitor
 
         _logger.LogInformation("[Signals] Signal coordinator enabled. RecordBlueprints={Record}",
             _recordBlueprints);
+    }
+
+    private IExecutionService? TryGetExecutionService()
+    {
+        if (_executionService is not null)
+        {
+            return _executionService;
+        }
+
+        try
+        {
+            _executionService = _serviceProvider.GetService<IExecutionService>();
+            return _executionService;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Signals] Failed to resolve execution service.");
+            return null;
+        }
     }
 
     public void ProcessSnapshot(OrderBookState book, long nowMs)
@@ -1214,7 +1235,13 @@ public sealed class SignalCoordinator : IPostSignalMonitor
 
     private void TryAutoExecuteFromSignal(TradeJournalEntry entry, BlueprintPlan blueprint)
     {
-        if (!_autoExecuteFromSignals || _executionService is null)
+        if (!_autoExecuteFromSignals)
+        {
+            return;
+        }
+
+        var executionService = TryGetExecutionService();
+        if (executionService is null)
         {
             return;
         }
@@ -1308,14 +1335,14 @@ public sealed class SignalCoordinator : IPostSignalMonitor
             OcoGroupId = entryIntentId.ToString()
         };
 
-        _ = ExecuteAutoBracketAsync(bracket, entry.Symbol);
+        _ = ExecuteAutoBracketAsync(executionService, bracket, entry.Symbol);
     }
 
-    private async Task ExecuteAutoBracketAsync(BracketIntent bracket, string symbol)
+    private async Task ExecuteAutoBracketAsync(IExecutionService executionService, BracketIntent bracket, string symbol)
     {
         try
         {
-            var result = await _executionService!.ExecuteAsync(bracket);
+            var result = await executionService.ExecuteAsync(bracket);
             if (result.Status == ExecutionStatus.Submitted && result.BrokerOrderIds.Count > 0)
             {
                 if (_acceptedSignals.TryGetValue(symbol, out var tracker))
@@ -2072,7 +2099,8 @@ public sealed class SignalCoordinator : IPostSignalMonitor
             tracker.Direction,
             reason);
 
-        if (_executionService is not null && tracker.BrokerOrderIds.Count > 0)
+        var executionService = TryGetExecutionService();
+        if (executionService is not null && tracker.BrokerOrderIds.Count > 0)
         {
             foreach (var orderId in tracker.BrokerOrderIds)
             {
@@ -2080,7 +2108,7 @@ public sealed class SignalCoordinator : IPostSignalMonitor
                 {
                     try
                     {
-                        var result = await _executionService.CancelAsync(orderId);
+                        var result = await executionService.CancelAsync(orderId);
                         _logger.LogInformation(
                             "[PostSignal] Cancel result for order {OrderId}: {Status}",
                             orderId,

@@ -221,7 +221,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
             _nextValidIdTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
-            var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7497;
+            var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
             var baseClientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
             var execClientId = _configuration.GetValue<int?>("IBKR:ExecutionClientId") ?? (baseClientId + 10);
 

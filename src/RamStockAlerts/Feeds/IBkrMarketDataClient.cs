@@ -132,7 +132,7 @@ public class IBkrMarketDataClient : BackgroundService
             
             // Connect to TWS
             var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
-            var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7497; // default to paper trading port
+            var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496; // default to TWS live port (7497 = paper)
             var clientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
 
             _eClientSocket.eConnect(host, port, clientId);
@@ -906,7 +906,7 @@ public class IBkrMarketDataClient : BackgroundService
                 try
                 {
                     var host = _configuration["IBKR:Host"] ?? "127.0.0.1";
-                    var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7497;
+                    var port = _configuration.GetValue<int?>("IBKR:Port") ?? 7496;
                     var clientId = _configuration.GetValue<int?>("IBKR:ClientId") ?? 1;
 
                     // Reinitialize socket
@@ -2005,4 +2005,3 @@ internal class IBkrWrapperImpl : DefaultEWrapper
     }
 
 }
-

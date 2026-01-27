@@ -430,6 +430,19 @@ public sealed class ContractClassificationService
         var reader = new EReader(socket, signal);
         reader.Start();
 
+        // Ensure waitForSignal unblocks on shutdown.
+        using var _ = stoppingToken.Register(() =>
+        {
+            try
+            {
+                signal.issueSignal();
+            }
+            catch
+            {
+                // Best-effort only.
+            }
+        });
+
         while (!stoppingToken.IsCancellationRequested && socket.IsConnected())
         {
             signal.waitForSignal();

@@ -288,7 +288,7 @@ public class IBkrReconnectTests
             .AddInMemoryCollection(new Dictionary<string, string>
             {
                 ["IBKR:Host"] = "127.0.0.1",
-                ["IBKR:Port"] = "7497",
+                ["IBKR:Port"] = "7496",
                 ["IBKR:ClientId"] = "1",
                 ["IBKR:ReconnectMaxAttempts"] = "5",
                 ["IBKR:ReconnectMaxDelayMs"] = "60000"

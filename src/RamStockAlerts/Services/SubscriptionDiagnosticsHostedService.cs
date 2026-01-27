@@ -71,9 +71,13 @@ public sealed class SubscriptionDiagnosticsHostedService : IHostedService, IDisp
             symbols.Count, string.Join(", ", symbols));
 
         // Create and connect IBKR client
-        var host = _configuration.GetValue("Ibkr:Host", "127.0.0.1");
-        var port = _configuration.GetValue("Ibkr:Port", 7497);
-        var clientId = _configuration.GetValue("Ibkr:ClientId", 1);
+        var host = _configuration["IBKR:Host"] ?? _configuration.GetValue("Ibkr:Host", "127.0.0.1");
+        var port = _configuration.GetValue<int?>("IBKR:Port")
+            ?? _configuration.GetValue<int?>("Ibkr:Port")
+            ?? 7496;
+        var clientId = _configuration.GetValue<int?>("IBKR:ClientId")
+            ?? _configuration.GetValue<int?>("Ibkr:ClientId")
+            ?? 1;
 
         var signal = new EReaderMonitorSignal();
         _wrapper = new DiagnosticEWrapper(_logger, _activeSessions);

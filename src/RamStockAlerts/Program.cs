@@ -12,12 +12,16 @@ using Microsoft.Extensions.Configuration;
 using RamStockAlerts.Universe;
 using RamStockAlerts.Services.Universe;
 using RamStockAlerts.Execution.Reporting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+    // Keep startup "Now listening on ..." visible even when the rest of Microsoft logs are suppressed.
+    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
     .Enrich.FromLogContext()
     .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
     .WriteTo.File("logs/ramstockalerts-.txt", 
@@ -457,22 +461,87 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 
 // Graceful shutdown handlers
 var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+var shutdownStartedUtc = DateTimeOffset.MinValue;
+var processId = Environment.ProcessId;
+var forceExitAfterSeconds = builder.Configuration.GetValue<int?>("Shutdown:ForceExitAfterSeconds")
+    ?? (app.Environment.IsDevelopment() ? 30 : (int?)null);
+
+lifetime.ApplicationStarted.Register(() =>
+{
+    try
+    {
+        var server = app.Services.GetRequiredService<IServer>();
+        var addresses = server.Features.Get<IServerAddressesFeature>()?.Addresses;
+        var urls = (addresses != null && addresses.Count > 0) ? string.Join(", ", addresses) : "(unknown)";
+        Log.Information("Application started. Pid={Pid} Listening on {Urls}", processId, urls);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Application started (unable to resolve listening URLs).");
+    }
+});
 
 lifetime.ApplicationStopping.Register(() =>
 {
-    Log.Information("Application is stopping, initiating graceful shutdown...");
+    shutdownStartedUtc = DateTimeOffset.UtcNow;
+    Log.Information("Application is stopping (Pid={Pid}), initiating graceful shutdown...", processId);
     LogSessionEnd(sessionLabel);
+
+    if (forceExitAfterSeconds is > 0)
+    {
+        Log.Warning(
+            "[Shutdown] Force-exit watchdog armed: {Seconds}s. Set Shutdown:ForceExitAfterSeconds=0 to disable.",
+            forceExitAfterSeconds.Value);
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(forceExitAfterSeconds.Value));
+                Console.Error.WriteLine(
+                    $"[Shutdown] Force-exit watchdog firing after {forceExitAfterSeconds.Value}s (host still stopping).");
+            }
+            catch
+            {
+                return;
+            }
+
+            try
+            {
+                Log.CloseAndFlush();
+            }
+            catch
+            {
+                // Best-effort only.
+            }
+
+            Environment.Exit(0);
+        });
+    }
 });
 
 lifetime.ApplicationStopped.Register(() =>
 {
-    Log.Information("Application stopped.");
-    Log.CloseAndFlush();
+    var durationMs = shutdownStartedUtc == DateTimeOffset.MinValue
+        ? (double?)null
+        : (DateTimeOffset.UtcNow - shutdownStartedUtc).TotalMilliseconds;
+
+    if (durationMs.HasValue)
+    {
+        Log.Information(
+            "Application stopped. Pid={Pid} ShutdownDurationMs={ShutdownDurationMs}",
+            processId,
+            (long)durationMs.Value);
+    }
+    else
+    {
+        Log.Information("Application stopped. Pid={Pid}", processId);
+    }
 });
 
 try
 {
-    Log.Information("Starting RamStockAlerts API");
+    Log.Information("Starting RamStockAlerts API (Pid={Pid})", processId);
     app.Run();
 }
 catch (Exception ex)
@@ -481,7 +550,14 @@ catch (Exception ex)
 }
 finally
 {
-    Log.CloseAndFlush();
+    try
+    {
+        _ = Task.Run(() => Log.CloseAndFlush());
+    }
+    catch
+    {
+        // Best-effort only.
+    }
 }
 
 // Make the implicit Program class public for testing
