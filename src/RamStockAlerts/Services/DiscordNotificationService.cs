@@ -149,7 +149,7 @@ public sealed class DiscordNotificationService
 
             if (!settings.Enabled)
             {
-                _logger.LogInformation("[Discord] Notifications disabled; skipping {EventType} for {Symbol}", notification.EventType, notification.Symbol);
+                _logger.LogDebug("[Discord] Notifications disabled; skipping {EventType} for {Symbol}", notification.EventType, notification.Symbol);
                 var status = UpdateStatusIfPossible(settings.WebhookUrl, false, null, "Discord notifications disabled");
                 return new DiscordNotificationSendResult { Success = false, Status = status };
             }

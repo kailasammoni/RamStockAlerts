@@ -54,7 +54,7 @@ public sealed class TradeJournalHeartbeatService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation(
+        _logger.LogDebug(
             "[Heartbeat] Heartbeat service running. Heartbeat: 60s, Disconnect check: {CheckInterval}s (threshold: {Threshold}s)",
             _disconnectCheckInterval.TotalSeconds,
             _disconnectThresholdSeconds);
@@ -296,7 +296,7 @@ public sealed class TradeJournalHeartbeatService : BackgroundService
     {
         if (_ibkrClient.IsReconnecting())
         {
-            _logger.LogInformation("[Heartbeat] Reconnect already in progress.");
+            _logger.LogDebug("[Heartbeat] Reconnect already in progress.");
             return;
         }
 

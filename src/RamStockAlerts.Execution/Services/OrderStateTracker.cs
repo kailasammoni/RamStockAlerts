@@ -21,6 +21,9 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
     private readonly object _bracketStateLock = new();
     private readonly TimeSpan _orderStatusTimeout = TimeSpan.FromSeconds(30);
     private readonly Timer _staleOrderTimer;
+    private static readonly TimeSpan StaleOrderDebugLogInterval = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan StaleOrderWarnThreshold1 = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan StaleOrderWarnThreshold2 = TimeSpan.FromSeconds(120);
 
     private decimal _realizedPnlToday = 0m;
     private DateOnly _currentTradeDate = DateOnly.FromDateTime(DateTime.UtcNow);
@@ -382,7 +385,7 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
     {
         var now = DateTimeOffset.UtcNow;
         return _orders.Values
-            .Where(o => o.Status == BrokerOrderStatus.Submitted
+            .Where(o => (o.Status == BrokerOrderStatus.Submitted || o.Status == BrokerOrderStatus.PreSubmitted)
                         && o.LastUpdateUtc != default
                         && (now - o.LastUpdateUtc) > _orderStatusTimeout)
             .Select(o => o.OrderId)
@@ -391,17 +394,59 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
 
     public void CheckForStaleOrders()
     {
-        var stale = GetStaleOrders();
-        foreach (var orderId in stale)
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var order in _orders.Values)
         {
-            if (_orders.TryGetValue(orderId, out var order))
+            if (order.LastUpdateUtc == default)
             {
-                _logger.LogWarning(
-                    "[OrderTracker] STALE ORDER ALERT: Order {OrderId} ({Symbol}) no status update for {Elapsed}s",
-                    orderId,
-                    order.Symbol,
-                    (DateTimeOffset.UtcNow - order.LastUpdateUtc).TotalSeconds);
+                continue;
             }
+
+            if (order.Status != BrokerOrderStatus.Submitted && order.Status != BrokerOrderStatus.PreSubmitted)
+            {
+                continue;
+            }
+
+            var elapsed = now - order.LastUpdateUtc;
+            if (elapsed <= _orderStatusTimeout)
+            {
+                continue;
+            }
+
+            var warnThresholdSeconds = elapsed >= StaleOrderWarnThreshold2 ? 120
+                : elapsed >= StaleOrderWarnThreshold1 ? 60
+                : 0;
+
+            if (warnThresholdSeconds > 0 && order.MaxStaleWarnThresholdSecondsLogged < warnThresholdSeconds)
+            {
+                order.MaxStaleWarnThresholdSecondsLogged = warnThresholdSeconds;
+                order.LastStaleLogUtc = now;
+
+                _logger.LogWarning(
+                    "[OrderTracker] Order stale: orderId={OrderId} symbol={Symbol} status={Status} elapsedSec={ElapsedSeconds:F0} thresholdSec={ThresholdSeconds} intent={IntentId}",
+                    order.OrderId,
+                    order.Symbol,
+                    order.Status,
+                    elapsed.TotalSeconds,
+                    warnThresholdSeconds,
+                    order.IntentId);
+
+                continue;
+            }
+
+            if (order.LastStaleLogUtc != default && now - order.LastStaleLogUtc < StaleOrderDebugLogInterval)
+            {
+                continue;
+            }
+
+            order.LastStaleLogUtc = now;
+            _logger.LogDebug(
+                "[OrderTracker] Order stale: orderId={OrderId} symbol={Symbol} status={Status} elapsedSec={ElapsedSeconds:F0}",
+                order.OrderId,
+                order.Symbol,
+                order.Status,
+                elapsed.TotalSeconds);
         }
     }
 
@@ -422,5 +467,7 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
         public decimal AvgFillPrice { get; set; }
         public DateTimeOffset SubmittedUtc { get; init; }
         public DateTimeOffset LastUpdateUtc { get; set; }
+        public DateTimeOffset LastStaleLogUtc { get; set; }
+        public int MaxStaleWarnThresholdSecondsLogged { get; set; }
     }
 }

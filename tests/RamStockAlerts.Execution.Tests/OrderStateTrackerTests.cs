@@ -1,6 +1,7 @@
 namespace RamStockAlerts.Execution.Tests;
 
 using System.Reflection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RamStockAlerts.Execution.Contracts;
 using RamStockAlerts.Execution.Interfaces;
@@ -186,6 +187,43 @@ public class OrderStateTrackerTests
         Assert.Equal(0m, tracker.GetRealizedPnlToday());
     }
 
+    [Fact]
+    public void CheckForStaleOrders_WarnsOnlyOnThresholdCrossing()
+    {
+        var logger = new CapturingLogger<OrderStateTracker>();
+        var tracker = new OrderStateTracker(logger);
+        var intentId = Guid.NewGuid();
+
+        tracker.TrackSubmittedOrder(1, intentId, "AAPL", 10m, OrderSide.Buy);
+        tracker.ProcessOrderStatus(new OrderStatusUpdate
+        {
+            OrderId = 1,
+            Status = BrokerOrderStatus.Submitted,
+            TimestampUtc = DateTimeOffset.UtcNow - TimeSpan.FromSeconds(70)
+        });
+
+        tracker.CheckForStaleOrders();
+        Assert.Equal(1, logger.Entries.Count(e => e.Level == LogLevel.Warning));
+
+        tracker.CheckForStaleOrders();
+        Assert.Equal(1, logger.Entries.Count(e => e.Level == LogLevel.Warning));
+
+        tracker.ProcessOrderStatus(new OrderStatusUpdate
+        {
+            OrderId = 1,
+            Status = BrokerOrderStatus.Submitted,
+            TimestampUtc = DateTimeOffset.UtcNow - TimeSpan.FromSeconds(130)
+        });
+
+        tracker.CheckForStaleOrders();
+        Assert.Equal(2, logger.Entries.Count(e => e.Level == LogLevel.Warning));
+
+        tracker.CheckForStaleOrders();
+        Assert.Equal(2, logger.Entries.Count(e => e.Level == LogLevel.Warning));
+
+        tracker.Dispose();
+    }
+
     private sealed class TestExecutionLedger : IExecutionLedger
     {
         private readonly List<BracketIntent> _brackets = new();
@@ -222,5 +260,34 @@ public class OrderStateTrackerTests
         }
 
         public BracketState GetBracketState(Guid entryIntentId) => _states[entryIntentId];
+    }
+
+    private sealed class CapturingLogger<T> : ILogger<T>
+    {
+        public sealed record Entry(LogLevel Level, string Message, Exception? Exception);
+
+        public List<Entry> Entries { get; } = new();
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Entries.Add(new Entry(logLevel, formatter(state, exception), exception));
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose()
+            {
+            }
+        }
     }
 }

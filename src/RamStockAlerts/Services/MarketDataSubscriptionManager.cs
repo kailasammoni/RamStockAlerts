@@ -2381,7 +2381,7 @@ public sealed class MarketDataSubscriptionManager
 
         state.DepthUpdateReceived = true;
         Interlocked.Increment(ref _depthSubscribeUpdateReceived);
-        _logger.LogInformation("[MarketData] Depth update received symbol={Symbol} depthId={DepthId}", mapping.Symbol, requestId);
+        _logger.LogDebug("[MarketData] Depth update received symbol={Symbol} depthId={DepthId}", mapping.Symbol, requestId);
     }
 
     public void RecordDepthSubscribeFailure(int? errorCode, string? errorMessage)

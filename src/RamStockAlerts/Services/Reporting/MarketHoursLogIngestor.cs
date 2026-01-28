@@ -16,7 +16,15 @@ public sealed class MarketHoursLogIngestor : BackgroundService
     private readonly RollingLogTailer _logTailer;
     private readonly MarketHoursState _state = new();
     private readonly TimeSpan _pollInterval;
+    private readonly TimeSpan _summaryLogInterval;
+    private readonly double _heartbeatStaleThresholdSeconds;
     private readonly string _outputPath;
+
+    private DateTimeOffset _lastSummaryDebugLogUtc = DateTimeOffset.MinValue;
+    private bool _lastHeartbeatWasStale;
+    private int? _lastUniverseCount;
+    private int? _lastActiveSubscriptionsCount;
+    private ExecutionStatus? _lastExecutionStatus;
 
     public MarketHoursLogIngestor(IConfiguration configuration, ILogger<MarketHoursLogIngestor> logger)
     {
@@ -24,6 +32,8 @@ public sealed class MarketHoursLogIngestor : BackgroundService
         _jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
         _pollInterval = TimeSpan.FromSeconds(configuration.GetValue("Monitoring:PollIntervalSeconds", 15));
+        _summaryLogInterval = TimeSpan.FromSeconds(configuration.GetValue("Monitoring:SummaryLogIntervalSeconds", 60));
+        _heartbeatStaleThresholdSeconds = configuration.GetValue("Monitoring:HeartbeatStaleThresholdSeconds", 120.0);
         _outputPath = configuration.GetValue<string>("Monitoring:OutputPath")
                       ?? Path.Combine("logs", "market-hours-status.jsonl");
 
@@ -219,13 +229,81 @@ public sealed class MarketHoursLogIngestor : BackgroundService
         var payload = JsonSerializer.Serialize(summary, _jsonOptions);
         File.AppendAllText(_outputPath, payload + Environment.NewLine);
 
-        _logger.LogInformation(
-            "[Monitoring] HeartbeatAge={HeartbeatAge}s Universe={UniverseCount} Subs={Subscriptions} Signals={Signals} LastExec={LastExecutionStatus}",
-            summary.HeartbeatAgeSeconds?.ToString("F1") ?? "n/a",
-            summary.UniverseCount?.ToString() ?? "n/a",
-            summary.ActiveSubscriptionsCount?.ToString() ?? "n/a",
-            summary.SignalCount,
-            summary.LastExecutionStatus?.ToString() ?? "n/a");
+        EmitTransitionLogs(summary);
+
+        if (_summaryLogInterval <= TimeSpan.Zero || now - _lastSummaryDebugLogUtc >= _summaryLogInterval)
+        {
+            _lastSummaryDebugLogUtc = now;
+            _logger.LogDebug(
+                "[Monitoring] HeartbeatAge={HeartbeatAge}s Universe={UniverseCount} Subs={Subscriptions} Signals={Signals} LastExec={LastExecutionStatus}",
+                summary.HeartbeatAgeSeconds?.ToString("F1") ?? "n/a",
+                summary.UniverseCount?.ToString() ?? "n/a",
+                summary.ActiveSubscriptionsCount?.ToString() ?? "n/a",
+                summary.SignalCount,
+                summary.LastExecutionStatus?.ToString() ?? "n/a");
+        }
+    }
+
+    private void EmitTransitionLogs(MarketHoursStatus summary)
+    {
+        var heartbeatAgeSeconds = summary.HeartbeatAgeSeconds;
+        var heartbeatIsStale = heartbeatAgeSeconds is not null &&
+                               heartbeatAgeSeconds.Value > _heartbeatStaleThresholdSeconds;
+
+        if (heartbeatIsStale && !_lastHeartbeatWasStale && heartbeatAgeSeconds is { } heartbeatAge)
+        {
+            _logger.LogWarning(
+                "[Monitoring] Heartbeat stale: ageSec={HeartbeatAgeSeconds:F1} thresholdSec={ThresholdSeconds:F0}",
+                heartbeatAge,
+                _heartbeatStaleThresholdSeconds);
+        }
+
+        if (!heartbeatIsStale && _lastHeartbeatWasStale)
+        {
+            _logger.LogInformation(
+                "[Monitoring] Heartbeat recovered: ageSec={HeartbeatAgeSeconds:F1} thresholdSec={ThresholdSeconds:F0}",
+                heartbeatAgeSeconds ?? -1,
+                _heartbeatStaleThresholdSeconds);
+        }
+
+        if (_lastUniverseCount.HasValue && summary.UniverseCount.HasValue)
+        {
+            if (_lastUniverseCount.Value == 0 && summary.UniverseCount.Value > 0)
+            {
+                _logger.LogInformation("[Monitoring] Universe recovered: 0 → {UniverseCount}", summary.UniverseCount.Value);
+            }
+
+            if (_lastUniverseCount.Value > 0 && summary.UniverseCount.Value == 0)
+            {
+                _logger.LogWarning("[Monitoring] Universe dropped: {Prev} → 0", _lastUniverseCount.Value);
+            }
+        }
+
+        if (_lastActiveSubscriptionsCount.HasValue && summary.ActiveSubscriptionsCount.HasValue)
+        {
+            if (_lastActiveSubscriptionsCount.Value > 0 && summary.ActiveSubscriptionsCount.Value == 0)
+            {
+                _logger.LogWarning("[Monitoring] Subscriptions dropped: {Prev} → 0", _lastActiveSubscriptionsCount.Value);
+            }
+
+            if (_lastActiveSubscriptionsCount.Value == 0 && summary.ActiveSubscriptionsCount.Value > 0)
+            {
+                _logger.LogInformation("[Monitoring] Subscriptions recovered: 0 → {Subscriptions}", summary.ActiveSubscriptionsCount.Value);
+            }
+        }
+
+        if (_lastExecutionStatus.HasValue && summary.LastExecutionStatus.HasValue && _lastExecutionStatus != summary.LastExecutionStatus)
+        {
+            _logger.LogInformation(
+                "[Monitoring] Execution status changed: {OldStatus} → {NewStatus}",
+                _lastExecutionStatus.Value,
+                summary.LastExecutionStatus.Value);
+        }
+
+        _lastHeartbeatWasStale = heartbeatIsStale;
+        _lastUniverseCount = summary.UniverseCount;
+        _lastActiveSubscriptionsCount = summary.ActiveSubscriptionsCount;
+        _lastExecutionStatus = summary.LastExecutionStatus;
     }
 
     private void EnsureOutputDirectory()

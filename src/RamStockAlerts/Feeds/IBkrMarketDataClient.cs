@@ -796,7 +796,7 @@ public class IBkrMarketDataClient : BackgroundService
         var nextRefreshAt = DateTimeOffset.UtcNow + refreshInterval;
         var tickAgeDisplay = lastTickAge.HasValue ? $"{lastTickAge.Value:F1}s" : "no ticks yet";
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "[MarketData] Feed active: tape={TapeCount} subs, depth={DepthCount}, tickByTick={TickCount}, last tick age={TickAge}, next refresh at {NextRefresh:O}.",
             stats.TotalSubscriptions,
             stats.DepthEnabled,

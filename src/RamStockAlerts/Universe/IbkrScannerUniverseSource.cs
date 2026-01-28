@@ -71,7 +71,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
             var timeSinceLastScan = DateTime.UtcNow - _lastScanTimeUtc;
             if (timeSinceLastScan < MinScanInterval && _lastUniverse.Count > 0)
             {
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "[IBKR Scanner] Rate limit: Last scan was {Seconds:F1}s ago (min {MinSeconds}s). Returning cached count={Count}.",
                     timeSinceLastScan.TotalSeconds,
                     MinScanInterval.TotalSeconds,
@@ -83,7 +83,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         if (!IsWithinOperatingWindow())
         {
             var cached = GetCachedUniverse();
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "[IBKR Scanner] Skipping universe refresh outside window {StartHour:D2}:{StartMinute:D2}-{EndHour:D2}:{EndMinute:D2} ET. Returning cached count={Count}.",
                 _startHourEt,
                 _startMinuteEt,
@@ -635,8 +635,6 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
 
         public override void connectionClosed()
         {
-            _logger.LogWarning("[IBKR Scanner] Connection closed.");
-
             if (!_completion.Task.IsCompleted)
             {
                 List<string> result;
@@ -644,9 +642,12 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 {
                     if (_candidates.Count == 0)
                     {
+                        _logger.LogWarning("[IBKR Scanner] Connection closed before scanner results were received.");
                         _completion.TrySetException(new InvalidOperationException("IBKR scanner connection closed."));
                         return;
                     }
+
+                    _logger.LogDebug("[IBKR Scanner] Connection closed.");
 
                     result = _candidates
                         .OrderBy(candidate => candidate.Rank)

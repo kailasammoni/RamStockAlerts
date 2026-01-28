@@ -15,27 +15,83 @@ using RamStockAlerts.Execution.Reporting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 
-// Configure Serilog
-Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
-    // Keep startup "Now listening on ..." visible even when the rest of Microsoft logs are suppressed.
-    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
-    .Enrich.FromLogContext()
-    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
-    .WriteTo.File("logs/ramstockalerts-.txt", 
-        rollingInterval: RollingInterval.Day,
-        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
-    .CreateLogger();
-
-// Bootstrap configuration early for mode + symbol resolution
+// Bootstrap configuration early for mode + symbol resolution + logging overrides
 var env = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Development";
 var initialConfig = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json", optional: true)
     .AddJsonFile($"appsettings.{env}.json", optional: true)
     .AddEnvironmentVariables()
     .Build();
+
+static LogEventLevel ParseSerilogLevel(string? value, LogEventLevel fallback)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return fallback;
+    }
+
+    return value.Trim().ToLowerInvariant() switch
+    {
+        "trace" => LogEventLevel.Verbose,
+        "verbose" => LogEventLevel.Verbose,
+        "debug" => LogEventLevel.Debug,
+        "information" => LogEventLevel.Information,
+        "info" => LogEventLevel.Information,
+        "warning" => LogEventLevel.Warning,
+        "warn" => LogEventLevel.Warning,
+        "error" => LogEventLevel.Error,
+        "critical" => LogEventLevel.Fatal,
+        "fatal" => LogEventLevel.Fatal,
+        _ => fallback
+    };
+}
+
+static LoggerConfiguration ApplyLogLevelOverrides(LoggerConfiguration loggerConfig, IConfiguration config)
+{
+    var levels = config.GetSection("Logging:LogLevel");
+    var defaultLevel = ParseSerilogLevel(levels["Default"], LogEventLevel.Information);
+
+    loggerConfig.MinimumLevel.Is(defaultLevel);
+
+    foreach (var child in levels.GetChildren())
+    {
+        if (string.Equals(child.Key, "Default", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        var overrideLevel = ParseSerilogLevel(child.Value, defaultLevel);
+        loggerConfig.MinimumLevel.Override(child.Key, overrideLevel);
+    }
+
+    // Sensible defaults if config doesn't specify them.
+    if (string.IsNullOrWhiteSpace(levels["Microsoft"]))
+    {
+        loggerConfig.MinimumLevel.Override("Microsoft", LogEventLevel.Warning);
+    }
+
+    if (string.IsNullOrWhiteSpace(levels["Microsoft.AspNetCore"]))
+    {
+        loggerConfig.MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning);
+    }
+
+    // Keep startup "Now listening on ..." visible even when the rest of Microsoft logs are suppressed.
+    if (string.IsNullOrWhiteSpace(levels["Microsoft.Hosting.Lifetime"]))
+    {
+        loggerConfig.MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information);
+    }
+
+    return loggerConfig;
+}
+
+// Configure Serilog (config-driven overrides via Logging:LogLevel)
+Log.Logger = ApplyLogLevelOverrides(new LoggerConfiguration(), initialConfig)
+    .Enrich.FromLogContext()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File("logs/ramstockalerts-.txt",
+        rollingInterval: RollingInterval.Day,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
 
 string ResolveMode(IConfiguration config)
 {
