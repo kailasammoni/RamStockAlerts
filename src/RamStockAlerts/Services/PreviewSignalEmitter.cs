@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -26,9 +27,13 @@ public sealed class PreviewSignalEmitter
     private readonly SignalHelpers.TapeGateConfig _tapeGateConfig;
     private readonly bool _discordEnabled;
     private readonly string _discordChannelTag;
+    private readonly int _dedupWindowSeconds;
     private readonly Queue<DateTimeOffset> _recentSignals = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSymbolEmit = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _recentPreviewCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _dedupLock = new();
     private readonly object _rateLock = new();
+    private DateTimeOffset _lastPreviewCacheCleanup = DateTimeOffset.MinValue;
 
     public PreviewSignalEmitter(
         IConfiguration configuration,
@@ -53,13 +58,15 @@ public sealed class PreviewSignalEmitter
         _tapeGateConfig = SignalHelpers.ReadTapeGateConfig(configuration);
         _discordEnabled = configuration.GetValue("Preview:DiscordEnabled", true);
         _discordChannelTag = configuration.GetValue<string>("Preview:DiscordChannelTag") ?? "PREVIEW";
+        _dedupWindowSeconds = configuration.GetValue("Preview:DedupWindowSeconds", 0);
 
         if (_enabled)
         {
             _logger.LogInformation(
-                "[Preview] PreviewSignalEmitter enabled (MinScore={MinScore}, MaxSignalsPerMinute={MaxSignalsPerMinute})",
+                "[Preview] PreviewSignalEmitter enabled (MinScore={MinScore}, MaxSignalsPerMinute={MaxSignalsPerMinute}, DedupWindowSeconds={DedupWindowSeconds})",
                 _minScore,
-                _maxSignalsPerMinute);
+                _maxSignalsPerMinute,
+                _dedupWindowSeconds);
         }
     }
 
@@ -97,11 +104,28 @@ public sealed class PreviewSignalEmitter
             return;
         }
 
-        if (IsRateLimited(book.Symbol))
+        var now = DateTimeOffset.UtcNow;
+        if (IsRateLimited(book.Symbol, now))
         {
             _logger.LogInformation("[PREVIEW] suppressed rateLimit symbol={Symbol}", book.Symbol);
             return;
         }
+
+        var signature = BuildPreviewSignature(book.Symbol, decision.Direction, entry, stop, target);
+        if (ShouldSuppressDuplicate(signature, now, out var lastEmit))
+        {
+            _logger.LogInformation(
+                "[PREVIEW] suppressed duplicate symbol={Symbol} direction={Direction} entry={Entry} stop={Stop} target={Target} lastEmit={LastEmit:O}",
+                book.Symbol,
+                decision.Direction,
+                entry,
+                stop,
+                target,
+                lastEmit);
+            return;
+        }
+
+        RecordSignalEmit(book.Symbol, now);
 
         _logger.LogInformation(
             "[PREVIEW] symbol={Symbol} score={Score} entry={Entry} stop={Stop} target={Target}",
@@ -124,10 +148,8 @@ public sealed class PreviewSignalEmitter
         }
     }
 
-    private bool IsRateLimited(string symbol)
+    private bool IsRateLimited(string symbol, DateTimeOffset now)
     {
-        var now = DateTimeOffset.UtcNow;
-
         if (_perSymbolCooldownSeconds > 0 &&
             _lastSymbolEmit.TryGetValue(symbol, out var lastEmit) &&
             (now - lastEmit).TotalSeconds < _perSymbolCooldownSeconds)
@@ -149,13 +171,83 @@ public sealed class PreviewSignalEmitter
                 {
                     return true;
                 }
+            }
+        }
 
+        return false;
+    }
+
+    private void RecordSignalEmit(string symbol, DateTimeOffset now)
+    {
+        if (_maxSignalsPerMinute > 0)
+        {
+            lock (_rateLock)
+            {
                 _recentSignals.Enqueue(now);
             }
         }
 
         _lastSymbolEmit[symbol] = now;
-        return false;
+    }
+
+    private bool ShouldSuppressDuplicate(string signature, DateTimeOffset now, out DateTimeOffset lastEmit)
+    {
+        lastEmit = DateTimeOffset.MinValue;
+
+        if (_dedupWindowSeconds <= 0)
+        {
+            return false;
+        }
+
+        lock (_dedupLock)
+        {
+            var windowStart = now.AddSeconds(-_dedupWindowSeconds);
+            PrunePreviewCache(windowStart, now);
+
+            if (_recentPreviewCache.TryGetValue(signature, out lastEmit) && lastEmit >= windowStart)
+            {
+                return true;
+            }
+
+            _recentPreviewCache[signature] = now;
+            return false;
+        }
+    }
+
+    private void PrunePreviewCache(DateTimeOffset windowStart, DateTimeOffset now)
+    {
+        if (_dedupWindowSeconds <= 0)
+        {
+            return;
+        }
+
+        if (now - _lastPreviewCacheCleanup < TimeSpan.FromSeconds(_dedupWindowSeconds))
+        {
+            return;
+        }
+
+        foreach (var entry in _recentPreviewCache)
+        {
+            if (entry.Value < windowStart)
+            {
+                _recentPreviewCache.TryRemove(entry.Key, out _);
+            }
+        }
+
+        _lastPreviewCacheCleanup = now;
+    }
+
+    private static string BuildPreviewSignature(
+        string symbol,
+        string? direction,
+        decimal entry,
+        decimal stop,
+        decimal target)
+    {
+        var side = string.IsNullOrWhiteSpace(direction) ? "UNKNOWN" : direction.Trim().ToUpperInvariant();
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{symbol}|{side}|{entry:F4}|{stop:F4}|{target:F4}");
     }
 
     private async Task SendDiscordAsync(
@@ -307,4 +399,3 @@ public sealed class PreviewSignalEmitter
         return true;
     }
 }
-
