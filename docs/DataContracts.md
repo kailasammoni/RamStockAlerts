@@ -12,9 +12,12 @@ This system uses append-only JSONL files as an audit trail. Changes here must be
   - `TradingMode` (string; default `Signals`), `Symbol` (string), `Direction` (string)
   - `DecisionOutcome` (string), `RejectionReason` (string)
   - `DataQualityFlags` (string[])
-- `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `src/RamStockAlerts/Models/TradeJournalEntry.cs`)
+  - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `src/RamStockAlerts/Models/TradeJournalEntry.cs`)
   - `Blueprint.ShareCount` (int?, optional): number of shares used for P&L calculations.
   - `QualityBand` (string?, optional): cohort label for accepted signal quality.
+
+## Signal gating configuration
+- `Signals:CooldownBypassScore` (int, default 90): if `DecisionInputs.Signal.Confidence` is >= threshold, the per-symbol cooldown can be bypassed; otherwise decisions reject with `CooldownActive`.
 
 ## `logs/trade-outcomes.jsonl` (TradeOutcome)
 - Serialization: System.Text.Json default (PascalCase property names).

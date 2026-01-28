@@ -22,6 +22,7 @@ public class OrderFlowSignalValidator
     private readonly ILogger<OrderFlowSignalValidator> _logger;
     private readonly OrderFlowMetrics _metrics;
     private readonly HardGateConfig _hardGateConfig;
+    private readonly int _cooldownBypassScore;
     
     // Cooldown tracking: symbol -> last signal time
     private readonly ConcurrentDictionary<string, long> _lastSignalMs = new();
@@ -85,6 +86,7 @@ public class OrderFlowSignalValidator
         var gateConfig = new HardGateConfig();
         configuration.GetSection("Signals:HardGates").Bind(gateConfig);
         _hardGateConfig = gateConfig;
+        _cooldownBypassScore = configuration.GetValue("Signals:CooldownBypassScore", 90);
     }
     
     /// <summary>
@@ -139,9 +141,24 @@ public class OrderFlowSignalValidator
                 direction);
         }
 
-        if (IsInCooldown(snapshot.Symbol, currentTimeMs))
+        var cooldownRemainingMs = GetCooldownRemainingMs(snapshot.Symbol, currentTimeMs);
+        if (cooldownRemainingMs > 0)
         {
-            return new OrderFlowSignalDecision(true, false, "CooldownActive", signal, snapshot, direction);
+            if (signal.Confidence >= _cooldownBypassScore)
+            {
+                _logger.LogDebug(
+                    "[OrderFlow] {Symbol} cooldown bypassed. Confidence {Confidence} >= {Threshold}. Remaining {Remaining}ms",
+                    snapshot.Symbol,
+                    signal.Confidence,
+                    _cooldownBypassScore,
+                    cooldownRemainingMs);
+            }
+            else
+            {
+                _logger.LogDebug("[OrderFlow] {Symbol} in cooldown. {Remaining}ms remaining",
+                    snapshot.Symbol, cooldownRemainingMs);
+                return new OrderFlowSignalDecision(true, false, "CooldownActive", signal, snapshot, direction);
+            }
         }
 
         if (!CanIssueAlert(currentTimeMs))
@@ -252,22 +269,16 @@ public class OrderFlowSignalValidator
         return Math.Min(100, confidence);
     }
     
-    private bool IsInCooldown(string symbol, long currentTimeMs)
+    private long GetCooldownRemainingMs(string symbol, long currentTimeMs)
     {
         if (!_lastSignalMs.TryGetValue(symbol, out var lastSignalMs))
         {
-            return false;
+            return 0;
         }
         
         var elapsed = currentTimeMs - lastSignalMs;
-        if (elapsed < SYMBOL_COOLDOWN_MS)
-        {
-            _logger.LogDebug("[OrderFlow] {Symbol} in cooldown. {Remaining}ms remaining",
-                symbol, SYMBOL_COOLDOWN_MS - elapsed);
-            return true;
-        }
-        
-        return false;
+        var remainingMs = SYMBOL_COOLDOWN_MS - elapsed;
+        return remainingMs > 0 ? remainingMs : 0;
     }
     
     private bool CanIssueAlert(long currentTimeMs)

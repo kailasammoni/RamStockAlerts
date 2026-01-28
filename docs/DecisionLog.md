@@ -23,3 +23,10 @@ Record meaningful strategy/logic changes here (date, what changed, why, risks, a
 - Why: Improve safety during volatile sessions, reduce monitoring load, and enable cohort analysis without shutting down signal detection.
 - Verification: Added/updated unit tests for pre-fill cancellations and monitor-only behavior.
 - Risk notes: Monitor-only mode relies on shared options state; operators should ensure toggles are coordinated across instances.
+
+## 2026-01-28
+- Area: Signal gating
+- Change: Allow per-symbol cooldown bypass when confidence meets `Signals:CooldownBypassScore` (default 90), and log when a bypass occurs.
+- Why: Ensure top-scoring order-flow signals are not suppressed by cooldown when conviction is high.
+- Verification: Added unit tests covering cooldown bypass acceptance and cooldown rejection for lower confidence.
+- Risk notes: Overly aggressive bypass thresholds could increase signal frequency during clustered events; monitor daily caps.
