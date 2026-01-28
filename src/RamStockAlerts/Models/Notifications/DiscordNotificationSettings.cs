@@ -6,4 +6,5 @@ public sealed record DiscordNotificationSettings
     public required string? WebhookUrl { get; init; }
     public string? ChannelTag { get; init; }
     public bool IncludeModeTag { get; init; } = true;
+    public bool CompactAlertFields { get; init; }
 }

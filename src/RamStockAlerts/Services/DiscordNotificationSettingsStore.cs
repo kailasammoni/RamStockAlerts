@@ -43,7 +43,8 @@ public sealed class DiscordNotificationSettingsStore
             Enabled = _configuration.GetValue("Discord:Enabled", false),
             WebhookUrl = _configuration["Discord:WebhookUrl"],
             ChannelTag = _configuration.GetValue<string?>("Discord:ChannelTag"),
-            IncludeModeTag = _configuration.GetValue("Discord:IncludeModeTag", true)
+            IncludeModeTag = _configuration.GetValue("Discord:IncludeModeTag", true),
+            CompactAlertFields = _configuration.GetValue("Discord:CompactAlertFields", false)
         };
     }
 }

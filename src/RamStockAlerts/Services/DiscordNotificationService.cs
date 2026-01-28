@@ -241,6 +241,7 @@ public sealed class DiscordNotificationService
 
     private static List<object> BuildFields(DiscordNotificationEvent notification, DiscordNotificationSettings settings)
     {
+        var compactAlertFields = settings.CompactAlertFields && notification.EventType == DiscordNotificationEventType.Alert;
         var fields = new List<object>
         {
             new { name = "Symbol", value = notification.Symbol, inline = true }
@@ -251,7 +252,7 @@ public sealed class DiscordNotificationService
             fields.Add(new { name = "AlertType", value = notification.AlertType, inline = true });
         }
 
-        if (settings.IncludeModeTag)
+        if (settings.IncludeModeTag && !compactAlertFields)
         {
             fields.Add(new { name = "Mode", value = notification.Mode.ToString(), inline = true });
         }
@@ -266,20 +267,88 @@ public sealed class DiscordNotificationService
             fields.Add(new { name = "Outcome", value = notification.Outcome, inline = true });
         }
 
-        fields.Add(new { name = "Timestamp", value = notification.TimestampUtc.ToString("u"), inline = true });
+        if (!compactAlertFields)
+        {
+            fields.Add(new { name = "Timestamp", value = notification.TimestampUtc.ToString("u"), inline = true });
+        }
 
         if (notification.Details != null)
         {
-            foreach (var detail in notification.Details)
+            var details = notification.Details;
+            if (compactAlertFields)
+            {
+                var entry = GetDetailValue(details, "Entry");
+                var stop = GetDetailValue(details, "Stop");
+                var target = GetDetailValue(details, "Target");
+
+                var blueprintValue = BuildBlueprintValue(entry, stop, target);
+                if (!string.IsNullOrWhiteSpace(blueprintValue))
+                {
+                    fields.Add(new { name = "Blueprint", value = blueprintValue, inline = false });
+                }
+            }
+
+            var hiddenKeys = compactAlertFields
+                ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Entry",
+                    "Stop",
+                    "Target",
+                    "Spread",
+                    "BidAskRatio",
+                    "TapeVelocityProxy"
+                }
+                : null;
+
+            foreach (var detail in details)
             {
                 if (!string.IsNullOrWhiteSpace(detail.Key) && !string.IsNullOrWhiteSpace(detail.Value))
                 {
+                    if (hiddenKeys != null && hiddenKeys.Contains(detail.Key))
+                    {
+                        continue;
+                    }
+
                     fields.Add(new { name = detail.Key, value = detail.Value, inline = true });
                 }
             }
         }
 
         return fields;
+    }
+
+    private static string? GetDetailValue(IReadOnlyDictionary<string, string> details, string key)
+    {
+        foreach (var detail in details)
+        {
+            if (string.Equals(detail.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return detail.Value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? BuildBlueprintValue(string? entry, string? stop, string? target)
+    {
+        var segments = new List<string>();
+        if (!string.IsNullOrWhiteSpace(entry))
+        {
+            segments.Add($"Entry {entry}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(stop))
+        {
+            segments.Add($"Stop {stop}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(target))
+        {
+            segments.Add($"Target {target}");
+        }
+
+        return segments.Count == 0 ? null : string.Join(" | ", segments);
     }
 
     private DiscordDeliveryStatus? UpdateStatusIfPossible(string? webhookUrl, bool success, int? statusCode, string? error)
