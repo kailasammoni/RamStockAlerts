@@ -15,6 +15,12 @@ This system uses append-only JSONL files as an audit trail. Changes here must be
 - `ObservedMetrics`, `DecisionInputs`, `Blueprint`, `SystemMetrics`, `GateTrace`, `UniverseUpdate` (objects; see `src/RamStockAlerts/Models/TradeJournalEntry.cs`)
   - `Blueprint.ShareCount` (int?, optional): number of shares used for P&L calculations.
   - `QualityBand` (string?, optional): cohort label for accepted signal quality.
+- Scarcity rejection reason codes (via `RejectionReason` and/or `DecisionTrace`):
+  - `GlobalLimit`: daily global blueprint cap reached.
+  - `GlobalCooldown`: global cooldown window still active.
+  - `SymbolCooldown`: per-symbol cooldown/gap window still active.
+  - `SymbolLimit`: per-symbol daily cap reached (checked after cooldown).
+  - `RejectedRankedOut`: ranked window candidate was displaced by higher-scoring signals.
 
 ## `logs/trade-outcomes.jsonl` (TradeOutcome)
 - Serialization: System.Text.Json default (PascalCase property names).

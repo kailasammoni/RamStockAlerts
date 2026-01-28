@@ -10,6 +10,13 @@ Record meaningful strategy/logic changes here (date, what changed, why, risks, a
 - Verification:
 - Risk notes:
 
+## 2026-01-28
+- Area: Scarcity controller gating
+- Change: Added per-symbol cooldown gap configuration to allow multiple acceptances per symbol when spaced by time gap, moved per-symbol daily cap after the gap check, and documented new scarcity reason codes.
+- Why: Support repeated signals on the same symbol while preserving scarcity controls and clearer diagnostics.
+- Verification: Added unit tests for per-symbol gap accept/reject behavior and symbol-limit ordering.
+- Risk notes: If the cooldown or daily cap values are misconfigured, symbol-level throttling may be too permissive or too restrictive.
+
 ## 2026-01-25
 - Area: Execution tracking, risk gates, signal validation
 - Change: Added IBKR order status/fill tracking via OrderStateTracker, enforced hard-gate signal thresholds, post-signal monitoring cancellations, corrected P&L and risk multiple calculations, and tightened ledger/risk daily limits and bracket state tracking.
