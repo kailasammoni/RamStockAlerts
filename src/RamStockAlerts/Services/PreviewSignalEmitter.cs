@@ -199,16 +199,19 @@ public sealed class PreviewSignalEmitter
             return false;
         }
 
-        var windowStart = now.AddSeconds(-_dedupWindowSeconds);
-        PrunePreviewCache(windowStart, now);
-
-        if (_recentPreviewCache.TryGetValue(signature, out lastEmit) && lastEmit >= windowStart)
+        lock (_dedupLock)
         {
-            return true;
-        }
+            var windowStart = now.AddSeconds(-_dedupWindowSeconds);
+            PrunePreviewCache(windowStart, now);
 
-        _recentPreviewCache[signature] = now;
-        return false;
+            if (_recentPreviewCache.TryGetValue(signature, out lastEmit) && lastEmit >= windowStart)
+            {
+                return true;
+            }
+
+            _recentPreviewCache[signature] = now;
+            return false;
+        }
     }
 
     private void PrunePreviewCache(DateTimeOffset windowStart, DateTimeOffset now)
@@ -218,23 +221,20 @@ public sealed class PreviewSignalEmitter
             return;
         }
 
-        lock (_dedupLock)
+        if (now - _lastPreviewCacheCleanup < TimeSpan.FromSeconds(_dedupWindowSeconds))
         {
-            if (now - _lastPreviewCacheCleanup < TimeSpan.FromSeconds(_dedupWindowSeconds))
-            {
-                return;
-            }
-
-            foreach (var entry in _recentPreviewCache)
-            {
-                if (entry.Value < windowStart)
-                {
-                    _recentPreviewCache.TryRemove(entry.Key, out _);
-                }
-            }
-
-            _lastPreviewCacheCleanup = now;
+            return;
         }
+
+        foreach (var entry in _recentPreviewCache)
+        {
+            if (entry.Value < windowStart)
+            {
+                _recentPreviewCache.TryRemove(entry.Key, out _);
+            }
+        }
+
+        _lastPreviewCacheCleanup = now;
     }
 
     private static string BuildPreviewSignature(
