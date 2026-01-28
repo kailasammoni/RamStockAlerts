@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
-using System;
-using System.Collections.Generic;
 
 namespace RamStockAlerts.Services;
 
@@ -12,7 +10,7 @@ public sealed class ScarcityController
     private readonly int _maxBlueprintsPerDay;
     private readonly int _maxPerSymbolPerDay;
     private readonly int _globalCooldownMinutes;
-    private readonly int _symbolCooldownMinutes;
+    private readonly int _perSymbolCooldownMinutes;
     private readonly int _rankWindowSeconds;
     private readonly List<RankWindowCandidate> _rankWindowCandidates = new();
     private long? _rankWindowBucket;
@@ -30,7 +28,8 @@ public sealed class ScarcityController
         _maxBlueprintsPerDay = section.GetValue("MaxBlueprintsPerDay", 6);
         _maxPerSymbolPerDay = section.GetValue("MaxPerSymbolPerDay", 1);
         _globalCooldownMinutes = section.GetValue("GlobalCooldownMinutes", 45);
-        _symbolCooldownMinutes = section.GetValue("SymbolCooldownMinutes", 9999);
+        _perSymbolCooldownMinutes = section.GetValue("PerSymbolCooldownMinutes",
+            section.GetValue("SymbolCooldownMinutes", 9999));
         _rankWindowSeconds = section.GetValue("RankWindowSeconds", 0);
     }
 
@@ -109,12 +108,6 @@ public sealed class ScarcityController
             return new ScarcityDecision(false, "GlobalLimit", $"Daily limit {_maxBlueprintsPerDay} reached");
         }
 
-        var symbolCount = _acceptedPerSymbolToday.TryGetValue(symbol, out var count) ? count : 0;
-        if (symbolCount >= _maxPerSymbolPerDay)
-        {
-            return new ScarcityDecision(false, "SymbolLimit", $"Symbol {symbol} limit {_maxPerSymbolPerDay} reached");
-        }
-
         if (_globalCooldownMinutes > 0)
         {
             var elapsed = timestampMsUtc - _lastAcceptedTimestampGlobal;
@@ -125,17 +118,23 @@ public sealed class ScarcityController
             }
         }
 
-        if (_symbolCooldownMinutes > 0)
+        if (_perSymbolCooldownMinutes > 0)
         {
             if (_lastAcceptedTimestampPerSymbol.TryGetValue(symbol, out var lastSymbolTs))
             {
                 var elapsed = timestampMsUtc - lastSymbolTs;
-                if (elapsed < _symbolCooldownMinutes * 60_000)
+                if (elapsed < _perSymbolCooldownMinutes * 60_000)
                 {
-                    var remaining = (_symbolCooldownMinutes * 60_000 - elapsed) / 1000.0;
+                    var remaining = (_perSymbolCooldownMinutes * 60_000 - elapsed) / 1000.0;
                     return new ScarcityDecision(false, "SymbolCooldown", $"{remaining:F1}s remaining");
                 }
             }
+        }
+
+        var symbolCount = _acceptedPerSymbolToday.TryGetValue(symbol, out var count) ? count : 0;
+        if (symbolCount >= _maxPerSymbolPerDay)
+        {
+            return new ScarcityDecision(false, "SymbolLimit", $"Symbol {symbol} limit {_maxPerSymbolPerDay} reached");
         }
 
         return new ScarcityDecision(true, "Accepted", "Scarcity OK");
