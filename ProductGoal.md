@@ -15,7 +15,7 @@ Detect **transient order-book imbalances** that statistically precede short-term
 | Feature          | Requirement                                          |
 | ---------------- | ---------------------------------------------------- |
 | Universe Builder | Auto-build daily symbol universe every 5 minutes     |
-| Filters          | Price 10–80, RelVol > 2, Spread < 0.05, Float < 150M |
+| Filters          | Price 2–50, RelVol > 2, Spread < 0.05, Float < 50M |
 | Exclusions       | ETFs, ADRs, OTC, halted symbols                      |
 | Persistence      | Store active universe in Redis with TTL              |
 
@@ -203,8 +203,3 @@ It detects **liquidity failure points** — moments where institutions cannot hi
 - Profit factor, drawdown, hit rate → not implemented yet
 
 ---
-
-## Next Steps
-- Build the outcome pipeline that turns SchemaVersion=2 journal entries into tagged wins, losses, and misses so PerformanceTracker can compute the actual win rate, avg gain/loss, and accuracy targets.
-- Surface those metrics (win rate, avg gain/loss, max drawdown, trades/day) in dashboards or health checks to understand how close we are to the 0.45% avg win, 62% accuracy goals.
-- Use the emerging analytics to refine scarcity gating (drop weaker signals, enforce 3–6 trades/day) and prioritize tuning absorption/tape filters toward a repeatable win-rate edge.

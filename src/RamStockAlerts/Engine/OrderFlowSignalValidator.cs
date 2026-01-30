@@ -32,7 +32,7 @@ public class OrderFlowSignalValidator
     private readonly object _alertLock = new();
     
     private const long SYMBOL_COOLDOWN_MS = 10 * 60 * 1000;    // 10 minutes
-    private const int MAX_ALERTS_PER_HOUR = 3;
+    private const int MAX_ALERTS_PER_HOUR = 10;
     private const long HOUR_MS = 60 * 60 * 1000;
     
     public sealed class HardGateConfig
