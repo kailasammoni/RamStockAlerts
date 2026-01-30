@@ -75,6 +75,33 @@ public sealed class ScarcityControllerTests
         Assert.Equal("SymbolLimit", afterGap.ReasonCode);
     }
 
+    [Fact]
+    public void RecordCancelledAcceptance_UsesShorterGlobalCooldown()
+    {
+        var config = BuildConfig(new Dictionary<string, string?>
+        {
+            ["Scarcity:MaxBlueprintsPerDay"] = "50",
+            ["Scarcity:MaxPerSymbolPerDay"] = "10",
+            ["Scarcity:GlobalCooldownMinutes"] = "45",
+            ["Scarcity:CancelledCooldownMinutes"] = "2",
+            ["Scarcity:PerSymbolCooldownMinutes"] = "0"
+        });
+        var controller = new ScarcityController(config);
+        var baseMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var first = controller.StageCandidate(Guid.NewGuid(), "TSLA", 1.0m, baseMs).Single().Decision;
+        Assert.True(first.Accepted);
+
+        controller.RecordCancelledAcceptance("TSLA", baseMs + 10_000);
+
+        var tooSoon = controller.StageCandidate(Guid.NewGuid(), "GITS", 1.0m, baseMs + 60_000).Single().Decision;
+        Assert.False(tooSoon.Accepted);
+        Assert.Equal("CancelledCooldown", tooSoon.ReasonCode);
+
+        var afterShortGap = controller.StageCandidate(Guid.NewGuid(), "FEED", 1.0m, baseMs + 3 * 60_000).Single().Decision;
+        Assert.True(afterShortGap.Accepted);
+    }
+
     private static IConfiguration BuildConfig(Dictionary<string, string?> settings)
     {
         return new ConfigurationBuilder()

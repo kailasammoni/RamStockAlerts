@@ -22,12 +22,45 @@ public class OrderStateTrackerTests
     }
 
     [Fact]
+    public void TrackSubmittedOrder_DuplicateOrderId_IgnoresSecond()
+    {
+        var tracker = new OrderStateTracker(NullLogger<OrderStateTracker>.Instance);
+        var firstIntent = Guid.NewGuid();
+        var secondIntent = Guid.NewGuid();
+
+        tracker.TrackSubmittedOrder(1, firstIntent, "AAPL", 10m, OrderSide.Buy);
+        tracker.TrackSubmittedOrder(1, secondIntent, "MSFT", 5m, OrderSide.Sell);
+
+        var field = typeof(OrderStateTracker).GetField("_orders", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        var orders = field!.GetValue(tracker) as System.Collections.IDictionary;
+        Assert.NotNull(orders);
+        Assert.Equal(1, orders!.Count);
+    }
+
+    [Fact]
     public void ProcessOrderStatus_UpdatesStatus()
     {
         var tracker = new OrderStateTracker(NullLogger<OrderStateTracker>.Instance);
         var intentId = Guid.NewGuid();
 
         tracker.TrackSubmittedOrder(1, intentId, "AAPL", 10m, OrderSide.Buy);
+
+        var fired = false;
+        int? capturedParent = null;
+        decimal capturedPrice = 0m;
+        DateTimeOffset capturedTime = default;
+        var timestamp = DateTimeOffset.UtcNow;
+        tracker.OnOrderFilled += (orderId, parentId, fillPrice, fillTime) =>
+        {
+            if (orderId == 1)
+            {
+                fired = true;
+                capturedParent = parentId;
+                capturedPrice = fillPrice;
+                capturedTime = fillTime;
+            }
+        };
 
         tracker.ProcessOrderStatus(new OrderStatusUpdate
         {
@@ -38,11 +71,33 @@ public class OrderStateTrackerTests
             AvgFillPrice = 100m,
             LastFillPrice = 100m,
             PermId = 1,
-            ParentId = 0,
-            TimestampUtc = DateTimeOffset.UtcNow
+            ParentId = 42,
+            TimestampUtc = timestamp
         });
 
         Assert.Equal(BrokerOrderStatus.Filled, tracker.GetOrderStatus(1));
+        Assert.True(fired);
+        Assert.Equal(42, capturedParent);
+        Assert.Equal(100m, capturedPrice);
+        Assert.Equal(timestamp, capturedTime);
+    }
+
+    [Fact]
+    public void ProcessOrderStatus_Error_UpdatesStatus()
+    {
+        var tracker = new OrderStateTracker(NullLogger<OrderStateTracker>.Instance);
+        var intentId = Guid.NewGuid();
+
+        tracker.TrackSubmittedOrder(1, intentId, "AAPL", 10m, OrderSide.Buy);
+
+        tracker.ProcessOrderStatus(new OrderStatusUpdate
+        {
+            OrderId = 1,
+            Status = BrokerOrderStatus.Error,
+            TimestampUtc = DateTimeOffset.UtcNow
+        });
+
+        Assert.Equal(BrokerOrderStatus.Error, tracker.GetOrderStatus(1));
     }
 
     [Fact]
@@ -253,6 +308,8 @@ public class OrderStateTrackerTests
         public int GetSubmittedBracketCountToday(DateTimeOffset now) => 0;
 
         public int GetOpenBracketCount() => _states.Values.Count(state => state == BracketState.Open);
+
+        public Guid? GetDecisionIdByOrderId(int orderId) => null;
 
         public void UpdateBracketState(Guid entryIntentId, BracketState newState)
         {

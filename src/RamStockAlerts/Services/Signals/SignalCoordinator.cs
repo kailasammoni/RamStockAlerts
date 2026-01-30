@@ -1126,6 +1126,7 @@ public sealed class SignalCoordinator : IPostSignalMonitor
             "GlobalLimit" => HardRejectReason.ScarcityGlobalLimit,
             "SymbolLimit" => HardRejectReason.ScarcitySymbolLimit,
             "GlobalCooldown" => HardRejectReason.ScarcityGlobalCooldown,
+            "CancelledCooldown" => HardRejectReason.ScarcityCancelledCooldown,
             "SymbolCooldown" => HardRejectReason.ScarcitySymbolCooldown,
             "RejectedRankedOut" => HardRejectReason.ScarcityRankedOut,
             "SpoofSuspected" => HardRejectReason.SpoofSuspected,
@@ -1647,15 +1648,15 @@ public sealed class SignalCoordinator : IPostSignalMonitor
         var lastTapeRecvFromTradeMs = lastTrade.ReceiptTimestampMs;
         var skewMs = lastTapeRecvFromTradeMs - lastTapeEventMs;
         
-        _logger.LogWarning(
+        _logger.LogDebug(
             "[Signals GATE] Tape staleness blocking {Symbol}: nowMs={NowMs}, lastTapeRecvMs={LastRecvMs}, lastTapeRecvMs(lastTrade)={LastRecvTradeMs}, lastTapeEventMs={LastEventMs}, skewMs={SkewMs}, ageMs={AgeMs}, staleWindowMs={StaleWindowMs}, timeSource=ReceiptTime",
-            book.Symbol, 
-            nowMs, 
+            book.Symbol,
+            nowMs,
             lastTapeRecvMs,
             lastTapeRecvFromTradeMs,
-            lastTapeEventMs, 
+            lastTapeEventMs,
             skewMs,
-            status.AgeMs, 
+            status.AgeMs,
             _tapeGateConfig.StaleWindowMs);
     }
 
@@ -2128,6 +2129,13 @@ public sealed class SignalCoordinator : IPostSignalMonitor
 
     private void JournalCancellation(AcceptedSignalTracker tracker, string reason, long nowMs)
     {
+        if (tracker.Phase == MonitorPhase.AwaitingFill && !tracker.EntryFilledUtc.HasValue)
+        {
+            // Notify scarcity controller that this was cancelled before execution.
+            // This applies the shorter CancelledCooldownMinutes instead of full GlobalCooldownMinutes.
+            _scarcityController.RecordCancelledAcceptance(tracker.Symbol, nowMs);
+        }
+
         var entry = new TradeJournalEntry
         {
             DecisionId = Guid.NewGuid(),

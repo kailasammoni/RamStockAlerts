@@ -237,7 +237,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         throw lastException ?? new InvalidOperationException("IBKR scanner request failed and no cache available.");
     }
 
-    private async Task<IReadOnlyList<string>> ExecuteScannerAttemptAsync(
+    internal async Task<IReadOnlyList<string>> ExecuteScannerAttemptAsync(
         string host,
         int port,
         int clientId,

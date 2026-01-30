@@ -146,7 +146,7 @@ Alert only if **Score ≥ 7.5**.
 | Avg Loss     | ≤ −0.30%              |
 | Accuracy     | ≥ 62%                 |
 | Max Drawdown | ≤ 1.5% daily          |
-| Trades/Day   | 3–6 high-quality only |
+| Trades/Day   | 6-9 high-quality only |
 
 ---
 
@@ -156,7 +156,7 @@ Alert only if **Score ≥ 7.5**.
 
 It detects **liquidity failure points** — moments where institutions cannot hide their intent. That is where small, repeatable profits live.
 
-**Scarcity over volume:** Max 3–6 high-quality trades/day. Detect dislocations, not trends. Use book + tape as primary signal drivers.
+**Scarcity over volume:** Max 6-9 high-quality trades/day. Detect dislocations, not trends. Use book + tape as primary signal drivers.
 
 ---
 

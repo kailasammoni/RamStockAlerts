@@ -710,6 +710,8 @@ public class FakeExecutionLedger : IExecutionLedger
         return _bracketStates.Values.Count(state => state == BracketState.Open);
     }
 
+    public Guid? GetDecisionIdByOrderId(int orderId) => null;
+
     public void UpdateBracketState(Guid entryIntentId, BracketState newState)
     {
         _bracketStates[entryIntentId] = newState;
@@ -723,6 +725,8 @@ public class FakeExecutionLedger : IExecutionLedger
 
 public class FakeOrderStateTracker : IOrderStateTracker
 {
+    public event Action<int, int?, decimal, DateTimeOffset>? OnOrderFilled;
+
     public decimal RealizedPnlToday { get; set; }
 
     public void TrackSubmittedOrder(int orderId, Guid intentId, string symbol, decimal quantity, OrderSide side)

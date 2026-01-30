@@ -13,6 +13,7 @@ public class InMemoryExecutionLedger : IExecutionLedger
     private readonly ConcurrentBag<BracketIntent> _brackets = new();
     private readonly ConcurrentBag<ExecutionResult> _results = new();
     private readonly ConcurrentDictionary<Guid, BracketState> _bracketStates = new();
+    private readonly ConcurrentDictionary<int, Guid> _orderDecisionIds = new();
     private readonly object _lock = new();
 
     /// <summary>
@@ -58,6 +59,7 @@ public class InMemoryExecutionLedger : IExecutionLedger
                 result.IntentId = intentId;
             }
             _results.Add(result);
+            TryRecordDecisionMapping(result);
 
             if (IsBracketEntryIntent(result.IntentId))
             {
@@ -151,9 +153,80 @@ public class InMemoryExecutionLedger : IExecutionLedger
         }
     }
 
+    public Guid? GetDecisionIdByOrderId(int orderId)
+    {
+        return _orderDecisionIds.TryGetValue(orderId, out var decisionId) ? decisionId : (Guid?)null;
+    }
+
     public void UpdateBracketState(Guid entryIntentId, BracketState newState)
     {
         _bracketStates[entryIntentId] = newState;
+    }
+
+    private void TryRecordDecisionMapping(ExecutionResult result)
+    {
+        if (result.BrokerOrderIds is null || result.BrokerOrderIds.Count == 0)
+        {
+            return;
+        }
+
+        var decisionId = ResolveDecisionId(result.IntentId);
+        if (!decisionId.HasValue)
+        {
+            return;
+        }
+
+        foreach (var brokerOrderId in result.BrokerOrderIds)
+        {
+            if (!int.TryParse(brokerOrderId, out var orderId))
+            {
+                continue;
+            }
+
+            _orderDecisionIds.TryAdd(orderId, decisionId.Value);
+        }
+    }
+
+    private Guid? ResolveDecisionId(Guid intentId)
+    {
+        foreach (var intent in _intents)
+        {
+            if (intent.IntentId == intentId)
+            {
+                return intent.DecisionId;
+            }
+        }
+
+        foreach (var bracket in _brackets)
+        {
+            var decisionId = FindDecisionIdFromBracket(bracket, intentId);
+            if (decisionId.HasValue)
+            {
+                return decisionId;
+            }
+        }
+
+        return null;
+    }
+
+    private static Guid? FindDecisionIdFromBracket(BracketIntent bracket, Guid intentId)
+    {
+        if (bracket.Entry.IntentId == intentId)
+        {
+            return bracket.Entry.DecisionId;
+        }
+
+        if (bracket.StopLoss?.IntentId == intentId)
+        {
+            return bracket.StopLoss.DecisionId;
+        }
+
+        if (bracket.TakeProfit?.IntentId == intentId)
+        {
+            return bracket.TakeProfit.DecisionId;
+        }
+
+        return null;
     }
 
     private bool IsBracketEntryIntent(Guid intentId)

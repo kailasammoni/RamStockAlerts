@@ -10,6 +10,7 @@ public sealed class ScarcityController
     private readonly int _maxBlueprintsPerDay;
     private readonly int _maxPerSymbolPerDay;
     private readonly int _globalCooldownMinutes;
+    private readonly int _cancelledCooldownMinutes;
     private readonly int _perSymbolCooldownMinutes;
     private readonly int _rankWindowSeconds;
     private readonly List<RankWindowCandidate> _rankWindowCandidates = new();
@@ -20,6 +21,7 @@ public sealed class ScarcityController
     private int _acceptedCountToday = 0;
     private readonly Dictionary<string, int> _acceptedPerSymbolToday = new(StringComparer.OrdinalIgnoreCase);
     private long _lastAcceptedTimestampGlobal;
+    private long _lastCancelledTimestampGlobal;
     private readonly Dictionary<string, long> _lastAcceptedTimestampPerSymbol = new(StringComparer.OrdinalIgnoreCase);
 
     public ScarcityController(IConfiguration configuration)
@@ -28,6 +30,7 @@ public sealed class ScarcityController
         _maxBlueprintsPerDay = section.GetValue("MaxBlueprintsPerDay", 6);
         _maxPerSymbolPerDay = section.GetValue("MaxPerSymbolPerDay", 1);
         _globalCooldownMinutes = section.GetValue("GlobalCooldownMinutes", 45);
+        _cancelledCooldownMinutes = section.GetValue("CancelledCooldownMinutes", 2);
         _perSymbolCooldownMinutes = section.GetValue("PerSymbolCooldownMinutes",
             section.GetValue("SymbolCooldownMinutes", 9999));
         _rankWindowSeconds = section.GetValue("RankWindowSeconds", 0);
@@ -98,6 +101,32 @@ public sealed class ScarcityController
         _lastAcceptedTimestampPerSymbol[symbol] = timestampMsUtc;
     }
 
+    /// <summary>
+    /// Records that a previously accepted trade was cancelled before execution (e.g., by TapeSlowdown).
+    /// This "downgrades" the cooldown to the shorter CancelledCooldownMinutes value.
+    /// </summary>
+    public void RecordCancelledAcceptance(string symbol, long timestampMsUtc)
+    {
+        var now = DateTimeOffset.FromUnixTimeMilliseconds(timestampMsUtc).UtcDateTime;
+        EnsureDay(now);
+
+        // Decrement the acceptance count since the trade didn't actually execute
+        if (_acceptedCountToday > 0)
+        {
+            _acceptedCountToday--;
+        }
+
+        if (_acceptedPerSymbolToday.TryGetValue(symbol, out var symbolCount) && symbolCount > 0)
+        {
+            _acceptedPerSymbolToday[symbol] = symbolCount - 1;
+        }
+
+        // Clear the full cooldown timestamp and set the cancelled timestamp instead
+        _lastAcceptedTimestampGlobal = 0;
+        _lastCancelledTimestampGlobal = timestampMsUtc;
+        _lastAcceptedTimestampPerSymbol.Remove(symbol);
+    }
+
     private ScarcityDecision EvaluateInternal(string symbol, decimal score, long timestampMsUtc)
     {
         var now = DateTimeOffset.FromUnixTimeMilliseconds(timestampMsUtc).UtcDateTime;
@@ -108,13 +137,25 @@ public sealed class ScarcityController
             return new ScarcityDecision(false, "GlobalLimit", $"Daily limit {_maxBlueprintsPerDay} reached");
         }
 
-        if (_globalCooldownMinutes > 0)
+        // Check full global cooldown from accepted (executed) trades
+        if (_globalCooldownMinutes > 0 && _lastAcceptedTimestampGlobal > 0)
         {
             var elapsed = timestampMsUtc - _lastAcceptedTimestampGlobal;
-            if (_lastAcceptedTimestampGlobal > 0 && elapsed < _globalCooldownMinutes * 60_000)
+            if (elapsed < _globalCooldownMinutes * 60_000)
             {
                 var remaining = (_globalCooldownMinutes * 60_000 - elapsed) / 1000.0;
                 return new ScarcityDecision(false, "GlobalCooldown", $"{remaining:F1}s remaining");
+            }
+        }
+
+        // Check shorter cooldown from cancelled trades (TapeSlowdown, SpreadBlowout, etc.)
+        if (_cancelledCooldownMinutes > 0 && _lastCancelledTimestampGlobal > 0)
+        {
+            var elapsed = timestampMsUtc - _lastCancelledTimestampGlobal;
+            if (elapsed < _cancelledCooldownMinutes * 60_000)
+            {
+                var remaining = (_cancelledCooldownMinutes * 60_000 - elapsed) / 1000.0;
+                return new ScarcityDecision(false, "CancelledCooldown", $"{remaining:F1}s remaining (cancelled trade)");
             }
         }
 

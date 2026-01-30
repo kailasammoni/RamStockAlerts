@@ -1,5 +1,6 @@
 namespace RamStockAlerts.Execution.Tests;
 
+using System.Collections.Generic;
 using RamStockAlerts.Execution.Contracts;
 using RamStockAlerts.Execution.Storage;
 using Xunit;
@@ -61,6 +62,27 @@ public class InMemoryExecutionLedgerTests
 
         ledger.UpdateBracketState(bracket.Entry.IntentId, BracketState.ClosedWin);
         Assert.Equal(0, ledger.GetOpenBracketCount());
+    }
+
+    [Fact]
+    public void GetDecisionIdByOrderId_ResolvesFromResults()
+    {
+        var ledger = new InMemoryExecutionLedger();
+        var intent = CreateIntent();
+        intent.DecisionId = Guid.NewGuid();
+
+        ledger.RecordIntent(intent);
+        ledger.RecordResult(intent.IntentId, new ExecutionResult
+        {
+            IntentId = intent.IntentId,
+            Status = ExecutionStatus.Submitted,
+            BrokerOrderIds = new List<string> { "101" },
+            TimestampUtc = DateTimeOffset.UtcNow
+        });
+
+        var resolved = ledger.GetDecisionIdByOrderId(101);
+
+        Assert.Equal(intent.DecisionId, resolved);
     }
 
     private static OrderIntent CreateIntent()

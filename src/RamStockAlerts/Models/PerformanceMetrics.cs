@@ -57,6 +57,16 @@ public sealed class PerformanceMetrics
     public decimal TotalPnlUsd { get; set; }
 
     /// <summary>
+    /// Maximum peak-to-trough drawdown in USD.
+    /// </summary>
+    public decimal? MaxDrawdownUsd { get; set; }
+
+    /// <summary>
+    /// Maximum drawdown as a percentage of peak equity.
+    /// </summary>
+    public decimal? MaxDrawdownPercent { get; set; }
+
+    /// <summary>
     /// Total number of accepted signals (whether closed or open).
     /// </summary>
     public int TotalSignals { get; set; }

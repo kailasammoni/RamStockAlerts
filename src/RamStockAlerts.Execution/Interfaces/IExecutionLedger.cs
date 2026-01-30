@@ -53,6 +53,11 @@ public interface IExecutionLedger
     int GetOpenBracketCount();
 
     /// <summary>
+    /// Resolve the decision ID associated with a broker order ID, if known.
+    /// </summary>
+    Guid? GetDecisionIdByOrderId(int orderId);
+
+    /// <summary>
     /// Update bracket state when order status changes.
     /// </summary>
     void UpdateBracketState(Guid entryIntentId, BracketState newState);

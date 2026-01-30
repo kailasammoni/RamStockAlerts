@@ -4,6 +4,8 @@ using RamStockAlerts.Execution.Contracts;
 
 public interface IOrderStateTracker
 {
+    event Action<int, int?, decimal, DateTimeOffset>? OnOrderFilled;
+
     void TrackSubmittedOrder(int orderId, Guid intentId, string symbol, decimal quantity, OrderSide side);
     void ProcessOrderStatus(OrderStatusUpdate update);
     void ProcessFill(FillReport fill);

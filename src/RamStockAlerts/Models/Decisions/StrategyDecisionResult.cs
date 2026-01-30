@@ -30,6 +30,7 @@ public enum HardRejectReason
     ScarcityGlobalLimit,
     ScarcitySymbolLimit,
     ScarcityGlobalCooldown,
+    ScarcityCancelledCooldown,
     ScarcitySymbolCooldown,
     ScarcityRankedOut,
     SpoofSuspected,

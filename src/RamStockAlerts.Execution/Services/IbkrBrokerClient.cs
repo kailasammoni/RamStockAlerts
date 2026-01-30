@@ -46,7 +46,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
         {
             await EnsureConnectedAsync(ct);
 
-            var orderId = ReserveOrderIds(1);
+            var orderId = ReserveOrderIdsAvoidingDuplicates(1);
             var contract = BuildStockContract(intent);
             var order = BuildOrder(intent);
 
@@ -92,7 +92,7 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
 
             var entry = intent.Entry ?? throw new ArgumentException("BracketIntent.Entry is required", nameof(intent));
 
-            var orderIds = ReserveOrderIds(3);
+            var orderIds = ReserveOrderIdsAvoidingDuplicates(3);
             var parentId = orderIds;
             var stopId = orderIds + 1;
             var tpId = orderIds + 2;
@@ -266,6 +266,43 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
         return start;
     }
 
+    private int ReserveOrderIdsAvoidingDuplicates(int count)
+    {
+        if (_orderTracker is null)
+        {
+            return ReserveOrderIds(count);
+        }
+
+        const int maxAttempts = 10;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            var start = ReserveOrderIds(count);
+            var conflict = false;
+
+            for (var offset = 0; offset < count; offset++)
+            {
+                var status = _orderTracker.GetOrderStatus(start + offset);
+                if (status != BrokerOrderStatus.Unknown)
+                {
+                    conflict = true;
+                    break;
+                }
+            }
+
+            if (!conflict)
+            {
+                return start;
+            }
+
+            _logger.LogWarning(
+                "[IBKR] Skipping duplicate orderId range {Start}-{End}",
+                start,
+                start + count - 1);
+        }
+
+        return ReserveOrderIds(count);
+    }
+
     private static Contract BuildStockContract(OrderIntent intent)
     {
         var symbol = intent.Symbol?.Trim().ToUpperInvariant();
@@ -420,8 +457,22 @@ public sealed class IbkrBrokerClient : IBrokerClient, IDisposable
 
         public override void error(int id, long errorTime, int errorCode, string errorMsg, string advancedOrderRejectJson)
         {
+            // Suppress informational "data farm" messages
             if (errorCode is 2104 or 2106 or 2158 or 2107)
             {
+                return;
+            }
+
+            // Handle duplicate order ID error (code 103) - mark order as failed to prevent stale tracking
+            if (errorCode == 103 && id > 0)
+            {
+                _logger.LogWarning("[IBKR] Duplicate order id {OrderId} - marking as Error", id);
+                _orderTracker?.ProcessOrderStatus(new OrderStatusUpdate
+                {
+                    OrderId = id,
+                    Status = BrokerOrderStatus.Error,
+                    TimestampUtc = DateTimeOffset.UtcNow
+                });
                 return;
             }
 

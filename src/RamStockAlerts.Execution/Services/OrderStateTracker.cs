@@ -9,6 +9,8 @@ using RamStockAlerts.Execution.Interfaces;
 
 public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
 {
+    public event Action<int, int?, decimal, DateTimeOffset>? OnOrderFilled;
+
     private readonly ILogger<OrderStateTracker> _logger;
     private readonly IExecutionLedger? _ledger;
     private readonly IPostSignalMonitor? _postSignalMonitor;
@@ -59,7 +61,20 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
             LastUpdateUtc = DateTimeOffset.UtcNow
         };
 
-        _orders[orderId] = tracked;
+        if (!_orders.TryAdd(orderId, tracked))
+        {
+            var existingStatus = _orders.TryGetValue(orderId, out var existing)
+                ? existing.Status.ToString()
+                : "Unknown";
+            _logger.LogWarning(
+                "[OrderTracker] Duplicate orderId {OrderId} ignored (intent={IntentId}, symbol={Symbol}, existingStatus={Status})",
+                orderId,
+                intentId,
+                symbol,
+                existingStatus);
+            return;
+        }
+
         _intentOrders.AddOrUpdate(
             intentId,
             _ => new List<int> { orderId },
@@ -110,9 +125,23 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
         {
             UpdateBracketStateForIntent(tracked.IntentId, BracketState.Cancelled, update.Status);
         }
+        else if (update.Status == BrokerOrderStatus.Error)
+        {
+            UpdateBracketStateForIntent(tracked.IntentId, BracketState.Cancelled, update.Status);
+        }
         else if (update.Status == BrokerOrderStatus.Filled)
         {
             UpdateBracketStateForIntent(tracked.IntentId, null, update.Status);
+            if (oldStatus != BrokerOrderStatus.Filled)
+            {
+                var parentId = update.ParentId > 0 ? update.ParentId : (int?)null;
+                OnOrderFilled?.Invoke(update.OrderId, parentId, update.AvgFillPrice, update.TimestampUtc);
+            }
+        }
+
+        if (IsTerminalStatus(update.Status))
+        {
+            ScheduleRemovalIfTerminal(tracked.OrderId);
         }
     }
 
@@ -448,6 +477,21 @@ public sealed class OrderStateTracker : IOrderStateTracker, IDisposable
                 order.Status,
                 elapsed.TotalSeconds);
         }
+    }
+
+    private static bool IsTerminalStatus(BrokerOrderStatus status)
+        => status is BrokerOrderStatus.Cancelled or BrokerOrderStatus.Filled or BrokerOrderStatus.Error or BrokerOrderStatus.Inactive;
+
+    private void ScheduleRemovalIfTerminal(int orderId)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30));
+            if (_orders.TryGetValue(orderId, out var current) && IsTerminalStatus(current.Status))
+            {
+                _orders.TryRemove(orderId, out _);
+            }
+        });
     }
 
     public void Dispose()

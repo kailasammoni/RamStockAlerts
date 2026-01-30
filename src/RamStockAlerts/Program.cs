@@ -384,6 +384,10 @@ builder.Services.AddSingleton<ITradeOutcomeLabeler, TradeOutcomeLabeler>();
 builder.Services.AddSingleton<IOutcomeSummaryStore>(sp => new FileBasedOutcomeSummaryStore(outcomesFilePath));
 Log.Information("Outcome labeling services registered. Outcomes file: {Path}", outcomesFilePath);
 
+builder.Services.AddSingleton<IPerformanceSnapshot, DailyPerformanceSnapshot>();
+builder.Services.AddSingleton<IPerformanceMetricsAggregator, PerformanceMetricsAggregator>();
+builder.Services.AddHostedService<OutcomeLabelingService>();
+
 // Register journal rotation service
 builder.Services.AddSingleton<IJournalRotationService, FileBasedJournalRotationService>();
 Log.Information("Journal rotation service registered");

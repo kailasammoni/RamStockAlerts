@@ -31,9 +31,17 @@ public sealed class PreviewSignalEmitter
     private readonly Queue<DateTimeOffset> _recentSignals = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSymbolEmit = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, DateTimeOffset> _recentPreviewCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastSuppressionLogBySymbol = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _dedupLock = new();
     private readonly object _rateLock = new();
     private DateTimeOffset _lastPreviewCacheCleanup = DateTimeOffset.MinValue;
+
+    // Suppression counters for periodic summary logging
+    private int _rateLimitSuppressionCount = 0;
+    private int _duplicateSuppressionCount = 0;
+    private DateTimeOffset _lastSuppressionSummaryUtc = DateTimeOffset.MinValue;
+    private static readonly TimeSpan SuppressionSummaryInterval = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan SuppressionPerSymbolLogInterval = TimeSpan.FromMinutes(1);
 
     public PreviewSignalEmitter(
         IConfiguration configuration,
@@ -105,23 +113,20 @@ public sealed class PreviewSignalEmitter
         }
 
         var now = DateTimeOffset.UtcNow;
+        LogSuppressionSummaryIfDue(now);
+
         if (IsRateLimited(book.Symbol, now))
         {
-            _logger.LogInformation("[PREVIEW] suppressed rateLimit symbol={Symbol}", book.Symbol);
+            LogSuppressionThrottled(book.Symbol, "rateLimit", null, null, now);
+            Interlocked.Increment(ref _rateLimitSuppressionCount);
             return;
         }
 
         var signature = BuildPreviewSignature(book.Symbol, decision.Direction, entry, stop, target);
         if (ShouldSuppressDuplicate(signature, now, out var lastEmit))
         {
-            _logger.LogInformation(
-                "[PREVIEW] suppressed duplicate symbol={Symbol} direction={Direction} entry={Entry} stop={Stop} target={Target} lastEmit={LastEmit:O}",
-                book.Symbol,
-                decision.Direction,
-                entry,
-                stop,
-                target,
-                lastEmit);
+            LogSuppressionThrottled(book.Symbol, "duplicate", decision.Direction, lastEmit, now);
+            Interlocked.Increment(ref _duplicateSuppressionCount);
             return;
         }
 
@@ -188,6 +193,56 @@ public sealed class PreviewSignalEmitter
         }
 
         _lastSymbolEmit[symbol] = now;
+    }
+
+    private void LogSuppressionSummaryIfDue(DateTimeOffset now)
+    {
+        if (now - _lastSuppressionSummaryUtc < SuppressionSummaryInterval)
+        {
+            return;
+        }
+
+        var rateLimitCount = Interlocked.Exchange(ref _rateLimitSuppressionCount, 0);
+        var duplicateCount = Interlocked.Exchange(ref _duplicateSuppressionCount, 0);
+
+        _lastSuppressionSummaryUtc = now;
+
+        if (rateLimitCount > 0 || duplicateCount > 0)
+        {
+            _logger.LogInformation(
+                "[PREVIEW] Suppression summary (last 60s): rateLimit={RateLimitCount}, duplicate={DuplicateCount}",
+                rateLimitCount,
+                duplicateCount);
+        }
+    }
+
+    private void LogSuppressionThrottled(
+        string symbol,
+        string reason,
+        string? direction,
+        DateTimeOffset? lastEmit,
+        DateTimeOffset now)
+    {
+        var key = $"{symbol}:{reason}";
+        if (_lastSuppressionLogBySymbol.TryGetValue(key, out var lastLog) &&
+            now - lastLog < SuppressionPerSymbolLogInterval)
+        {
+            return;
+        }
+
+        _lastSuppressionLogBySymbol[key] = now;
+
+        if (string.Equals(reason, "duplicate", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogDebug(
+                "[PREVIEW] suppressed duplicate symbol={Symbol} direction={Direction} lastEmit={LastEmit:O}",
+                symbol,
+                direction,
+                lastEmit ?? DateTimeOffset.MinValue);
+            return;
+        }
+
+        _logger.LogDebug("[PREVIEW] suppressed {Reason} symbol={Symbol}", reason, symbol);
     }
 
     private bool ShouldSuppressDuplicate(string signature, DateTimeOffset now, out DateTimeOffset lastEmit)
