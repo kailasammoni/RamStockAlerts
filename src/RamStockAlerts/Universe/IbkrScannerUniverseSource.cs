@@ -882,7 +882,9 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                 Currency = "USD"
             };
 
-            var endDateTime = DateTime.UtcNow.ToString("yyyyMMdd HH:mm:ss") + " US/Eastern";
+            // Convert UTC to Eastern time to avoid timezone misinterpretation
+            var nowEastern = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _eastern);
+            var endDateTime = nowEastern.ToString("yyyyMMdd HH:mm:ss") + " US/Eastern";
             var durationStr = "20 D"; // 20 days
             var barSizeSetting = "1 day";
             var whatToShow = "TRADES";
