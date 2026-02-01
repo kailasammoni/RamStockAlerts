@@ -15,6 +15,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     private readonly ILogger<IbkrScannerUniverseSource> _logger;
     private readonly ContractClassificationService _classificationService;
     private readonly IRequestIdSource _requestIdSource;
+    private readonly RelativeVolumeService? _relativeVolumeService;
     private readonly object _cacheLock = new();
     private IReadOnlyList<string> _lastUniverse = Array.Empty<string>();
     private DateTime _lastScanTimeUtc = DateTime.MinValue;
@@ -31,7 +32,8 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         IConfiguration configuration,
         ILogger<IbkrScannerUniverseSource> logger,
         ContractClassificationService classificationService,
-        IRequestIdSource requestIdSource)
+        IRequestIdSource requestIdSource,
+        RelativeVolumeService? relativeVolumeService = null)
     {
         _startHourEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartHour", 7), 0, 23);
         _startMinuteEt = Math.Clamp(configuration.GetValue("Universe:IbkrScanner:StartMinute", 0), 0, 59);
@@ -59,6 +61,7 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
         _logger = logger;
         _classificationService = classificationService ?? throw new ArgumentNullException(nameof(classificationService));
         _requestIdSource = requestIdSource ?? throw new ArgumentNullException(nameof(requestIdSource));
+        _relativeVolumeService = relativeVolumeService;
     }
 
     public async Task<IReadOnlyList<string>> GetUniverseAsync(CancellationToken cancellationToken)
@@ -199,9 +202,25 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
                         _lastScanTimeUtc = DateTime.UtcNow;
                         _lastUniverseIsStale = false;
                     }
-                    
+
                     // Save to persistent cache
                     _ = SaveUniverseCacheAsync(universe);
+
+                    // Fetch historical average volumes for relative volume filtering
+                    if (_relativeVolumeService != null)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await FetchAverageVolumesAsync(universe, host, port, clientId, cancellationToken);
+                            }
+                            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                            {
+                                _logger.LogWarning(ex, "[IBKR Scanner] Failed to fetch average volumes");
+                            }
+                        }, cancellationToken);
+                    }
                 }
 
                 LogUniverse(universe);
@@ -746,6 +765,313 @@ public sealed class IbkrScannerUniverseSource : IUniverseSource
     }
 
     private sealed record ScannerCandidate(int Rank, string Symbol, ContractDetails? Details);
+
+    /// <summary>
+    /// Fetches 20-day average daily volumes for symbols via IBKR historical data.
+    /// </summary>
+    private async Task FetchAverageVolumesAsync(
+        IReadOnlyList<string> symbols,
+        string host,
+        int port,
+        int baseClientId,
+        CancellationToken cancellationToken)
+    {
+        if (_relativeVolumeService == null || symbols.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogInformation("[RelVol] Fetching 20-day average volumes for {Count} symbols", symbols.Count);
+
+        var maxConcurrent = _configuration.GetValue("Universe:RelativeVolume:MaxConcurrentFetches", 5);
+        var batchDelay = TimeSpan.FromMilliseconds(_configuration.GetValue("Universe:RelativeVolume:BatchDelayMs", 500));
+
+        var results = new List<KeyValuePair<string, decimal>>();
+        var semaphore = new SemaphoreSlim(maxConcurrent, maxConcurrent);
+
+        var tasks = symbols.Select(async symbol =>
+        {
+            await semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                await Task.Delay(batchDelay, cancellationToken);
+                var avgVolume = await FetchSymbolAverageVolumeAsync(symbol, host, port, baseClientId, cancellationToken);
+                if (avgVolume > 0)
+                {
+                    lock (results)
+                    {
+                        results.Add(new KeyValuePair<string, decimal>(symbol, avgVolume));
+                    }
+                }
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug(ex, "[RelVol] Failed to fetch average volume for {Symbol}", symbol);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }).ToList();
+
+        await Task.WhenAll(tasks);
+
+        if (results.Count > 0)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _relativeVolumeService.LoadAverageVolumes(results, nowMs);
+            _logger.LogInformation("[RelVol] Successfully loaded average volumes for {Count}/{Total} symbols", results.Count, symbols.Count);
+        }
+        else
+        {
+            _logger.LogWarning("[RelVol] Failed to fetch any average volumes");
+        }
+    }
+
+    /// <summary>
+    /// Fetches 20-day average daily volume for a single symbol.
+    /// </summary>
+    private async Task<decimal> FetchSymbolAverageVolumeAsync(
+        string symbol,
+        string host,
+        int port,
+        int baseClientId,
+        CancellationToken cancellationToken)
+    {
+        var requestId = _requestIdSource.NextId();
+        var clientId = baseClientId + (requestId % 10); // Spread across multiple client IDs
+        var bars = new List<HistoricalBar>();
+        var completion = new TaskCompletionSource<decimal>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wrapper = new HistoricalDataWrapper(_logger, requestId, symbol, bars, completion);
+
+        var readerSignal = new EReaderMonitorSignal();
+        var client = new EClientSocket(wrapper, readerSignal);
+
+        try
+        {
+            client.eConnect(host, port, clientId);
+
+            if (!client.IsConnected())
+            {
+                _logger.LogDebug("[RelVol] Failed to connect for {Symbol}", symbol);
+                return 0;
+            }
+
+            client.startApi();
+
+            using var cancellationRegistration = cancellationToken.Register(() =>
+            {
+                try
+                {
+                    readerSignal.issueSignal();
+                }
+                catch
+                {
+                }
+
+                completion.TrySetCanceled(cancellationToken);
+            });
+
+            _ = Task.Run(() => ProcessHistoricalMessages(client, readerSignal, completion, _logger, cancellationToken), cancellationToken);
+
+            var contract = new Contract
+            {
+                Symbol = symbol,
+                SecType = "STK",
+                Exchange = "SMART",
+                Currency = "USD"
+            };
+
+            var endDateTime = DateTime.UtcNow.ToString("yyyyMMdd HH:mm:ss") + " US/Eastern";
+            var durationStr = "20 D"; // 20 days
+            var barSizeSetting = "1 day";
+            var whatToShow = "TRADES";
+            var useRTH = 1; // Regular trading hours only
+
+            client.reqHistoricalData(
+                requestId,
+                contract,
+                endDateTime,
+                durationStr,
+                barSizeSetting,
+                whatToShow,
+                useRTH,
+                1,
+                false,
+                new List<TagValue>());
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+            var completed = await Task.WhenAny(
+                completion.Task,
+                Task.Delay(Timeout.Infinite, timeoutCts.Token));
+
+            if (completed != completion.Task)
+            {
+                _logger.LogDebug("[RelVol] Timeout fetching historical data for {Symbol}", symbol);
+                return 0;
+            }
+
+            return await completion.Task;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "[RelVol] Error fetching historical data for {Symbol}", symbol);
+            return 0;
+        }
+        finally
+        {
+            if (client.IsConnected())
+            {
+                try
+                {
+                    client.eDisconnect();
+                }
+                catch
+                {
+                }
+            }
+
+            try
+            {
+                readerSignal.issueSignal();
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static void ProcessHistoricalMessages(
+        EClientSocket socket,
+        EReaderSignal signal,
+        TaskCompletionSource<decimal> completion,
+        ILogger logger,
+        CancellationToken stoppingToken)
+    {
+        var reader = new EReader(socket, signal);
+        reader.Start();
+
+        using var _ = stoppingToken.Register(() =>
+        {
+            try
+            {
+                signal.issueSignal();
+            }
+            catch
+            {
+            }
+        });
+
+        while (!stoppingToken.IsCancellationRequested && socket.IsConnected())
+        {
+            try
+            {
+                signal.waitForSignal();
+                reader.processMsgs();
+
+                if (completion.Task.IsCompleted)
+                {
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "[RelVol] Message processing failed");
+                completion.TrySetException(ex);
+                break;
+            }
+        }
+    }
+
+    private sealed record HistoricalBar(string Date, decimal Volume);
+
+    private sealed class HistoricalDataWrapper : DefaultEWrapper
+    {
+        private readonly ILogger _logger;
+        private readonly int _requestId;
+        private readonly string _symbol;
+        private readonly List<HistoricalBar> _bars;
+        private readonly TaskCompletionSource<decimal> _completion;
+
+        public HistoricalDataWrapper(
+            ILogger logger,
+            int requestId,
+            string symbol,
+            List<HistoricalBar> bars,
+            TaskCompletionSource<decimal> completion)
+        {
+            _logger = logger;
+            _requestId = requestId;
+            _symbol = symbol;
+            _bars = bars;
+            _completion = completion;
+        }
+
+        public override void historicalData(int reqId, IBApi.Bar bar)
+        {
+            if (reqId != _requestId)
+            {
+                return;
+            }
+
+            lock (_bars)
+            {
+                _bars.Add(new HistoricalBar(bar.Time, (decimal)bar.Volume));
+            }
+        }
+
+        public override void historicalDataEnd(int reqId, string startDateStr, string endDateStr)
+        {
+            if (reqId != _requestId)
+            {
+                return;
+            }
+
+            decimal avgVolume = 0;
+            lock (_bars)
+            {
+                if (_bars.Count > 0)
+                {
+                    var totalVolume = _bars.Sum(b => b.Volume);
+                    avgVolume = totalVolume / _bars.Count;
+                    _logger.LogDebug("[RelVol] {Symbol}: {Bars} days, avg volume = {AvgVolume:N0}", _symbol, _bars.Count, avgVolume);
+                }
+                else
+                {
+                    _logger.LogDebug("[RelVol] {Symbol}: No historical data received", _symbol);
+                }
+            }
+
+            _completion.TrySetResult(avgVolume);
+        }
+
+        public override void error(int id, long errorTime, int errorCode, string errorMsg, string advancedOrderRejectJson)
+        {
+            // Ignore informational codes
+            if (errorCode == 2104 || errorCode == 2106 || errorCode == 2158)
+            {
+                return;
+            }
+
+            if (id == _requestId)
+            {
+                _logger.LogDebug("[RelVol] {Symbol}: Error code={Code} msg={Msg}", _symbol, errorCode, errorMsg);
+                _completion.TrySetResult(0);
+            }
+        }
+
+        public override void error(string str)
+        {
+            _logger.LogDebug("[RelVol] {Symbol}: {Message}", _symbol, str);
+        }
+
+        public override void error(Exception e)
+        {
+            _logger.LogDebug(e, "[RelVol] {Symbol}: Exception", _symbol);
+        }
+    }
 
     private bool IsWithinOperatingWindow()
     {

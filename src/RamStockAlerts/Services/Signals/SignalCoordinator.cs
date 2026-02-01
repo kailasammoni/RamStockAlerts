@@ -29,6 +29,8 @@ public sealed class SignalCoordinator : IPostSignalMonitor
     private readonly ILogger<SignalCoordinator> _logger;
     private readonly DiscordNotificationService? _discordNotificationService;
     private readonly IServiceProvider _serviceProvider;
+    private readonly RelativeVolumeService? _relativeVolumeService;
+    private readonly decimal _minRelativeVolume;
     private IExecutionService? _executionService;
     private readonly bool _recordBlueprints;
     private readonly bool _autoExecuteFromSignals;
@@ -75,7 +77,8 @@ public sealed class SignalCoordinator : IPostSignalMonitor
         MarketDataSubscriptionManager subscriptionManager,
         IServiceProvider serviceProvider,
         ILogger<SignalCoordinator> logger,
-        DiscordNotificationService? discordNotificationService = null)
+        DiscordNotificationService? discordNotificationService = null,
+        RelativeVolumeService? relativeVolumeService = null)
     {
         _metrics = metrics;
         _validator = validator;
@@ -85,6 +88,7 @@ public sealed class SignalCoordinator : IPostSignalMonitor
         _logger = logger;
         _serviceProvider = serviceProvider;
         _discordNotificationService = discordNotificationService;
+        _relativeVolumeService = relativeVolumeService;
 
         _recordBlueprints = configuration.GetValue("RecordBlueprints", true);
 
@@ -165,7 +169,10 @@ public sealed class SignalCoordinator : IPostSignalMonitor
             5000L,
             out var legacyWatchlistIntervalKey); // 5 sec
         LogLegacyKeyIfUsed(legacyWatchlistIntervalKey, "Signals:TapeWatchlistRecheckIntervalMs");
-        
+
+        // Relative Volume filter configuration
+        _minRelativeVolume = configuration.GetValue("Universe:MinRelativeVolume", 2.0m);
+
         // Start periodic rejection summary timer (every 60s)
         _summaryTimer = new System.Threading.Timer(
             _ => LogRejectionSummaries(),
@@ -469,6 +476,43 @@ public sealed class SignalCoordinator : IPostSignalMonitor
             return;
         }
 
+        // Relative Volume gate: Reject if symbol doesn't meet minimum relative volume threshold
+        if (_relativeVolumeService != null && _minRelativeVolume > 0)
+        {
+            var intradayVolume = book.VwapTracker.CumVolume;
+            if (!_relativeVolumeService.MeetsThreshold(snapshot.Symbol, intradayVolume, _minRelativeVolume))
+            {
+                var relVol = _relativeVolumeService.GetRelativeVolume(snapshot.Symbol, intradayVolume);
+                var rejectionReason = relVol.HasValue
+                    ? $"RelativeVolumeBelowThreshold (RelVol={relVol:F2} < {_minRelativeVolume:F2})"
+                    : "RelativeVolumeDataUnavailable";
+
+                var decisionResult = BuildDecisionResult(
+                    snapshot,
+                    depthSnapshot,
+                    tapeStats,
+                    depthDeltaSnapshot,
+                    decision,
+                    DecisionOutcome.Rejected,
+                    new[] { HardRejectReason.RelativeVolumeBelowThreshold },
+                    nowMs,
+                    book.BestBid,
+                    book.BestAsk,
+                    book,
+                    tapeStatusReadyCheck);
+                var rejectedEntry = BuildJournalEntry(book, snapshot, decision, nowMs, candidateId, depthSnapshot, tapeStats, tapeStatusReadyCheck);
+                rejectedEntry.DecisionOutcome = "Rejected";
+                rejectedEntry.RejectionReason = rejectionReason;
+                rejectedEntry.DecisionResult = decisionResult;
+                rejectedEntry.DecisionTrace = BuildDecisionTraceForRejection("RelVolCheckFail", rejectionReason);
+
+                EnqueueEntry(rejectedEntry);
+                _logger.LogDebug("[Signals] Signal rejected for {Symbol} ({Direction}): {Reason}",
+                    snapshot.Symbol, decision.Direction, rejectionReason);
+                return;
+            }
+        }
+
         var blueprintPlan = BuildBlueprintPlan(book, decision.Direction);
         if (_recordBlueprints && !blueprintPlan.Success)
         {
@@ -655,7 +699,7 @@ public sealed class SignalCoordinator : IPostSignalMonitor
                 tapeStats.CumulativeVwap,
                 tapeStats.VwapPrice,
                 tapeStats.Volume),
-            VwapConfirmBonus = tapeStats.VwapReclaimDetected ? 0.5m : 0m
+            VwapConfirmBonus = tapeStats.VwapReclaimDetected ? 1.0m : 0m
         };
 
         return StrategyDecisionResultBuilder.Build(context);
@@ -877,10 +921,10 @@ public sealed class SignalCoordinator : IPostSignalMonitor
         return new TradeJournalEntry.DecisionInputsSnapshot
         {
             Score = decision.Signal is null ? null : (decimal?)decision.Signal.Confidence,
-            VwapBonus = decision.Signal is null ? null : (tapeStats.VwapReclaimDetected ? 0.5m : 0m),
+            VwapBonus = decision.Signal is null ? null : (tapeStats.VwapReclaimDetected ? 1.0m : 0m),
             RankScore = decision.Signal is null
                 ? null
-                : decision.Signal.Confidence + (tapeStats.VwapReclaimDetected ? 0.5m : 0m),
+                : decision.Signal.Confidence + (tapeStats.VwapReclaimDetected ? 1.0m : 0m),
             TickerCooldownRemainingSec = _validator.GetCooldownRemainingSeconds(snapshot.Symbol, nowMs),
             AlertsLastHourCount = _validator.GetAlertCountInLastHour(nowMs),
             QueueImbalance = snapshot.QueueImbalance,
