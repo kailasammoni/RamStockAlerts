@@ -37,7 +37,8 @@ public enum HardRejectReason
     TapeAccelerationInsufficient,
     WallPersistenceInsufficient,
     ReplenishmentSuspected,
-    AbsorptionInsufficient
+    AbsorptionInsufficient,
+    RelativeVolumeBelowThreshold
 }
 
 public sealed record FeatureDepthLevelSnapshot(int Level, decimal Price, decimal Size);

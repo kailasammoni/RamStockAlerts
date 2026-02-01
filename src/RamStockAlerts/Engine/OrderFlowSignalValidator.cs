@@ -122,7 +122,8 @@ public class OrderFlowSignalValidator
         }
 
         var direction = isBuyCandidate ? "BUY" : "SELL";
-        var signal = BuildSignal(snapshot, currentTimeMs, isBuyCandidate);
+        var vwapReclaimDetected = ComputeVwapReclaim(book, direction, currentTimeMs);
+        var signal = BuildSignal(snapshot, currentTimeMs, isBuyCandidate, vwapReclaimDetected);
 
         var hardGateResult = CheckHardGates(snapshot, isBuyCandidate);
         if (!hardGateResult.Passed)
@@ -186,9 +187,9 @@ public class OrderFlowSignalValidator
         return signal;
     }
 
-    private OrderFlowSignal BuildSignal(OrderFlowMetrics.MetricSnapshot snapshot, long currentTimeMs, bool isBuy)
+    private OrderFlowSignal BuildSignal(OrderFlowMetrics.MetricSnapshot snapshot, long currentTimeMs, bool isBuy, bool vwapReclaimDetected = false)
     {
-        var confidence = ComputeConfidence(snapshot, isBuy);
+        var confidence = ComputeConfidence(snapshot, isBuy, vwapReclaimDetected);
 
         return new OrderFlowSignal
         {
@@ -241,34 +242,96 @@ public class OrderFlowSignalValidator
         RecordAlert(currentTimeMs);
     }
     
-    private int ComputeConfidence(OrderFlowMetrics.MetricSnapshot snapshot, bool isBuy)
+    private int ComputeConfidence(OrderFlowMetrics.MetricSnapshot snapshot, bool isBuy, bool vwapReclaimDetected = false)
     {
         int confidence = 50; // Base
-        
+
         // Queue imbalance strength
         var qiScore = isBuy
             ? Math.Min(100, (int)((snapshot.QueueImbalance - 2.8m) * 50)) // Scale 2.8+ to 50-100
             : Math.Min(100, (int)((0.35m - snapshot.QueueImbalance) * 50));
-        
+
         confidence += Math.Max(0, qiScore);
-        
+
         // Wall persistence (longer = stronger)
         var wallScore = Math.Min(30, (int)(snapshot.BidWallAgeMs / 100));
         confidence += wallScore;
-        
+
         // Tape acceleration (higher = more conviction)
         var tapeScore = Math.Min(20, (int)((snapshot.TapeAcceleration - 1.0m) * 10));
         confidence += Math.Max(0, tapeScore);
-        
+
         // Spoof penalty (low score = likely real)
         if (snapshot.SpoofScore < 0.3m)
             confidence += 10;
         else if (snapshot.SpoofScore > 0.7m)
             confidence -= 20;
-        
+
+        // VWAP reclaim bonus (+10 confidence = ~1 point on 10-scale)
+        if (vwapReclaimDetected)
+            confidence += 10;
+
         return Math.Min(100, confidence);
     }
-    
+
+    private bool ComputeVwapReclaim(OrderBookState book, string direction, long currentTimeMs)
+    {
+        const long WindowMs = 3000; // 3-second window
+        const decimal MinWindowVolume = 1m;
+
+        var cumulativeVwap = book.VwapTracker.CurrentVwap;
+        if (cumulativeVwap == 0m)
+        {
+            return false;
+        }
+
+        // Get last price
+        if (book.RecentTrades.Count == 0)
+        {
+            return false;
+        }
+
+        var lastTrade = book.RecentTrades.Last();
+        var lastPrice = (decimal)lastTrade.Price;
+
+        // Compute window VWAP from recent trades
+        var windowStart = currentTimeMs - WindowMs;
+        var windowTrades = book.RecentTrades.Where(t => t.TimestampMs >= windowStart).ToList();
+
+        var windowVolume = windowTrades.Sum(t => t.Size);
+        if (windowVolume < MinWindowVolume)
+        {
+            return false;
+        }
+
+        decimal? windowVwap = null;
+        if (windowVolume > 0)
+        {
+            var weightedSum = windowTrades.Sum(t => (decimal)t.Price * t.Size);
+            windowVwap = weightedSum / windowVolume;
+        }
+
+        if (windowVwap == null)
+        {
+            return false;
+        }
+
+        // Check for reclaim pattern
+        if (string.Equals(direction, "BUY", StringComparison.OrdinalIgnoreCase))
+        {
+            // For BUY: price > VWAP and window was below VWAP
+            return lastPrice > cumulativeVwap && windowVwap.Value < cumulativeVwap;
+        }
+
+        if (string.Equals(direction, "SELL", StringComparison.OrdinalIgnoreCase))
+        {
+            // For SELL: price < VWAP and window was above VWAP
+            return lastPrice < cumulativeVwap && windowVwap.Value > cumulativeVwap;
+        }
+
+        return false;
+    }
+
     private long GetCooldownRemainingMs(string symbol, long currentTimeMs)
     {
         if (!_lastSignalMs.TryGetValue(symbol, out var lastSignalMs))
